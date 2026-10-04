@@ -1,6 +1,7 @@
 // 信号・歩行者・他の車。
 // 歩行者と車は自転車の周りだけに出し、遠ざかったら消す（地図全体には置かない）。
 import { cellKey, nodeKey } from './map.js';
+import { pedLook, pedSwing } from './pedestrians.js';
 
 // 信号のサイクル（秒）。近くの信号（同じ交差点）は同じ色になる。
 // 赤の平均待ち時間（6秒）と信号無視のペナルティ（main.js で 5 秒）を近くして、
@@ -253,7 +254,66 @@ export function markInsideSignals(obs, player) {
 
 const SIGNAL_COLORS = { green: '#3ccf6e', yellow: '#ffc93c', red: '#ff4d4d' };
 
-export function drawObstacles(ctx, obs, view) {
+// 歩行者を真上から見た形で描く：交互に前に出る足、肩（服の色）、頭（髪の色）。雨の日は傘。
+// 実寸（肩幅約 0.45m）だと小さすぎて暗い地図に紛れるので、大きく描き、足もとに薄紫の丸を敷く（避ける相手だと分かるように）
+const PED_SCALE = 3.2;
+function drawPedestrian(ctx, a, weather) {
+  const look = pedLook(a);
+  const swing = pedSwing(a);
+  const k = PED_SCALE * look.scale;
+  ctx.save();
+  ctx.translate(a.x, a.y);
+  ctx.rotate(a.angle);
+  ctx.scale(k, k);
+  ctx.fillStyle = 'rgba(201, 184, 255, 0.45)';
+  ctx.beginPath();
+  ctx.arc(0, 0, 0.36, 0, Math.PI * 2);
+  ctx.fill();
+  // 足（前が -y）
+  ctx.fillStyle = look.pants;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(side * 0.1, -swing * side * 0.22, 0.07, 0.13, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (weather === 'rain') {
+    // 傘（上から見ると丸い）
+    ctx.fillStyle = look.umbrella;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.arc(0, -0.05, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 0.03;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(0, -0.05);
+      ctx.lineTo(Math.cos((i * Math.PI) / 2 + 0.4) * 0.5, -0.05 + Math.sin((i * Math.PI) / 2 + 0.4) * 0.5);
+      ctx.stroke();
+    }
+  } else {
+    // 肩と腕（腕は足と逆に振る）
+    ctx.fillStyle = look.shirt;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 0.23, 0.12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.ellipse(side * 0.25, swing * side * 0.12, 0.05, 0.09, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 頭
+    ctx.fillStyle = look.hair;
+    ctx.beginPath();
+    ctx.arc(0, -0.02, 0.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// opts.weather：天気（雨の日は歩行者が傘をさす）
+export function drawObstacles(ctx, obs, view, opts = {}) {
   const visible = (x, y) => x > view.left - 5 && x < view.right + 5 && y > view.top - 5 && y < view.bottom + 5;
 
   for (const g of obs.signals) {
@@ -273,10 +333,7 @@ export function drawObstacles(ctx, obs, view) {
   for (const a of obs.agents) {
     if (!visible(a.x, a.y)) continue;
     if (a.kind === 'ped') {
-      ctx.fillStyle = '#c9b8ff';
-      ctx.beginPath();
-      ctx.arc(a.x, a.y, 0.9, 0, Math.PI * 2);
-      ctx.fill();
+      drawPedestrian(ctx, a, opts.weather);
     } else {
       ctx.save();
       ctx.translate(a.x, a.y);

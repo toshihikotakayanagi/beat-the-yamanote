@@ -9,6 +9,7 @@ import { signalState } from './obstacles.js';
 import { pointAt, frontDistance, carCount, ELEVATED_H } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, cellKey, nodeKey, surfaceAt } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
+import { pedLook, pedSwing } from './pedestrians.js';
 
 // 夕暮れ：空は上ほど濃い紺、地平線は赤みのある紫。霧は地平線の色に合わせて遠くを溶かす
 const SKY_TOP = 0x10162a;
@@ -877,6 +878,45 @@ function makeTrainCar(lead) {
   return car;
 }
 
+// ---- 歩行者 ----
+// 頭・髪・胴体・腕・脚の人の形。歩行者は最大 45 人いるので、部品ごとに全員分を 1 つの InstancedMesh にまとめて描く
+// （1 人ずつ別の立体にすると描く回数が数百回増えて重い）。服などの色は部品ごとの色（setColorAt）で変える
+const MAX_PEDS = 64;
+const PED = {
+  hip: 0.84, // 腰の高さ m（背の高さ 1.0 のとき）
+  shoulder: 1.4,
+  legSwing: 0.5, // 足の振り rad
+  armSwing: 0.45,
+};
+function makeCrowd() {
+  const part = (geo, n = MAX_PEDS) => {
+    const m = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff }), n);
+    m.castShadow = true;
+    m.frustumCulled = false; // 歩行者は街じゅうに散らばるので、まとめて描く
+    m.count = 0;
+    return m;
+  };
+  const leg = new THREE.BoxGeometry(0.14, 0.82, 0.16);
+  leg.translate(0, -0.41, 0); // 腰を軸に振る
+  const arm = new THREE.BoxGeometry(0.09, 0.56, 0.11);
+  arm.translate(0, -0.28, 0); // 肩を軸に振る
+  const hair = new THREE.SphereGeometry(0.125, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const canopy = new THREE.ConeGeometry(0.62, 0.3, 10, 1, true);
+  const crowd = {
+    head: part(new THREE.SphereGeometry(0.115, 10, 8)),
+    hair: part(hair),
+    torso: part(new THREE.BoxGeometry(0.4, 0.6, 0.23)),
+    legL: part(leg),
+    legR: part(leg),
+    armL: part(arm),
+    armR: part(arm),
+    canopy: part(canopy),
+    stick: part(new THREE.CylinderGeometry(0.012, 0.012, 0.95, 5)),
+  };
+  crowd.canopy.material.side = THREE.DoubleSide;
+  return crowd;
+}
+
 function makeCar(color) {
   const car = new THREE.Group();
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.8, 4.4), mat(color));
@@ -935,9 +975,12 @@ export function createRenderer3D(canvas) {
   const train = [];
   const trainGroup = new THREE.Group();
   scene.add(trainGroup);
-  const agentMeshes = new Map(); // 車・歩行者 → 立体（使い回す）
+  const agentMeshes = new Map(); // 車 → 立体（使い回す）。歩行者は crowd で描く
+  const crowd = makeCrowd();
+  let currentWeather = 'clear';
   const agentGroup = new THREE.Group();
   scene.add(agentGroup);
+  for (const m of Object.values(crowd)) scene.add(m);
   let signalMeshes = []; // [{ light, pad, group }]
   const signalGroup = new THREE.Group();
   scene.add(signalGroup);
@@ -1110,25 +1153,79 @@ export function createRenderer3D(canvas) {
         agentMeshes.delete(a);
       }
     }
+    const peds = [];
     for (const a of obs.agents) {
+      if (a.kind === 'ped') {
+        peds.push(a);
+        continue;
+      }
       let m = agentMeshes.get(a);
       if (!m) {
-        if (a.kind === 'car') {
-          m = makeCar(a.color);
-        } else {
-          m = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 1.65, 8), mat(0xc9b8ff));
-          m.geometry.translate(0, 0.83, 0);
-        }
+        m = makeCar(a.color);
         m.traverse((o) => o.isMesh && (o.castShadow = true));
         agentMeshes.set(a, m);
         agentGroup.add(m);
       }
-      // 乗っている道路の高さ（橋の上の車・歩行者）
-      const segLen = Math.hypot(a.road.p[2 * (a.v + a.dir)] - a.road.p[2 * a.v], a.road.p[2 * (a.v + a.dir) + 1] - a.road.p[2 * a.v + 1]) || 1;
-      const t = Math.max(0, Math.min(1, a.s / segLen));
-      const h = a.dir > 0 ? roadHeightAt(roadH(), a.road, a.v, t) : roadHeightAt(roadH(), a.road, a.v - 1, 1 - t);
-      m.position.set(a.x, Number.isFinite(h) ? h : 0, a.y);
+      m.position.set(a.x, agentHeight(a), a.y);
       m.rotation.y = -(a.angle ?? 0);
+    }
+    drawCrowd(peds);
+  }
+
+  // 乗っている道路の高さ（橋の上の車・歩行者）
+  function agentHeight(a) {
+    const segLen = Math.hypot(a.road.p[2 * (a.v + a.dir)] - a.road.p[2 * a.v], a.road.p[2 * (a.v + a.dir) + 1] - a.road.p[2 * a.v + 1]) || 1;
+    const t = Math.max(0, Math.min(1, a.s / segLen));
+    const h = a.dir > 0 ? roadHeightAt(roadH(), a.road, a.v, t) : roadHeightAt(roadH(), a.road, a.v - 1, 1 - t);
+    return Number.isFinite(h) ? h : 0;
+  }
+
+  // 歩行者を部品ごとに置く。腕と足は歩いた距離に合わせて振り、雨の日は傘をさす（右手で持つ）
+  const pm = { base: new THREE.Matrix4(), local: new THREE.Matrix4(), out: new THREE.Matrix4(), rot: new THREE.Matrix4() };
+  const pc = new THREE.Color();
+  function drawCrowd(peds) {
+    const n = Math.min(MAX_PEDS, peds.length);
+    const rain = currentWeather === 'rain';
+    const put = (mesh, i, x, y, z, rotX = 0) => {
+      pm.local.makeTranslation(x, y, z);
+      if (rotX) pm.local.multiply(pm.rot.makeRotationX(rotX));
+      mesh.setMatrixAt(i, pm.out.multiplyMatrices(pm.base, pm.local));
+    };
+    const color = (mesh, i, hex) => mesh.setColorAt(i, pc.set(hex));
+    for (let i = 0; i < n; i++) {
+      const a = peds[i];
+      const look = pedLook(a);
+      const swing = pedSwing(a);
+      const s = look.scale;
+      pm.base.makeTranslation(a.x, agentHeight(a), a.y);
+      pm.base.multiply(pm.rot.makeRotationY(-(a.angle ?? 0)));
+      pm.base.multiply(pm.rot.makeScale(s, s, s));
+      put(crowd.legL, i, -0.1, PED.hip, 0, swing * PED.legSwing);
+      put(crowd.legR, i, 0.1, PED.hip, 0, -swing * PED.legSwing);
+      put(crowd.torso, i, 0, PED.hip + 0.3, 0);
+      put(crowd.armL, i, -0.25, PED.shoulder, 0, -swing * PED.armSwing);
+      // 傘を持つ右手は前に上げる
+      put(crowd.armR, i, 0.25, PED.shoulder, 0, rain ? 0.9 : swing * PED.armSwing);
+      put(crowd.head, i, 0, 1.56, 0);
+      put(crowd.hair, i, 0, 1.585, 0.015);
+      color(crowd.legL, i, look.pants);
+      color(crowd.legR, i, look.pants);
+      color(crowd.torso, i, look.shirt);
+      color(crowd.armL, i, look.shirt);
+      color(crowd.armR, i, look.shirt);
+      color(crowd.head, i, look.skin);
+      color(crowd.hair, i, look.hair);
+      if (rain) {
+        put(crowd.stick, i, 0.22, 1.52, -0.38); // 手から上へ
+        put(crowd.canopy, i, 0.12, 2.12, -0.22); // 頭の上
+        color(crowd.stick, i, '#3c3f46');
+        color(crowd.canopy, i, look.umbrella);
+      }
+    }
+    for (const [key, mesh] of Object.entries(crowd)) {
+      mesh.count = key === 'canopy' || key === 'stick' ? (rain ? n : 0) : n;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
   }
 
@@ -1290,6 +1387,7 @@ export function createRenderer3D(canvas) {
     // 時間帯（day / evening / night）と天気（clear / rain / snow）。見た目だけで、走りやすさは変えない
     setAtmosphere(time, weather) {
       const t = TIMES[time] ?? TIMES.evening, w = WEATHERS[weather] ?? WEATHERS.clear;
+      currentWeather = weather; // 雨の日は歩行者が傘をさす
       const gray = new THREE.Color(0x8a8f99);
       const tone = (hex, k = w.gray) => {
         const c = new THREE.Color(hex);
