@@ -133,27 +133,76 @@ function openRing(p) {
 }
 
 // 位置・法線・色を貯めて 1 つの BufferGeometry にする
+// 位置・法線・色・テクスチャ座標を貯めて 1 つの BufferGeometry にする。
+// 区間ごとに何十万個の数値を入れるので、ふつうの配列ではなく、足りなくなったら倍に広げる Float32Array に詰める
+// （ふつうの配列だと、作り終えたあとのメモリの片付けで描画が引っかかる）
+class FloatList {
+  constructor(size = 4096) {
+    this.a = new Float32Array(size);
+    this.n = 0;
+  }
+  reserve(k) {
+    if (this.n + k <= this.a.length) return;
+    let size = this.a.length * 2;
+    while (size < this.n + k) size *= 2;
+    const b = new Float32Array(size);
+    b.set(this.a.subarray(0, this.n));
+    this.a = b;
+  }
+  get length() {
+    return this.n;
+  }
+  // 作り終えた分だけの配列（コピーせずに切り出す）
+  view() {
+    return this.a.subarray(0, this.n);
+  }
+}
+
 class GeometryBuilder {
   constructor(withColor = false, withUV = false) {
-    this.pos = [];
-    this.nor = [];
-    this.col = withColor ? [] : null;
-    this.uv = withUV ? [] : null;
+    this.pos = new FloatList();
+    this.nor = new FloatList();
+    this.col = withColor ? new FloatList() : null;
+    this.uv = withUV ? new FloatList(2048) : null;
   }
   // uvs：3 つの頂点のテクスチャ座標 [[u, v], [u, v], [u, v]]（withUV のとき）
-  // 区間ごとに何十万回も呼ぶので、配列の展開（...）を使わずに 1 つずつ入れる
   tri(a, b, c, n, color, uvs = ROOF_UV) {
-    this.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
-    this.nor.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
-    if (this.col) this.col.push(color[0], color[1], color[2], color[0], color[1], color[2], color[0], color[1], color[2]);
-    if (this.uv) this.uv.push(uvs[0][0], uvs[0][1], uvs[1][0], uvs[1][1], uvs[2][0], uvs[2][1]);
+    const P = this.pos, N = this.nor;
+    P.reserve(9);
+    N.reserve(9);
+    const pa = P.a;
+    let i = P.n;
+    pa[i++] = a[0]; pa[i++] = a[1]; pa[i++] = a[2];
+    pa[i++] = b[0]; pa[i++] = b[1]; pa[i++] = b[2];
+    pa[i++] = c[0]; pa[i++] = c[1]; pa[i++] = c[2];
+    P.n = i;
+    const na = N.a;
+    i = N.n;
+    for (let k = 0; k < 3; k++) (na[i++] = n[0]), (na[i++] = n[1]), (na[i++] = n[2]);
+    N.n = i;
+    if (this.col) {
+      const C = this.col;
+      C.reserve(9);
+      const ca = C.a;
+      i = C.n;
+      for (let k = 0; k < 3; k++) (ca[i++] = color[0]), (ca[i++] = color[1]), (ca[i++] = color[2]);
+      C.n = i;
+    }
+    if (this.uv) {
+      const U = this.uv;
+      U.reserve(6);
+      const ua = U.a;
+      i = U.n;
+      for (let k = 0; k < 3; k++) (ua[i++] = uvs[k][0]), (ua[i++] = uvs[k][1]);
+      U.n = i;
+    }
   }
   build() {
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
-    if (this.col) g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    if (this.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos.view(), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.nor.view(), 3));
+    if (this.col) g.setAttribute('color', new THREE.BufferAttribute(this.col.view(), 3));
+    if (this.uv) g.setAttribute('uv', new THREE.BufferAttribute(this.uv.view(), 2));
     return g;
   }
 }
@@ -659,7 +708,7 @@ function* buildWorldSteps(map, textures) {
   for (const t of roadTiles.values()) {
     if (++rt % 8 === 0) yield 0.26 + (0.04 * rt) / roadTiles.size;
     for (const [b, material] of [[t.paths, pathMat], [t.roads, roadMat]]) {
-      if (!b.pos.length) continue;
+      if (!b.pos.length) continue; // その区画にない種類の道
       const m = new THREE.Mesh(b.build(), material);
       m.receiveShadow = true;
       group.add(m);
@@ -916,7 +965,7 @@ export function createRenderer3D(canvas) {
   const WORLD_CACHE = 3;
   const BUILD_BUDGET_MS = 10; // 1 回の描画で作るのに使う時間（今の区間）
   const BACKGROUND_BUDGET_MS = 6; // 先に作っておく区間に使う時間（レース中は使わない）
-  const REVEAL_PER_FRAME = 12; // 1 回の描画で見せる部品の数
+  const REVEAL_PER_FRAME = 6; // 1 回の描画で見せる（GPU へ送る）部品の数
   const worlds = new Map(); // 地図 → { steps, group, progress, revealed, used }
 
   function worldFor(map) {
