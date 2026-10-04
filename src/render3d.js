@@ -162,14 +162,15 @@ class FloatList {
 }
 
 class GeometryBuilder {
-  constructor(withColor = false, withUV = false) {
+  constructor(withColor = false, withUV = false, withStyle = false) {
     this.pos = new FloatList();
     this.nor = new FloatList();
     this.col = withColor ? new FloatList() : null;
     this.uv = withUV ? new FloatList(2048) : null;
+    this.sty = withStyle ? new FloatList(1024) : null; // 建物の外観の種類（FACADE）
   }
-  // uvs：3 つの頂点のテクスチャ座標 [[u, v], [u, v], [u, v]]（withUV のとき）
-  tri(a, b, c, n, color, uvs = ROOF_UV) {
+  // uvs：3 つの頂点のテクスチャ座標 [[u, v], [u, v], [u, v]]（withUV のとき）、style：外観の種類（withStyle のとき）
+  tri(a, b, c, n, color, uvs = ROOF_UV, style = FACADE.plain) {
     const P = this.pos, N = this.nor;
     P.reserve(9);
     N.reserve(9);
@@ -199,6 +200,13 @@ class GeometryBuilder {
       for (let k = 0; k < 3; k++) (ua[i++] = uvs[k][0]), (ua[i++] = uvs[k][1]);
       U.n = i;
     }
+    if (this.sty) {
+      const S = this.sty;
+      S.reserve(3);
+      S.a[S.n++] = style;
+      S.a[S.n++] = style;
+      S.a[S.n++] = style;
+    }
   }
   build() {
     const g = new THREE.BufferGeometry();
@@ -206,6 +214,7 @@ class GeometryBuilder {
     g.setAttribute('normal', new THREE.BufferAttribute(this.nor.view(), 3));
     if (this.col) g.setAttribute('color', new THREE.BufferAttribute(this.col.view(), 3));
     if (this.uv) g.setAttribute('uv', new THREE.BufferAttribute(this.uv.view(), 2));
+    if (this.sty) g.setAttribute('wstyle', new THREE.BufferAttribute(this.sty.view(), 1));
     return g;
   }
 }
@@ -218,46 +227,132 @@ const WINDOW_W = 3.6, FLOOR_H = 3.2;
 const ROOF_UV = [[0.002, 0.002], [0.002, 0.002], [0.002, 0.002]]; // 窓のない枠の部分（屋上・地面の物に使う）
 const LIT_SHARE = 0.28; // 灯りのついた窓の割合
 
+// 建物の外観の種類。1 枚の画像（アトラス）に横に並べ、シェーダーで建物ごとに使い分ける（描く回数は増えない）。
+// 1 枚分（256px 四方）が、横 WINDOW_COLS 個 × 縦 WINDOW_ROWS 階ぶん。shop は 1 階のお店、plain は窓のない壁・屋根・屋上の設備
+export const FACADE = { office: 0, apartment: 1, glass: 2, house: 3, shop: 4, plain: 5 };
+const FACADE_COUNT = 6;
+
 function windowTextures(maxAnisotropy) {
-  const size = WINDOW_COLS * WINDOW_PX;
+  const T = WINDOW_COLS * WINDOW_PX; // 1 種類の大きさ px
+  const U = WINDOW_PX; // 窓 1 つ（1 階ぶん）の大きさ px
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
   const make = (draw) => {
     const c = document.createElement('canvas');
-    c.width = c.height = size;
+    c.width = T * FACADE_COUNT;
+    c.height = T;
     draw(c.getContext('2d'));
     const t = new THREE.CanvasTexture(c);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; // 繰り返しはシェーダーで（fract）
     t.anisotropy = maxAnisotropy;
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
   };
-  let seed = 7;
-  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const lit = [];
-  for (let i = 0; i < WINDOW_COLS * WINDOW_ROWS; i++) lit.push(rand() < LIT_SHARE ? 0.55 + rand() * 0.45 : 0);
-  const cell = (ctx, i, j, inset = 8) => [i * WINDOW_PX + inset, j * WINDOW_PX + inset + 2, WINDOW_PX - inset * 2, WINDOW_PX - inset * 2 - 3];
+  // 灯り：種類ごとに、点いている窓の割合と色
+  const glowColor = (warm, v) => (warm ? `rgba(255, ${200 + Math.round(v * 30)}, ${130 + Math.round(v * 60)}, ${v})` : `rgba(${215 + Math.round(v * 30)}, 232, 255, ${v})`);
+  const plan = []; // [種類, 列, 段, 点いているか（0〜1）]
+  const each = (style, fn) => {
+    for (let j = 0; j < WINDOW_ROWS; j++) for (let i = 0; i < WINDOW_COLS; i++) fn(style * T + i * U, j * U, i, j);
+  };
   const color = make((ctx) => {
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
-    for (let j = 0; j < WINDOW_ROWS; j++) {
-      for (let i = 0; i < WINDOW_COLS; i++) {
-        ctx.fillStyle = '#4a5466';
-        ctx.fillRect(...cell(ctx, i, j));
-      }
-    }
+    ctx.fillRect(0, 0, T * FACADE_COUNT, T);
+    // オフィス：縦長の窓の格子と、窓の真ん中の桟
+    each(FACADE.office, (x, y) => {
+      ctx.fillStyle = '#3d4a5c';
+      ctx.fillRect(x + 5, y + 7, U - 10, U - 12);
+      ctx.fillStyle = '#c9d1db';
+      ctx.fillRect(x + U / 2 - 1, y + 7, 2, U - 12);
+    });
+    // マンション：窓と、各階のベランダ（明るい帯と手すり）
+    each(FACADE.apartment, (x, y) => {
+      ctx.fillStyle = '#46505c';
+      ctx.fillRect(x + 6, y + 5, U - 12, 15);
+      ctx.fillStyle = '#e4e4e4';
+      ctx.fillRect(x, y + 22, U, 10);
+      ctx.fillStyle = '#9aa0a8';
+      for (let k = 2; k < U; k += 5) ctx.fillRect(x + k, y + 22, 1, 7);
+    });
+    // ガラス張り：青みのあるガラスの帯と、階の境の細い帯
+    each(FACADE.glass, (x, y) => {
+      const g = ctx.createLinearGradient(x, y, x + U, y + U);
+      g.addColorStop(0, '#5f7f9e');
+      g.addColorStop(1, '#3f5a75');
+      ctx.fillStyle = g;
+      ctx.fillRect(x, y + 4, U, U - 4);
+      ctx.fillStyle = '#2b3846';
+      ctx.fillRect(x, y, U, 4);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.fillRect(x + U - 1, y + 4, 1, U - 4);
+    });
+    // 一戸建て：小さな窓がところどころ
+    each(FACADE.house, (x, y, i, j) => {
+      if ((i * 7 + j * 3) % 5 > 2) return;
+      ctx.fillStyle = '#6b6e75';
+      ctx.fillRect(x + 8, y + 8, U - 16, 14);
+      ctx.fillStyle = '#4a4f57';
+      ctx.fillRect(x + 10, y + 10, U - 20, 10);
+    });
+    // お店（1 階）：上に看板の帯、下は大きなガラス
+    const signs = ['#c94f4f', '#4f7fc9', '#5aa36b', '#e0a03a', '#8e6cc4', '#2bb3b1'];
+    each(FACADE.shop, (x, y, i) => {
+      ctx.fillStyle = signs[(i * 5 + 3) % signs.length];
+      ctx.fillRect(x, y, U, 6);
+      ctx.fillStyle = '#3a3f47';
+      ctx.fillRect(x + 2, y + 8, U - 4, U - 9);
+    });
+    // 窓のない壁（屋根・屋上の設備）は白のまま
   });
   const glow = make((ctx) => {
     ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, size, size);
-    for (let j = 0; j < WINDOW_ROWS; j++) {
-      for (let i = 0; i < WINDOW_COLS; i++) {
-        const v = lit[j * WINDOW_COLS + i];
-        if (!v) continue;
-        ctx.fillStyle = `rgba(255, ${200 + Math.round(v * 30)}, ${130 + Math.round(v * 60)}, ${v})`;
-        ctx.fillRect(...cell(ctx, i, j));
-      }
-    }
+    ctx.fillRect(0, 0, T * FACADE_COUNT, T);
+    each(FACADE.office, (x, y) => {
+      if (rand() < 0.3) (ctx.fillStyle = glowColor(false, 0.6 + rand() * 0.4)), ctx.fillRect(x + 5, y + 7, U - 10, U - 12);
+    });
+    each(FACADE.apartment, (x, y) => {
+      if (rand() < 0.35) (ctx.fillStyle = glowColor(true, 0.55 + rand() * 0.45)), ctx.fillRect(x + 6, y + 5, U - 12, 15);
+    });
+    each(FACADE.glass, (x, y) => {
+      if (rand() < 0.22) (ctx.fillStyle = glowColor(false, 0.4 + rand() * 0.4)), ctx.fillRect(x, y + 4, U, U - 4);
+    });
+    each(FACADE.house, (x, y, i, j) => {
+      if ((i * 7 + j * 3) % 5 > 2) return;
+      if (rand() < 0.4) (ctx.fillStyle = glowColor(true, 0.6 + rand() * 0.4)), ctx.fillRect(x + 10, y + 10, U - 20, 10);
+    });
+    each(FACADE.shop, (x, y, i) => {
+      if (rand() < 0.85) (ctx.fillStyle = glowColor(true, 0.7 + rand() * 0.3)), ctx.fillRect(x + 2, y + 8, U - 4, U - 9);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.fillRect(x, y, U, 6); // 看板もほんのり
+    });
   });
+  void plan;
   return { color, glow };
+}
+
+// 建物の材質：アトラスから、頂点の外観の種類（wstyle）の 1 枚を選んで繰り返し貼る。
+// マンションとオフィスの 1 階はお店にする
+const FACADE_SHADER_KEY = 'facade-v1';
+function useFacades(material) {
+  material.customProgramCacheKey = () => FACADE_SHADER_KEY;
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = 'attribute float wstyle;\nvarying float vStyle;\n' + shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n  vStyle = wstyle;');
+    shader.fragmentShader = 'varying float vStyle;\n' + shader.fragmentShader
+      .replace(
+        '#include <map_fragment>',
+        `float facade = floor(vStyle + 0.5);
+  if (facade < 1.5 && vMapUv.y * ${WINDOW_ROWS.toFixed(1)} < 1.0) facade = ${FACADE.shop.toFixed(1)};
+  vec2 facadeCell = fract(vMapUv);
+  vec2 facadeUv = vec2((facade + 0.004 + facadeCell.x * 0.992) / ${FACADE_COUNT.toFixed(1)}, facadeCell.y);
+  vec2 facadeDx = dFdx(vMapUv) * vec2(1.0 / ${FACADE_COUNT.toFixed(1)}, 1.0);
+  vec2 facadeDy = dFdy(vMapUv) * vec2(1.0 / ${FACADE_COUNT.toFixed(1)}, 1.0);
+  diffuseColor *= textureGrad(map, facadeUv, facadeDx, facadeDy);`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `totalEmissiveRadiance *= textureGrad(emissiveMap, facadeUv, facadeDx, facadeDy).rgb;`,
+      );
+  };
+  return material;
 }
 
 const UP = [0, 1, 0];
@@ -343,12 +438,40 @@ function addPolygon(b, p, y) {
 }
 
 // 建物：底面の多角形を高さ h まで立ち上げる（壁と屋上）
-function addBuilding(b, p, h, color) {
+// 面（3 点）を、法線を外向き（center から離れる向き）にして加える
+function triOut(b, a, c, d, color, center, style = FACADE.plain) {
+  const u = [c[0] - a[0], c[1] - a[1], c[2] - a[2]], v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+  let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const len = Math.hypot(n[0], n[1], n[2]) || 1;
+  n = [n[0] / len, n[1] / len, n[2] / len];
+  const f = [(a[0] + c[0] + d[0]) / 3 - center[0], (a[1] + c[1] + d[1]) / 3 - center[1], (a[2] + c[2] + d[2]) / 3 - center[2]];
+  if (n[0] * f[0] + n[1] * f[1] + n[2] * f[2] < 0) n = [-n[0], -n[1], -n[2]];
+  b.tri(a, c, d, n, color, ROOF_UV, style);
+}
+// 箱（屋上の設備）
+function addRoofBox(b, x, z, y, w, d, h, color) {
+  const c = [x, y + h / 2, z];
+  const P = (sx, sy, sz) => [x + (sx * w) / 2, y + sy * h, z + (sz * d) / 2];
+  const quads = [
+    [P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1)],
+    [P(-1, 0, -1), P(1, 0, -1), P(1, 1, -1), P(-1, 1, -1)],
+    [P(-1, 0, 1), P(1, 0, 1), P(1, 1, 1), P(-1, 1, 1)],
+    [P(-1, 0, -1), P(-1, 0, 1), P(-1, 1, 1), P(-1, 1, -1)],
+    [P(1, 0, -1), P(1, 0, 1), P(1, 1, 1), P(1, 1, -1)],
+  ];
+  for (const [q0, q1, q2, q3] of quads) {
+    triOut(b, q0, q1, q2, color, c);
+    triOut(b, q0, q2, q3, color, c);
+  }
+}
+
+// 建物：底面の多角形を高さ h まで立ち上げる。look：{ wall, roof（色）, style（外観）, gable（三角屋根）, rooftop（屋上の設備）, seed }
+function addBuilding(b, p, h, look) {
   const ring = openRing(p);
   const n = ring.length / 2;
   if (n < 3) return;
   const ccw = polygonArea(ring) > 0; // 地図座標（y が南）での向き
-  const roof = color.map((c) => Math.min(1, c * 1.25));
+  const { wall: color, roof } = look;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     const x1 = ring[2 * i], z1 = ring[2 * i + 1], x2 = ring[2 * j], z2 = ring[2 * j + 1];
@@ -363,12 +486,29 @@ function addBuilding(b, p, h, color) {
     const u1 = len / WINDOW_W / WINDOW_COLS, v1 = h / FLOOR_H / WINDOW_ROWS;
     const ua = [0, 0], ub = [u1, 0], uc = [u1, v1], ud = [0, v1];
     if (ccw) {
-      b.tri(a, c, bb, nrm, color, [ua, uc, ub]);
-      b.tri(a, d, c, nrm, color, [ua, ud, uc]);
+      b.tri(a, c, bb, nrm, color, [ua, uc, ub], look.style);
+      b.tri(a, d, c, nrm, color, [ua, ud, uc], look.style);
     } else {
-      b.tri(a, bb, c, nrm, color, [ua, ub, uc]);
-      b.tri(a, c, d, nrm, color, [ua, uc, ud]);
+      b.tri(a, bb, c, nrm, color, [ua, ub, uc], look.style);
+      b.tri(a, c, d, nrm, color, [ua, uc, ud], look.style);
     }
+  }
+  // 三角屋根（四角い一戸建て）：長い辺に沿った棟
+  if (look.gable && n === 4) {
+    const P = (k) => [ring[2 * k], h, ring[2 * k + 1]];
+    const e0 = Math.hypot(ring[2] - ring[0], ring[3] - ring[1]), e1 = Math.hypot(ring[4] - ring[2], ring[5] - ring[3]);
+    const [p0, p1, p2, p3] = e0 >= e1 ? [P(0), P(1), P(2), P(3)] : [P(1), P(2), P(3), P(0)];
+    const rh = Math.min(2.2, Math.min(e0, e1) * 0.35); // 屋根の高さ
+    const mid = (a, c) => [(a[0] + c[0]) / 2, h + rh, (a[2] + c[2]) / 2];
+    const m1 = mid(p1, p2), m3 = mid(p3, p0);
+    const center = [(p0[0] + p2[0]) / 2, h, (p0[2] + p2[2]) / 2];
+    triOut(b, p0, p1, m1, roof, center);
+    triOut(b, p0, m1, m3, roof, center);
+    triOut(b, p2, p3, m3, roof, center);
+    triOut(b, p2, m3, m1, roof, center);
+    triOut(b, p1, p2, m1, color, center); // 妻（三角の壁）
+    triOut(b, p3, p0, m3, color, center);
+    return;
   }
   const contour = [];
   for (let i = 0; i < ring.length; i += 2) contour.push(new THREE.Vector2(ring[i], ring[i + 1]));
@@ -378,6 +518,42 @@ function addBuilding(b, p, h, color) {
     if (cross > 0) b.tri([A.x, h, A.y], [C.x, h, C.y], [B.x, h, B.y], UP, roof);
     else b.tri([A.x, h, A.y], [B.x, h, B.y], [C.x, h, C.y], UP, roof);
   }
+  // 屋上の設備（室外機・給水タンク）：多角形の中に収まる所に 1〜3 個
+  if (look.rooftop) {
+    let cx = 0, cz = 0;
+    for (let i = 0; i < ring.length; i += 2) (cx += ring[i]), (cz += ring[i + 1]);
+    cx /= n;
+    cz /= n;
+    const count = 1 + (look.seed % 3);
+    for (let k = 0; k < count; k++) {
+      const r1 = ((look.seed * (k + 3) * 2654435761) % 1000) / 1000 - 0.5, r2 = ((look.seed * (k + 7) * 40503) % 1000) / 1000 - 0.5;
+      const x = cx + r1 * 8, z = cz + r2 * 8;
+      if (!insidePolygon(x, z, ring)) continue;
+      const tank = k === 0 && look.seed % 4 === 0;
+      addRoofBox(b, x, z, h, tank ? 2.4 : 1.6, tank ? 2.4 : 1.1, tank ? 2.2 : 1.1, tank ? [0.55, 0.57, 0.6] : [0.62, 0.64, 0.66]);
+    }
+  }
+}
+
+// 建物の見た目を、高さ h と床面積 area と番号 i から決める（番号から決めるので毎回同じ）
+const HOUSE_WALLS = [[0.86, 0.8, 0.7], [0.78, 0.7, 0.6], [0.9, 0.88, 0.84], [0.66, 0.56, 0.48], [0.8, 0.82, 0.84]];
+const HOUSE_ROOFS = [[0.3, 0.22, 0.18], [0.24, 0.27, 0.33], [0.18, 0.18, 0.2], [0.42, 0.26, 0.2]];
+const APARTMENT_WALLS = [[0.86, 0.82, 0.74], [0.9, 0.9, 0.88], [0.68, 0.5, 0.42], [0.76, 0.74, 0.7], [0.82, 0.78, 0.7]];
+const OFFICE_WALLS = [[0.66, 0.68, 0.72], [0.58, 0.6, 0.64], [0.74, 0.74, 0.74], [0.62, 0.6, 0.56]];
+const GLASS_WALLS = [[0.82, 0.88, 0.96], [0.74, 0.8, 0.9], [0.86, 0.9, 0.92]];
+function buildingLook(h, area, i) {
+  const r = (k) => (((i + 1) * 2654435761 * (k + 1)) % 9973) / 9973;
+  const pick = (list, k) => list[Math.floor(r(k) * list.length)];
+  const shade = (c, k) => c.map((v) => v * (0.9 + r(k) * 0.15));
+  let style;
+  if (h < 9 && area < 300) style = FACADE.house;
+  else if (h >= 45) style = r(1) < 0.65 ? FACADE.glass : FACADE.office;
+  else if (h >= 20) style = r(1) < 0.45 ? FACADE.apartment : r(1) < 0.8 ? FACADE.office : FACADE.glass;
+  else style = r(1) < 0.6 ? FACADE.apartment : FACADE.office;
+  const walls = { [FACADE.house]: HOUSE_WALLS, [FACADE.apartment]: APARTMENT_WALLS, [FACADE.office]: OFFICE_WALLS, [FACADE.glass]: GLASS_WALLS }[style];
+  const wall = shade(pick(walls, 2), 3);
+  const roof = style === FACADE.house ? pick(HOUSE_ROOFS, 4) : wall.map((v) => v * 0.78);
+  return { style, wall, roof, gable: style === FACADE.house && r(5) < 0.8, rooftop: style !== FACADE.house && h >= 12 && area >= 120, seed: Math.floor(r(6) * 1000) };
 }
 
 const hex = (s) => new THREE.Color(s);
@@ -750,12 +926,9 @@ function* buildWorldSteps(map, textures) {
     const area = Math.abs(polygonArea(openRing(bd.p)));
     const h = map.heights?.[i] > 0 ? map.heights[i] : guessHeight(area, i);
     const key = `${Math.floor((bd.minX + bd.maxX) / 2 / TILE)},${Math.floor((bd.minY + bd.maxY) / 2 / TILE)}`;
-    if (!tileBuilders.has(key)) tileBuilders.set(key, new GeometryBuilder(true, true));
-    // 壁の色：灰色を基本に、建物ごとに少し暖色・寒色に振る。高い建物ほど少し明るく
-    const t = Math.min(1, h / 80);
-    const r = ((i * 7919) % 100) / 100, tint = (((i * 104729) % 100) / 100 - 0.5) * 0.06;
-    const v = 0.34 + 0.14 * t + r * 0.08;
-    addBuilding(tileBuilders.get(key), bd.p, h, [v + tint, v * 1.02, v * 1.08 - tint]);
+    if (!tileBuilders.has(key)) tileBuilders.set(key, new GeometryBuilder(true, true, true));
+    // 外観（一戸建て・マンション・オフィス・ガラス張り）と色は、高さと床面積と番号から決める
+    addBuilding(tileBuilders.get(key), bd.p, h, buildingLook(h, area, i));
     heights.push(h);
     tileOf.push(key);
   }
@@ -764,14 +937,16 @@ function* buildWorldSteps(map, textures) {
   let ti = 0;
   for (const [key, b] of tileBuilders) {
     if (++ti % TILES_PER_STEP === 0) yield 0.9 + (0.08 * ti) / tileBuilders.size;
-    const material = new THREE.MeshLambertMaterial({
-      vertexColors: true,
-      side: THREE.DoubleSide,
-      map: textures.color,
-      emissiveMap: textures.glow,
-      emissive: 0xffffff,
-      emissiveIntensity: windowGlow,
-    });
+    const material = useFacades(
+      new THREE.MeshLambertMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        map: textures.color,
+        emissiveMap: textures.glow,
+        emissive: 0xffffff,
+        emissiveIntensity: windowGlow,
+      }),
+    );
     const mesh = new THREE.Mesh(b.build(), material);
     mesh.castShadow = mesh.receiveShadow = true;
     mesh.userData.opacity = 1;
