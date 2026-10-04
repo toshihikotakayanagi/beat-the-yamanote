@@ -474,7 +474,8 @@ function drawResult(ctx, game, view) {
   drawOverlay(ctx, game, view, lines);
 }
 
-// view: { w, h, ppm }（画面の幅・高さ CSS px、1m あたりの CSS px）
+// view: { w, h, ppm, landmarks, goalPointer }（画面の幅・高さ CSS px、1m あたりの CSS px、
+// ランドマークの名前とゴール方向の矢印を出すか。3D版は地図の真上からの見た目ではないので出さない）
 export function drawHud(ctx, game, view) {
   game.hits = [];
   const menu = game.state === 'title' || game.state === 'howto' || game.state === 'ready';
@@ -489,10 +490,10 @@ export function drawHud(ctx, game, view) {
     if (game.touch) avoid.push({ x0: 0, y0: view.h - 104, x1: view.w, y1: view.h });
   }
   // メニュー画面では出さない（暗くした地図の上でも文字が読めてしまい、メニューの文字と紛れる）
-  if (!menu) drawLandmarks(ctx, game, view, avoid);
+  if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);
   // メニュー画面ではレース情報を出さない
   if (!menu) {
-    drawGoalPointer(ctx, game, view);
+    if (view.goalPointer !== false) drawGoalPointer(ctx, game, view);
     drawRaceBar(ctx, game, view);
     drawStatus(ctx, game);
     drawMinimap(ctx, game, view);
