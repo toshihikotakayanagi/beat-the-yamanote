@@ -234,7 +234,8 @@ function areaKind(tags) {
   return null;
 }
 
-const SHORT_RAIL_TUNNEL_M = 150; // 道路橋の下などをくぐる短い線路のトンネル（目白駅・目黒駅の山手線）は描く
+const SHORT_RAIL_TUNNEL_M = 150;
+const lowLines = new WeakSet(); // 切り通し・地面より低い線路 // 道路橋の下などをくぐる短い線路のトンネル（目白駅・目黒駅の山手線）は描く
 
 // 線の種類と幅 m。地下（トンネル・暗渠）は描かない。lengthM：その線の長さ
 function lineKind(tags, lengthM) {
@@ -243,6 +244,8 @@ function lineKind(tags, lengthM) {
     // 駅ビルの下をくぐる線路（tunnel=building_passage）も駅の中でつながっているので残す
     const tunnel = tags.tunnel && tags.tunnel !== 'no' && tags.tunnel !== 'building_passage' && lengthM > SHORT_RAIL_TUNNEL_M;
     const yamanote = /山手線/.test(tags.name ?? '');
+    // 切り通し・地面より低い線路（道路の橋の高さを決めるときに使う。データには入れない）
+    const low = Number(tags.layer) < 0 || (tags.cutting && tags.cutting !== 'no');
     // 山手線のトンネル（目黒駅の手前の約270mなど）は描かないが、電車が地図の上を走る道筋に使うので u: 1 を付けて残す
     if (tunnel || tags.location === 'underground') return yamanote ? { k: 'yamanote', w: 3, u: 1 } : null;
     // 山手線は路線の色で目立たせる（名前に「山手線」を含む線路）。
@@ -250,6 +253,7 @@ function lineKind(tags, lengthM) {
     const line = { k: yamanote ? 'yamanote' : 'rail', w: 3 };
     const elevated = (tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.embankment === 'yes' || tags.viaduct === 'yes';
     if (elevated && !line.u) line.e = 1;
+    if (low) lowLines.add(line);
     return line;
   }
   // 川は暗渠（tunnel=culvert など）と地下を外す
@@ -566,6 +570,8 @@ function convert(id, osm, frame, noBike = []) {
 
   // 橋・高架・屋根付きの道（駅の歩行者デッキなど）。スタートとゴールには選ばない
   const elevated = new WeakSet();
+  const bridges = new Set();
+  const lowRoads = new Set();
 
   for (const el of osm.elements) {
     const tags = el.tags ?? {};
@@ -588,6 +594,10 @@ function convert(id, osm, frame, noBike = []) {
           if (tags.name) road.n = tags.name;
           roads.push(road);
           if ((tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.covered === 'yes') elevated.add(road);
+          // 橋・高架（3D版で持ち上げる。高さは processSection で、下に何を越えるかで決める）
+          if ((tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0) bridges.add(road);
+          // 地面より低い道（ガード下など）
+          if (Number(tags.layer) < 0 || (tags.tunnel && tags.tunnel !== 'no')) lowRoads.add(road);
         }
       }
     }
@@ -699,7 +709,51 @@ function convert(id, osm, frame, noBike = []) {
     goalOffset: goal.d,
     route: legalRouteLength(roads, start, goal),
   };
-  return { data, info };
+  return { data, info, bridges, lowRoads };
+}
+
+// 3D版で持ち上げる道路（橋・高架）の高さ m を e に入れる。地面の高さを走る線路や道路の上を越えるなら高い橋、
+// それ以外（川、切り通しの線路、地下の道、高架の線路の下をくぐる所）は低い橋とする。
+// 東京の山手線は切り通し（目白・目黒など）や高架が多く、そこをまたぐ道は地面とほぼ同じ高さを通る
+const BRIDGE_HIGH_M = 5.5;
+const BRIDGE_LOW_M = 1;
+function segmentsCross(ax, ay, bx, by, cx, cy, dx, dy) {
+  const d = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
+  if (Math.abs(d) < 1e-9) return false;
+  const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / d;
+  const u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / d;
+  return t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98;
+}
+function setBridgeHeights(roads, bridges, lowRoads, lines) {
+  // 越えると高い橋になる線：地面の高さの線路（高架・切り通しでない）と、地面の高さの道路（橋・地下でない）
+  const under = [
+    ...lines.filter((l) => l.k !== 'river' && !l.e && !l.u && !lowLines.has(l)).map((l) => l.p),
+    ...roads.filter((r) => !bridges.has(r) && !lowRoads.has(r)).map((r) => r.p),
+  ];
+  const boxOf = (p) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < p.length; i += 2) (x0 = Math.min(x0, p[i])), (x1 = Math.max(x1, p[i])), (y0 = Math.min(y0, p[i + 1])), (y1 = Math.max(y1, p[i + 1]));
+    return [x0, y0, x1, y1];
+  };
+  const underBoxes = under.map(boxOf);
+  for (const r of bridges) {
+    const [x0, y0, x1, y1] = boxOf(r.p);
+    let high = false;
+    for (let k = 0; k < under.length && !high; k++) {
+      const b = underBoxes[k];
+      if (b[0] > x1 || b[2] < x0 || b[1] > y1 || b[3] < y0) continue;
+      const q = under[k];
+      for (let i = 0; i + 3 < r.p.length && !high; i += 2) {
+        for (let j = 0; j + 3 < q.length; j += 2) {
+          if (segmentsCross(r.p[i], r.p[i + 1], r.p[i + 2], r.p[i + 3], q[j], q[j + 1], q[j + 2], q[j + 3])) {
+            high = true;
+            break;
+          }
+        }
+      }
+    }
+    r.e = high ? BRIDGE_HIGH_M : BRIDGE_LOW_M;
+  }
 }
 
 async function processSection(id, refresh) {
@@ -708,9 +762,10 @@ async function processSection(id, refresh) {
   const osm = await loadOsm(id, 'roads', frame.bbox, refresh);
   const noBikeOsm = await loadOsm('all', 'nobike', '', refresh);
   const noBike = noBikeOsm.elements.filter((e) => e.geometry).map((e) => e.geometry.flatMap((g) => frame.toXY(g.lat, g.lon)));
-  const { data, info } = convert(id, osm, frame, noBike);
+  const { data, info, bridges, lowRoads } = convert(id, osm, frame, noBike);
   data.landmarks = selectLandmarks(await loadOsm(id, 'landmarks', frame.bbox, refresh), frame);
   Object.assign(data, convertAreas(await loadOsm(id, 'areas', frame.bbox, refresh), frame, data.bounds));
+  setBridgeHeights(data.roads, bridges, lowRoads, data.lines);
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });

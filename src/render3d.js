@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { signalState } from './obstacles.js';
 import { pointAt, frontDistance, carCount, ELEVATED_H } from './trainpath.js';
-import { AREA_COLORS, LINE_STYLES, cellKey } from './map.js';
+import { AREA_COLORS, LINE_STYLES, cellKey, nodeKey, surfaceAt } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
 
 // 夕暮れ：空は上ほど濃い紺、地平線は赤みのある紫。霧は地平線の色に合わせて遠くを溶かす
@@ -229,16 +229,16 @@ function addDeck(b, p, w, y) {
 }
 
 // 高架橋の柱の位置（線に沿って PILLAR_SPACING m おき）
-function pillarSpots(p) {
+function pillarSpots(p, spacing = PILLAR_SPACING) {
   const spots = [];
-  let next = PILLAR_SPACING / 2, walked = 0;
+  let next = spacing / 2, walked = 0;
   for (let i = 0; i + 3 < p.length; i += 2) {
     const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
     const len = Math.hypot(x2 - x1, z2 - z1);
     while (next <= walked + len) {
       const t = (next - walked) / len;
-      spots.push([x1 + (x2 - x1) * t, z1 + (z2 - z1) * t]);
-      next += PILLAR_SPACING;
+      spots.push([x1 + (x2 - x1) * t, z1 + (z2 - z1) * t, i / 2, t]); // 位置と、どの線分のどこか
+      next += spacing;
     }
     walked += len;
   }
@@ -304,13 +304,165 @@ const hex = (s) => new THREE.Color(s);
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide, ...opts });
 
 // 区間の地図から、動かない物（地面・道路・建物など）をまとめた立体を作る
+// ---- 道路の橋・高架 ----
+// 地図データの道路の e（橋・高架の高さ m）から、道路の点ごとの高さを決める。
+// OSM で「橋」になっているのは線路や道路の上の部分だけで、手前の上り坂は普通の道として描かれていることが多い。
+// そこで、橋の点の高さを、つながる道に沿って一定の勾配（RAMP_SLOPE）で下げていき、手前の道を坂にする
+// （橋の下をくぐる道は橋とつながっていないので、高さは変わらない）
+const RAMP_SLOPE = 0.11; // 坂の勾配（高さ 5.5m の橋なら、手前 50m かけて上る）
+const ROAD_DECK_T = 0.9;
+const ROAD_PILLAR_SPACING = 14;
+
+function computeRoadHeights(map) {
+  const nodeH = new Map(); // 点（座標）→ 高さ
+  const key = (r, v) => nodeKey(r.p[2 * v], r.p[2 * v + 1]);
+  // 橋の点は橋の高さに固定。ただし、どこにもつながっていない端は固定せず、橋の中で坂にする
+  // （駐車場の一部などが孤立した橋として描かれていて、宙に浮いてしまうため）
+  const fixed = new Set();
+  for (const r of map.roads) {
+    if (!r.e) continue;
+    const n = r.p.length / 2;
+    for (let v = 0; v < n; v++) {
+      const k = key(r, v);
+      const end = v === 0 || v === n - 1;
+      if (end && !(map.nodes.get(k) ?? []).some((o) => o.road !== r)) continue;
+      nodeH.set(k, Math.max(nodeH.get(k) ?? 0, r.e));
+      fixed.add(k);
+    }
+  }
+  // 高い点から順に、となりの点へ「高さ − 距離 × 勾配」を伝える（高さの大きい順に取り出すヒープ）
+  const heap = [];
+  const push = (item) => {
+    heap.push(item);
+    for (let i = heap.length - 1; i > 0; ) {
+      const pa = (i - 1) >> 1;
+      if (heap[pa][1] >= heap[i][1]) break;
+      [heap[pa], heap[i]] = [heap[i], heap[pa]];
+      i = pa;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      for (let i = 0; ; ) {
+        const l = 2 * i + 1, rr = l + 1;
+        let m = i;
+        if (l < heap.length && heap[l][1] > heap[m][1]) m = l;
+        if (rr < heap.length && heap[rr][1] > heap[m][1]) m = rr;
+        if (m === i) break;
+        [heap[m], heap[i]] = [heap[i], heap[m]];
+        i = m;
+      }
+    }
+    return top;
+  };
+  for (const entry of nodeH) push(entry);
+  while (heap.length) {
+    const [k, h] = pop();
+    if (h < (nodeH.get(k) ?? 0)) continue;
+    for (const { road, v } of map.nodes.get(k) ?? []) {
+      for (const w of [v - 1, v + 1]) {
+        if (w < 0 || w >= road.p.length / 2) continue;
+        const nk = key(road, w);
+        if (fixed.has(nk)) continue;
+        const nh = h - Math.hypot(road.p[2 * w] - road.p[2 * v], road.p[2 * w + 1] - road.p[2 * v + 1]) * RAMP_SLOPE;
+        if (nh > 0.05 && nh > (nodeH.get(nk) ?? 0)) {
+          nodeH.set(nk, nh);
+          push([nk, nh]);
+        }
+      }
+    }
+  }
+  const heights = new Map(); // 道路 → 点ごとの高さ（Float32Array）。どこも高さ 0 の道路は入れない
+  for (const r of map.roads) {
+    const n = r.p.length / 2;
+    let any = false;
+    const hs = new Float32Array(n);
+    for (let v = 0; v < n; v++) {
+      hs[v] = nodeH.get(key(r, v)) ?? 0;
+      if (hs[v] > 0) any = true;
+    }
+    if (any) heights.set(r, hs);
+  }
+  return heights;
+}
+
+// 道路 road の点 v と次の点のあいだ、割合 t（0〜1）の高さ
+function roadHeightAt(heights, road, v, t) {
+  const hs = heights.get(road);
+  if (!hs) return 0;
+  const a = hs[Math.max(0, Math.min(hs.length - 1, v))], b = hs[Math.max(0, Math.min(hs.length - 1, v + 1))];
+  return a + (b - a) * t;
+}
+
+// 線分 seg（map.js の surfaceAt の segs の 1 つ）の上の、地点 (x, y) の高さ
+function segHeight(heights, seg, x, y) {
+  const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 ? Math.max(0, Math.min(1, ((x - seg.x1) * dx + (y - seg.y1) * dy) / len2)) : 0;
+  return roadHeightAt(heights, seg.road, seg.v, t);
+}
+
+// 地点 (x, y) の高さ。橋と下の道が重なる所では、直前の高さ prev に近い方を選ぶ（急に上下に飛ばないように）
+function groundHeight(heights, segs, x, y, prev) {
+  if (!segs?.length) return 0;
+  let best = 0, bestD = Infinity;
+  for (const s of segs) {
+    const h = segHeight(heights, s, x, y);
+    const d = prev == null ? h : Math.abs(h - prev);
+    if (d < bestD) (bestD = d), (best = h);
+  }
+  return best;
+}
+
+// 高さの変わる帯（橋の道路の上面）
+function addRibbonH(b, p, w, hs, lift) {
+  const hw = w / 2;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const y1 = hs[i / 2] + lift, y2 = hs[i / 2 + 1] + lift;
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    if (len < 1e-6) continue;
+    const nx = (-(z2 - z1) / len) * hw, nz = ((x2 - x1) / len) * hw;
+    const a = [x1 + nx, y1, z1 + nz], bb = [x1 - nx, y1, z1 - nz], c = [x2 - nx, y2, z2 - nz], d = [x2 + nx, y2, z2 + nz];
+    b.tri(a, c, bb, UP);
+    b.tri(a, d, c, UP);
+  }
+  for (let i = 2; i + 2 < p.length; i += 2) addDisc(b, p[i], p[i + 1], hw, hs[i / 2] + lift, 8);
+}
+
+// 橋の側面と裏（地面より上にある所だけ）
+function addRoadDeckSides(b, p, w, hs) {
+  const hw = w / 2;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const y1 = hs[i / 2], y2 = hs[i / 2 + 1];
+    if (y1 < 0.5 && y2 < 0.5) continue;
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    if (len < 1e-6) continue;
+    const nx = -(z2 - z1) / len, nz = (x2 - x1) / len;
+    const b1 = Math.max(0.05, y1 - ROAD_DECK_T), b2 = Math.max(0.05, y2 - ROAD_DECK_T);
+    for (const side of [1, -1]) {
+      const ox = nx * hw * side, oz = nz * hw * side;
+      const n = [nx * side, 0, nz * side];
+      b.tri([x1 + ox, y1, z1 + oz], [x2 + ox, y2, z2 + oz], [x2 + ox, b2, z2 + oz], n);
+      b.tri([x1 + ox, y1, z1 + oz], [x2 + ox, b2, z2 + oz], [x1 + ox, b1, z1 + oz], n);
+    }
+    // 裏
+    b.tri([x1 + nx * hw, b1, z1 + nz * hw], [x2 - nx * hw, b2, z2 - nz * hw], [x1 - nx * hw, b1, z1 - nz * hw], [0, -1, 0]);
+    b.tri([x1 + nx * hw, b1, z1 + nz * hw], [x2 + nx * hw, b2, z2 + nz * hw], [x2 - nx * hw, b2, z2 - nz * hw], [0, -1, 0]);
+  }
+}
+
 // 街灯：幅 STREETLIGHT_MIN_W m 以上の車道に、STREETLIGHT_SPACING m おきに道の片側に立てる
 const STREETLIGHT_MIN_W = 8;
 const STREETLIGHT_SPACING = 32;
 const STREETLIGHT_H = 6.5;
 const LAMP_COLOR = 0xffd9a0;
 
-function streetLights(map) {
+function streetLights(map, heights) {
   const spots = [];
   for (const r of map.roads) {
     if (r.path || r.w < STREETLIGHT_MIN_W) continue;
@@ -324,7 +476,7 @@ function streetLights(map) {
       while (next <= walked + len) {
         const t = (next - walked) / len;
         const off = r.w / 2 + 0.8;
-        spots.push([x1 + (x2 - x1) * t + nx * off, z1 + (z2 - z1) * t + nz * off]);
+        spots.push([x1 + (x2 - x1) * t + nx * off, z1 + (z2 - z1) * t + nz * off, roadHeightAt(heights, r, i / 2, t)]);
         next += STREETLIGHT_SPACING;
       }
       walked += len;
@@ -333,8 +485,8 @@ function streetLights(map) {
   return spots;
 }
 
-function addStreetLights(group, map) {
-  const spots = streetLights(map);
+function addStreetLights(group, map, heights) {
+  const spots = streetLights(map, heights);
   if (!spots.length) return;
   const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, STREETLIGHT_H, 6), mat(0x4a4f5a), spots.length);
   const lamp = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 10, 8), new THREE.MeshBasicMaterial({ color: LAMP_COLOR }), spots.length);
@@ -347,12 +499,26 @@ function addStreetLights(group, map) {
     spots.length,
   );
   const m = new THREE.Matrix4();
-  spots.forEach(([x, z], i) => {
-    pole.setMatrixAt(i, m.makeTranslation(x, STREETLIGHT_H / 2, z));
-    lamp.setMatrixAt(i, m.makeTranslation(x, STREETLIGHT_H + 0.1, z));
-    pool.setMatrixAt(i, m.makeTranslation(x, Y.signal - 0.01, z));
+  spots.forEach(([x, z, h], i) => {
+    pole.setMatrixAt(i, m.makeTranslation(x, h + STREETLIGHT_H / 2, z));
+    lamp.setMatrixAt(i, m.makeTranslation(x, h + STREETLIGHT_H + 0.1, z));
+    pool.setMatrixAt(i, m.makeTranslation(x, h + Y.signal - 0.01, z));
   });
   group.add(pole, lamp, pool);
+}
+
+// 道路 r の線分のうち、地点 (x, z) にいちばん近いもの（segHeight に渡す形）
+function nearestSeg(map, r, x, z) {
+  let best = null, bestD = Infinity;
+  for (let i = 0; i + 3 < r.p.length; i += 2) {
+    const s = { x1: r.p[i], y1: r.p[i + 1], x2: r.p[i + 2], y2: r.p[i + 3], road: r, v: i / 2 };
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+    const len2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((x - s.x1) * dx + (z - s.y1) * dy) / len2));
+    const d = Math.hypot(x - (s.x1 + t * dx), z - (s.y1 + t * dy));
+    if (d < bestD) (bestD = d), (best = s);
+  }
+  return best;
 }
 
 // textures：窓のテクスチャ（windowTextures）
@@ -406,13 +572,41 @@ function buildWorld(map, textures) {
   }
 
   // 道路（歩道・車道）と一方通行の矢印
-  const paths = new GeometryBuilder(), roads = new GeometryBuilder(), arrows = new GeometryBuilder();
-  for (const r of map.roads) addRibbon(r.path ? paths : roads, r.p, r.w, r.path ? Y.path : Y.road);
+  const roadHeights = computeRoadHeights(map); // 道路の高さ（建物の高さとは別）
+  const paths = new GeometryBuilder(), roads = new GeometryBuilder(), arrows = new GeometryBuilder(), roadDeck = new GeometryBuilder();
+  const roadPillars = [];
+  for (const r of map.roads) {
+    const b = r.path ? paths : roads;
+    const lift = r.path ? Y.path : Y.road;
+    const hs = roadHeights.get(r);
+    if (!hs) {
+      addRibbon(b, r.p, r.w, lift);
+      continue;
+    }
+    // 橋・高架：坂のついた上面、側面と裏、高い所には柱
+    addRibbonH(b, r.p, r.w, hs, lift);
+    addRoadDeckSides(roadDeck, r.p, r.w, hs);
+    for (const [x, z, v, t] of pillarSpots(r.p, ROAD_PILLAR_SPACING)) {
+      const h = roadHeightAt(roadHeights, r, v, t);
+      if (h > 2.5) roadPillars.push([x, z, h - ROAD_DECK_T]);
+    }
+  }
+  const roadDeckMesh = new THREE.Mesh(roadDeck.build(), mat(DECK_COLOR));
+  roadDeckMesh.castShadow = roadDeckMesh.receiveShadow = true;
+  group.add(roadDeckMesh);
+  if (roadPillars.length) {
+    const pillar = new THREE.InstancedMesh(new THREE.BoxGeometry(0.9, 1, 0.9), mat(DECK_COLOR), roadPillars.length);
+    const m = new THREE.Matrix4();
+    roadPillars.forEach(([x, z, h], i) => pillar.setMatrixAt(i, m.makeTranslation(x, h / 2, z).multiply(new THREE.Matrix4().makeScale(1, h, 1))));
+    pillar.castShadow = true;
+    group.add(pillar);
+  }
   for (const r of map.roads) {
     for (const [x, z, angle] of r.arrows) {
       // 2D版と同じ矢じりの形（長さ約 3.6m）。angle は北が 0、時計回り
       const s = Math.sin(angle), c = Math.cos(angle);
-      const at = (u, v) => [x + u * c - v * s, Y.arrow, z + u * s + v * c];
+      const ay = Y.arrow + (roadHeights.has(r) ? groundHeight(roadHeights, [nearestSeg(map, r, x, z)], x, z, null) : 0);
+      const at = (u, v) => [x + u * c - v * s, ay, z + u * s + v * c];
       arrows.tri(at(0, -2.2), at(-1.6, 1.4), at(0, 0.6), UP);
       arrows.tri(at(0, -2.2), at(0, 0.6), at(1.6, 1.4), UP);
     }
@@ -457,9 +651,9 @@ function buildWorld(map, textures) {
     tiles.set(key, mesh);
     group.add(mesh);
   }
-  group.userData = { tiles, heights, tileOf };
+  group.userData = { tiles, heights, tileOf, roadHeights };
 
-  addStreetLights(group, map);
+  addStreetLights(group, map, roadHeights);
 
   // ゴール：地面の輪と、遠くから見える光の柱
   const g = map.goal;
@@ -528,9 +722,9 @@ function makeBike(color = 0xffcc33, nose = 0xe8443a, opacity = 1) {
 }
 
 // 自転車を pose（x, y, angle）に置き、速さ speed（m/s）に合わせて車輪を回し足をこがせ、曲がる速さに合わせて傾ける
-function animateBike(bike, pose, speed, dt) {
+function animateBike(bike, pose, speed, dt, h = 0) {
   const s = bike.userData;
-  bike.position.set(pose.x, 0, pose.y);
+  bike.position.set(pose.x, h, pose.y);
   bike.rotation.y = -pose.angle;
   if (s.prevAngle === null || dt <= 0) s.prevAngle = pose.angle;
   const turn = dt > 0 ? Math.atan2(Math.sin(pose.angle - s.prevAngle), Math.cos(pose.angle - s.prevAngle)) / dt : 0;
@@ -624,6 +818,7 @@ export function createRenderer3D(canvas) {
   player.traverse((m) => m.isMesh && (m.castShadow = true));
   scene.add(player, ghost);
   let ghostPrev = null; // ゴーストの速さを求めるための前回の位置
+  let bikeH = 0, ghostH = 0; // 自転車・ゴーストの高さ m（橋の上で上がる）
   const train = [];
   const trainGroup = new THREE.Group();
   scene.add(trainGroup);
@@ -671,13 +866,16 @@ export function createRenderer3D(canvas) {
     signalMeshes.obs = obs;
     for (const g of obs.signals) {
       for (const [x, z] of g.nodes) {
+        // 橋や坂の上の交差点なら、その高さに置く（重なる道路のうち一番高いもの）
+        const segs = surfaceAt(worldMap, x, z).segs ?? [];
+        const h = Math.max(0, ...segs.map((sg) => segHeight(world.userData.roadHeights, sg, x, z)));
         const pad = new THREE.Mesh(new THREE.CircleGeometry(2.2, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }));
         pad.rotation.x = -Math.PI / 2;
-        pad.position.set(x, Y.signal, z);
+        pad.position.set(x, h + Y.signal + (h > 0 ? 0.35 : 0), z); // 坂の上では少し浮かせる（平らな円が坂に埋もれないように）
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 4.2, 6), mat(0x5a606b));
-        pole.position.set(x + 2.6, 2.1, z);
+        pole.position.set(x + 2.6, h + 2.1, z);
         const light = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-        light.position.set(x + 2.6, 4.4, z);
+        light.position.set(x + 2.6, h + 4.4, z);
         signalGroup.add(pad, pole, light);
         signalMeshes.push({ group: g, pad, light });
       }
@@ -705,7 +903,11 @@ export function createRenderer3D(canvas) {
         agentMeshes.set(a, m);
         agentGroup.add(m);
       }
-      m.position.set(a.x, 0, a.y);
+      // 乗っている道路の高さ（橋の上の車・歩行者）
+      const segLen = Math.hypot(a.road.p[2 * (a.v + a.dir)] - a.road.p[2 * a.v], a.road.p[2 * (a.v + a.dir) + 1] - a.road.p[2 * a.v + 1]) || 1;
+      const t = Math.max(0, Math.min(1, a.s / segLen));
+      const h = a.dir > 0 ? roadHeightAt(world.userData.roadHeights, a.road, a.v, t) : roadHeightAt(world.userData.roadHeights, a.road, a.v - 1, 1 - t);
+      m.position.set(a.x, Number.isFinite(h) ? h : 0, a.y);
       m.rotation.y = -(a.angle ?? 0);
     }
   }
@@ -742,7 +944,7 @@ export function createRenderer3D(canvas) {
     const { tiles, heights, tileOf } = world.userData;
     const p = game.player;
     const ax = camera.position.x, ay = camera.position.y, az = camera.position.z;
-    const bx = p.x, by = 1.5, bz = p.y;
+    const bx = p.x, by = bikeH + 1.5, bz = p.y;
     const len = Math.hypot(bx - ax, bz - az);
     const steps = Math.max(2, Math.ceil(len / 1.5));
     const fade = new Set();
@@ -803,8 +1005,9 @@ export function createRenderer3D(canvas) {
     // 曲がっている方向を先に見る
     const look = camAngle + Math.max(-0.5, Math.min(0.5, cam.turnRate * LEAN_INTO_TURN));
     const lx = Math.sin(look), lz = -Math.cos(look);
-    camera.position.set(p.x - fx * cam.back, cam.up, p.y - fz * cam.back);
-    camera.lookAt(p.x + lx * cam.ahead, cameraMode === 'first' ? 1.5 : 1, p.y + lz * cam.ahead);
+    // 橋の上では自転車と一緒にカメラも上がる
+    camera.position.set(p.x - fx * cam.back, bikeH + cam.up, p.y - fz * cam.back);
+    camera.lookAt(p.x + lx * cam.ahead, bikeH + (cameraMode === 'first' ? 1.5 : 1), p.y + lz * cam.ahead);
     if (Math.abs(camera.fov - cam.fov) > 0.01) {
       camera.fov = cam.fov;
       camera.updateProjectionMatrix();
@@ -892,12 +1095,17 @@ export function createRenderer3D(canvas) {
       if (game.map !== worldMap) setMap(game.map);
 
       const p = game.player;
-      animateBike(player, p, game.state === 'racing' ? p.speed : 0, dt);
+      // 自転車の高さ：今いる道路（橋の上なら橋の高さ）。急に変わらないよう少しなめらかにする
+      const rh = world.userData.roadHeights;
+      const targetH = groundHeight(rh, game.surface.segs, p.x, p.y, bikeH);
+      bikeH = game.state === 'racing' ? bikeH + (targetH - bikeH) * Math.min(1, 12 * dt) : targetH;
+      animateBike(player, p, game.state === 'racing' ? p.speed : 0, dt, bikeH);
       ghost.visible = Boolean(game.ghostPose);
       if (game.ghostPose) {
         const gp = game.ghostPose;
         const gs = ghostPrev && dt > 0 ? Math.hypot(gp.x - ghostPrev.x, gp.y - ghostPrev.y) / dt : 0;
-        animateBike(ghost, gp, Math.min(gs, 20), dt);
+        ghostH = groundHeight(world.userData.roadHeights, surfaceAt(worldMap, gp.x, gp.y).segs, gp.x, gp.y, ghostH);
+        animateBike(ghost, gp, Math.min(gs, 20), dt, ghostH);
         ghostPrev = { x: gp.x, y: gp.y };
       } else {
         ghostPrev = null;
@@ -917,6 +1125,12 @@ export function createRenderer3D(canvas) {
       syncAgents(game.obstacles);
       syncTrain(game);
       placeCamera(game, dt);
+      // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
+      const dc = window.render3d?.debugCamera;
+      if (dc) {
+        camera.position.set(...dc.pos);
+        camera.lookAt(...dc.look);
+      }
       sky.position.copy(camera.position);
       locateGoal(game);
       locateLandmarks(game);
