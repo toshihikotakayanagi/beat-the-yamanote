@@ -95,6 +95,50 @@ function drawGoalPointer3D(ctx, game, view) {
   text(ctx, dist, ax - dx * 26, ay - dy * 26 + 5, { size: 12, weight: 'bold', color: GOAL_GREEN, align: 'center' });
 }
 
+// ---- 時間帯と天気 ----
+export const TIME_NAMES = { day: '昼', evening: '夕方', night: '夜' };
+export const WEATHER_NAMES = { clear: '晴れ', rain: '雨', snow: '雪' };
+
+// 2D版：時間帯で地図に色を重ねる（夕方が今までの見た目）
+const TIME_TINT = { day: 'rgba(210, 225, 245, 0.10)', evening: null, night: 'rgba(5, 10, 35, 0.45)' };
+
+// 雨・雪の粒を画面に描く（2D版・3D版とも）。粒の位置は番号と時刻から決まる（覚えておく必要がない）
+const RAIN_DROPS = 260, SNOW_FLAKES = 170;
+function drawWeather(ctx, game, view) {
+  const t = performance.now() / 1000;
+  const hash = (i, k) => {
+    const x = Math.sin(i * 127.1 + k * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+  if (game.weather === 'rain') {
+    ctx.strokeStyle = 'rgba(190, 205, 230, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < RAIN_DROPS; i++) {
+      const speed = 900 + hash(i, 1) * 500; // px/秒
+      const x = (hash(i, 2) * (view.w + 200) + t * speed * 0.18) % (view.w + 200) - 100;
+      const y = (hash(i, 3) * view.h + t * speed) % (view.h + 40) - 20;
+      const len = 10 + hash(i, 4) * 12;
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - len * 0.18, y - len);
+    }
+    ctx.stroke();
+  } else if (game.weather === 'snow') {
+    ctx.fillStyle = 'rgba(245, 248, 255, 0.8)';
+    ctx.beginPath();
+    for (let i = 0; i < SNOW_FLAKES; i++) {
+      const speed = 40 + hash(i, 1) * 50;
+      const sway = Math.sin(t * (0.6 + hash(i, 5)) + i) * 18;
+      const x = (hash(i, 2) * view.w + sway + view.w) % view.w;
+      const y = (hash(i, 3) * view.h + t * speed) % (view.h + 10) - 5;
+      const r = 1 + hash(i, 4) * 1.8;
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+    }
+    ctx.fill();
+  }
+}
+
 // 画面上部：駅から駅への線の上に、電車（上）と自転車（下）の進み具合を出す
 function drawRaceBar(ctx, game, view) {
   const x0 = 56, x1 = view.w - 56, y = 52;
@@ -263,7 +307,7 @@ function drawTitle(ctx, game, view) {
 function drawHowto(ctx, game, view) {
   const controls = game.touch
     ? '画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）'
-    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト${game.mode === '3d' ? '　C：視点' : ''}`;
+    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト　T：時間帯　Y：天気${game.mode === '3d' ? '　C：視点' : ''}`;
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
     ['電車（上のバーの黄緑）より先に、緑の円のゴールへ', { size: 16 }],
@@ -338,6 +382,13 @@ function drawReady(ctx, game, view) {
   }
 
   const section = game.sections[game.sectionIndex];
+  // 時間帯と天気（見た目と音だけ。タップかキーで切り替え）
+  lines.push({
+    cells: [
+      { title: `時間帯：${TIME_NAMES[game.timeOfDay]}`, note: game.touch ? 'タップで切り替え' : 'T で切り替え', color: TEXT, noteColor: QUIET, action: 'time' },
+      { title: `天気：${WEATHER_NAMES[game.weather]}`, note: game.touch ? 'タップで切り替え' : 'Y で切り替え', color: TEXT, noteColor: QUIET, action: 'weather' },
+    ],
+  });
   lines.push([`◀  難易度：${DIFFICULTIES[game.difficulty].name}  ▶`, { size: 17, weight: 'bold', color: YAMANOTE_GREEN }, 'difficulty']);
   if (!game.isUnlocked(game.sectionIndex)) {
     // あと何区間勝てば遊べるかと、次に遊ぶ区間への移動
@@ -581,6 +632,13 @@ export function drawHud(ctx, game, view) {
     // スマホのレース中は画面下の操作ボタン（高さ約 100px）の裏に隠れる
     if (game.touch) avoid.push({ x0: 0, y0: view.h - 104, x1: view.w, y1: view.h });
   }
+  // 2D版：時間帯の色を地図の上に重ねる
+  if (view.tint && TIME_TINT[game.timeOfDay]) {
+    ctx.fillStyle = TIME_TINT[game.timeOfDay];
+    ctx.fillRect(0, 0, view.w, view.h);
+  }
+  // 雨・雪（メニュー画面でも降らせる）
+  drawWeather(ctx, game, view);
   // メニュー画面では出さない（暗くした地図の上でも文字が読めてしまい、メニューの文字と紛れる）
   if (!menu && view.landmarks3d) drawLandmarks3D(ctx, game, view, avoid);
   else if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);

@@ -11,7 +11,7 @@ const BACKGROUND = '#1b1d22';
 export function createRenderer2D() {
   return {
     mode: '2d',
-    hud: { ppm: 1, landmarks: true, goalPointer: true },
+    hud: { ppm: 1, landmarks: true, goalPointer: true, tint: true }, // tint：時間帯で画面全体に色を重ねる（hud.js）
 
     resize(w, h) {
       this.hud.ppm = Math.min(w, h) / VIEW_METERS; // CSS ピクセル / m

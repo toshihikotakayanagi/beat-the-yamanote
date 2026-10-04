@@ -442,6 +442,19 @@ function setShowGhost(show) {
   save('showGhost', show ? 1 : 0);
 }
 
+// 時間帯と天気（見た目と音だけ。記録には影響しない）
+const TIMES_OF_DAY = ['day', 'evening', 'night'];
+const WEATHERS = ['clear', 'rain', 'snow'];
+function setAtmosphere(time, weather) {
+  game.timeOfDay = TIMES_OF_DAY.includes(time) ? time : 'evening';
+  game.weather = WEATHERS.includes(weather) ? weather : 'clear';
+  renderer.setAtmosphere?.(game.timeOfDay, game.weather);
+  audio.setRain(game.weather === 'rain');
+  save('timeOfDay', game.timeOfDay);
+  save('weather', game.weather);
+}
+const cycle = (list, v) => list[(list.indexOf(v) + 1) % list.length];
+
 function setMuted(muted) {
   game.muted = muted;
   audio.setMuted(muted);
@@ -460,6 +473,10 @@ function act(action, x = null) {
     else if (s === 'ready' && !isUnlocked(game.sectionIndex)) selectSection(nextToPlay(game.sectionIndex));
   } else if (action === 'howto') {
     game.state = 'howto';
+  } else if (action === 'time') {
+    setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
+  } else if (action === 'weather') {
+    setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
   } else if (action === 'switch') {
     // 2D版と3D版の切り替え（記録はブラウザに保存してあるので、どちらでも同じ）
     location.href = renderer.mode === '3d' ? 'index.html' : '3d.html';
@@ -508,6 +525,10 @@ window.addEventListener('keydown', (e) => {
     setMuted(!game.muted);
   } else if (e.code === 'KeyG') {
     setShowGhost(!game.showGhost);
+  } else if (e.code === 'KeyT') {
+    act('time');
+  } else if (e.code === 'KeyY') {
+    act('weather');
   } else if (e.code === 'KeyC' && renderer.nextCamera) {
     switchCamera();
   } else if (e.code === 'KeyH' && s === 'title') {
@@ -601,6 +622,7 @@ export async function startGame(r) {
   window.addEventListener('resize', resize);
   resize();
   setMuted(load('muted') === '1');
+  setAtmosphere(load('timeOfDay'), load('weather'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
   if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;

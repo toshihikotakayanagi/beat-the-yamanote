@@ -26,6 +26,7 @@ export function unlock() {
     });
   }
   if (ctx.state === 'suspended') ctx.resume();
+  if (rainWanted && !rain) setTimeout(() => setRain(true), 50); // 雨を選んでいたら鳴らし始める
 }
 
 export function setMuted(value) {
@@ -208,6 +209,35 @@ export function trainSound(volume, speed) {
     clack(nextClick + pair, v * 0.4);
     nextClick += interval;
   }
+}
+
+// 雨の音：高めのノイズをずっと鳴らす（天気が雨のとき）。音を鳴らせるようになる前に決めた場合も覚えておく
+let rainWanted = false;
+let rain = null; // { gain }
+export function setRain(on) {
+  rainWanted = on;
+  if (!ready()) return;
+  if (!rain) {
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 900;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 7000;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    src.connect(hp).connect(lp).connect(gain).connect(master);
+    src.start();
+    rain = { gain };
+  }
+  rain.gain.gain.setTargetAtTime(on ? 0.07 : 0, ctx.currentTime, 0.4);
 }
 
 // レース中の音楽：ベースとハイハットの 2 小節ループ。残り時間が少ないとテンポが上がる。

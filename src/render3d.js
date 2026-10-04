@@ -17,6 +17,35 @@ const SKY_HORIZON = 0x8a5a62;
 const SKY = 0x3a3450; // 霧と、空を描く前の背景の色
 const FOG_NEAR = 120;
 const FOG_FAR = 420;
+
+// 時間帯（昼・夕方・夜）ごとの空・霧・光・窓の灯り・街灯。夕方が最初の設定（上の SKY_* と同じ）
+const TIMES = {
+  day: {
+    sky: [0x3f78c4, 0x86afdf, 0xd3e1ee], fog: 0xb9cadb,
+    hemi: [0xffffff, 0x4a4640, 1.9], sun: [0xfff2dd, 2.3], sunDir: [-0.45, 1, 0.35],
+    glow: 0.05, lamps: false,
+  },
+  evening: {
+    sky: [SKY_TOP, SKY_MID, SKY_HORIZON], fog: SKY,
+    hemi: [0x9aa6d8, 0x2a2228, 1.5], sun: [0xffb07a, 1.5], sunDir: [-1, 0.35, 0.25],
+    glow: 0.9, lamps: true,
+  },
+  night: {
+    sky: [0x03050c, 0x0a0f1e, 0x1b1f36], fog: 0x0e1222,
+    hemi: [0x4a5a8a, 0x101014, 0.75], sun: [0x8b9cd0, 0.45], sunDir: [0.4, 1, -0.3],
+    glow: 1.35, lamps: true,
+  },
+};
+// 天気が空・霧・光をどう変えるか。gray：空と霧を灰色に寄せる割合、light：光の強さの倍率
+const WEATHERS = {
+  clear: { gray: 0, fogNear: FOG_NEAR, fogFar: FOG_FAR, light: 1 },
+  rain: { gray: 0.8, fogNear: 50, fogFar: 260, light: 0.65 },
+  snow: { gray: 0.7, fogNear: 60, fogFar: 300, light: 0.85, whiten: 0.25 },
+};
+// 街灯の灯りと足もとの明かり（すべての区間の立体で共有し、時間帯で明るさを変える）
+const LAMP_MAT = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
+const POOL_MAT = new THREE.MeshBasicMaterial({ color: 0x8a6a48, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
+let windowGlow = TIMES.evening.glow; // 新しく作る区間の窓の灯りの強さ
 const SKY_RADIUS = 440; // 空の球（カメラについて動く。描画範囲 FOG_FAR + 50 より内側に）
 const GROUND = 0x1f2228;
 const ROAD = 0x4a4f5a;
@@ -69,6 +98,7 @@ function makeSky() {
       }`,
   });
   const mesh = new THREE.Mesh(geo, material);
+  mesh.userData.uniforms = material.uniforms; // 時間帯で色を変える
   mesh.renderOrder = -1;
   mesh.frustumCulled = false;
   return mesh;
@@ -459,7 +489,6 @@ function addRoadDeckSides(b, p, w, hs) {
 const STREETLIGHT_MIN_W = 8;
 const STREETLIGHT_SPACING = 32;
 const STREETLIGHT_H = 6.5;
-const LAMP_COLOR = 0xffd9a0;
 
 function streetLights(map, heights) {
   const spots = [];
@@ -488,15 +517,11 @@ function addStreetLights(group, map, heights) {
   const spots = streetLights(map, heights);
   if (!spots.length) return;
   const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, STREETLIGHT_H, 6), mat(0x4a4f5a), spots.length);
-  const lamp = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 10, 8), new THREE.MeshBasicMaterial({ color: LAMP_COLOR }), spots.length);
+  const lamp = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 10, 8), LAMP_MAT, spots.length);
   // 足もとの明るい円（加算で重ねる）
   const poolGeo = new THREE.CircleGeometry(5.5, 24);
   poolGeo.rotateX(-Math.PI / 2);
-  const pool = new THREE.InstancedMesh(
-    poolGeo,
-    new THREE.MeshBasicMaterial({ color: 0x8a6a48, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }),
-    spots.length,
-  );
+  const pool = new THREE.InstancedMesh(poolGeo, POOL_MAT, spots.length);
   const m = new THREE.Matrix4();
   spots.forEach(([x, z, h], i) => {
     pole.setMatrixAt(i, m.makeTranslation(x, h + STREETLIGHT_H / 2, z));
@@ -673,7 +698,7 @@ function* buildWorldSteps(map, textures) {
       map: textures.color,
       emissiveMap: textures.glow,
       emissive: 0xffffff,
-      emissiveIntensity: 0.9,
+      emissiveIntensity: windowGlow,
     });
     const mesh = new THREE.Mesh(b.build(), material);
     mesh.castShadow = mesh.receiveShadow = true;
@@ -822,7 +847,8 @@ export function createRenderer3D(canvas) {
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(SKY, FOG_NEAR, FOG_FAR);
   // 夕暮れの光：空からの青みのある光と、西の低い位置からの赤みのある光
-  scene.add(new THREE.HemisphereLight(0x9aa6d8, 0x2a2228, 1.5));
+  const hemi = new THREE.HemisphereLight(0x9aa6d8, 0x2a2228, 1.5);
+  scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffb07a, 1.5);
   sun.position.set(-1, 0.35, 0.25);
   scene.add(sun, sun.target);
@@ -843,7 +869,7 @@ export function createRenderer3D(canvas) {
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.6;
   }
-  const SUN_DIR = new THREE.Vector3(-1, 0.35, 0.25).normalize();
+  const SUN_DIR = new THREE.Vector3(-1, 0.35, 0.25).normalize(); // 時間帯で変わる（setAtmosphere）
   const sky = makeSky();
   scene.add(sky);
   const textures = windowTextures(renderer.capabilities.getMaxAnisotropy());
@@ -1212,6 +1238,42 @@ export function createRenderer3D(canvas) {
     // （ゴールは光の柱とミニマップで分かる）
     hud: { ppm: 1, landmarks: false, goalPointer: false, goal3d: null, landmarks3d: null },
 
+    // 時間帯（day / evening / night）と天気（clear / rain / snow）。見た目だけで、走りやすさは変えない
+    setAtmosphere(time, weather) {
+      const t = TIMES[time] ?? TIMES.evening, w = WEATHERS[weather] ?? WEATHERS.clear;
+      const gray = new THREE.Color(0x8a8f99);
+      const tone = (hex, k = w.gray) => {
+        const c = new THREE.Color(hex);
+        // 灰色に寄せるときも、暗い時間帯は暗いままにする（明るさを保つ）
+        const g = gray.clone().multiplyScalar(c.getHSL({}).l * 1.6 + 0.1);
+        c.lerp(g, k);
+        if (w.whiten) c.lerp(new THREE.Color(0xdfe5ee), w.whiten * (time === 'night' ? 0.3 : 1));
+        return c;
+      };
+      const u = sky.userData.uniforms;
+      u.top.value.copy(tone(t.sky[0]));
+      u.mid.value.copy(tone(t.sky[1]));
+      u.horizon.value.copy(tone(t.sky[2]));
+      const fog = tone(t.fog);
+      scene.fog.color.copy(fog);
+      scene.fog.near = w.fogNear;
+      scene.fog.far = w.fogFar;
+      renderer.setClearColor(fog);
+      hemi.color.set(t.hemi[0]);
+      hemi.groundColor.set(t.hemi[1]);
+      hemi.intensity = t.hemi[2] * w.light;
+      sun.color.set(t.sun[0]);
+      sun.intensity = t.sun[1] * w.light * (weather === 'clear' ? 1 : 0.6);
+      SUN_DIR.set(...t.sunDir).normalize();
+      // 窓の灯り（今ある区間の立体すべてと、これから作る区間）
+      windowGlow = t.glow;
+      for (const wd of worlds.values()) for (const m of wd.group?.userData.tiles?.values() ?? []) m.material.emissiveIntensity = t.glow;
+      // 街灯：昼は消す。夜は足もとをより明るく
+      LAMP_MAT.color.set(t.lamps ? 0xffd9a0 : 0x6b6e75);
+      POOL_MAT.visible = t.lamps;
+      POOL_MAT.opacity = time === 'night' ? 0.6 : 0.35;
+    },
+
     // 区間の立体の準備（game.js から）：進み具合（できていれば null）と、先に作っておく
     progress(map) {
       return map ? progressOf(map) : null;
@@ -1278,11 +1340,9 @@ export function createRenderer3D(canvas) {
       } else {
         ghostPrev = null;
       }
-      if (shadows) {
-        // 影を付ける範囲を自転車について動かす
-        sun.target.position.set(p.x, 0, p.y);
-        sun.position.set(p.x + SUN_DIR.x * 300, SUN_DIR.y * 300, p.y + SUN_DIR.z * 300);
-      }
+      // 光の向き（時間帯で変わる）。影を付ける範囲も自転車について動かす
+      sun.target.position.set(p.x, 0, p.y);
+      sun.position.set(p.x + SUN_DIR.x * 300, SUN_DIR.y * 300, p.y + SUN_DIR.z * 300);
 
       syncSignals(game.obstacles);
       for (const s of signalMeshes) {
