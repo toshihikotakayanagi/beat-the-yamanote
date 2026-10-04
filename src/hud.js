@@ -53,6 +53,48 @@ function drawGoalPointer(ctx, game, view) {
   ctx.restore();
 }
 
+// 3D版：ゴールが画面に見えていれば光の柱の上に距離を、見えなければ画面の端に方向の矢印を出す。
+// view.goal3d はゴールの画面上の位置（render3d.js が毎回求める。behind：カメラの後ろ）
+function drawGoalPointer3D(ctx, game, view) {
+  const g = view.goal3d;
+  const top = 96, bottom = view.h - (game.touch ? 120 : 24), margin = 36;
+  const onScreen = !g.behind && g.x > margin && g.x < view.w - margin && g.y > top && g.y < bottom;
+  const dist = `${Math.round(game.distance)} m`;
+  ctx.fillStyle = GOAL_GREEN;
+  if (onScreen) {
+    // 下向きの三角と、ゴールまでの距離
+    const y = Math.max(top + 20, g.y - 26);
+    ctx.beginPath();
+    ctx.moveTo(g.x, y + 10);
+    ctx.lineTo(g.x - 9, y - 4);
+    ctx.lineTo(g.x + 9, y - 4);
+    ctx.closePath();
+    ctx.fill();
+    text(ctx, `ゴール ${dist}`, g.x, y - 10, { size: 13, weight: 'bold', color: GOAL_GREEN, align: 'center' });
+    return;
+  }
+  // 画面の中心からゴールの方向へ、画面の端（上下はバーと操作ボタンを避ける）まで伸ばした所に矢印
+  const cx = view.w / 2, cy = (top + bottom) / 2;
+  let dx = g.x - cx, dy = g.y - cy;
+  if (g.behind && dy < 0) dy = -dy; // 真後ろのときは下向き（振り返る方向）に出す
+  const len = Math.hypot(dx, dy) || 1;
+  dx /= len;
+  dy /= len;
+  const k = Math.min((view.w / 2 - margin) / Math.abs(dx || 1e-9), ((bottom - top) / 2 - 10) / Math.abs(dy || 1e-9));
+  const ax = cx + dx * k, ay = cy + dy * k;
+  ctx.save();
+  ctx.translate(ax, ay);
+  ctx.rotate(Math.atan2(dy, dx));
+  ctx.beginPath();
+  ctx.moveTo(16, 0);
+  ctx.lineTo(-9, -11);
+  ctx.lineTo(-9, 11);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  text(ctx, dist, ax - dx * 26, ay - dy * 26 + 5, { size: 12, weight: 'bold', color: GOAL_GREEN, align: 'center' });
+}
+
 // 画面上部：駅から駅への線の上に、電車（上）と自転車（下）の進み具合を出す
 function drawRaceBar(ctx, game, view) {
   const x0 = 56, x1 = view.w - 56, y = 52;
@@ -113,7 +155,8 @@ function drawAlerts(ctx, game, view) {
   const y = Math.max(150, view.h * 0.28, mm.y + mm.size + 30); // ミニマップより下に出す
   const maxWidth = view.w - 24;
   if (game.message) {
-    text(ctx, game.message.text, view.w / 2, y, { size: 26, weight: 'bold', color: '#ff6b5e', align: 'center', maxWidth });
+    const color = game.message.info ? TEXT : '#ff6b5e'; // info：お知らせ（視点の切り替えなど）は白
+    text(ctx, game.message.text, view.w / 2, y, { size: game.message.info ? 20 : 26, weight: 'bold', color, align: 'center', maxWidth });
     if (game.stopped > 0) {
       text(ctx, `${game.stopped.toFixed(1)} 秒`, view.w / 2, y + 30, { size: 16, color: TEXT, align: 'center' });
     }
@@ -220,7 +263,7 @@ function drawTitle(ctx, game, view) {
 function drawHowto(ctx, game, view) {
   const controls = game.touch
     ? '画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）'
-    : '矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト';
+    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト${game.mode === '3d' ? '　C：視点' : ''}`;
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
     ['電車（上のバーの黄緑）より先に、緑の円のゴールへ', { size: 16 }],
@@ -494,7 +537,8 @@ export function drawHud(ctx, game, view) {
   if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);
   // メニュー画面ではレース情報を出さない
   if (!menu) {
-    if (view.goalPointer !== false) drawGoalPointer(ctx, game, view);
+    if (view.goal3d) drawGoalPointer3D(ctx, game, view);
+    else if (view.goalPointer !== false) drawGoalPointer(ctx, game, view);
     drawRaceBar(ctx, game, view);
     drawStatus(ctx, game);
     drawMinimap(ctx, game, view);

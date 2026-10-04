@@ -486,6 +486,8 @@ window.addEventListener('keydown', (e) => {
     setMuted(!game.muted);
   } else if (e.code === 'KeyG') {
     setShowGhost(!game.showGhost);
+  } else if (e.code === 'KeyC' && renderer.nextCamera) {
+    switchCamera();
   } else if (e.code === 'KeyH' && s === 'title') {
     act('howto');
   } else if (e.code === 'KeyR') {
@@ -517,6 +519,18 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 // タッチ端末で操作ボタンを使ったときも、画面ボタン表示に切り替える
 window.addEventListener('touchstart', () => (game.touch = true), { passive: true });
+
+// 3D版の視点の切り替え（C キー・右上の「視点」ボタン）。切り替えたら名前を少しのあいだ出す
+const cameraButton = document.getElementById('camera');
+function switchCamera() {
+  const name = renderer.nextCamera();
+  game.message = { text: `視点：${name}`, timer: 1.5, info: true };
+  if (cameraButton) cameraButton.textContent = `視点：${name}`;
+}
+cameraButton?.addEventListener('click', () => {
+  audio.unlock();
+  switchCamera();
+});
 
 soundButton.addEventListener('click', () => {
   audio.unlock();
@@ -562,6 +576,7 @@ export async function startGame(r) {
   setMuted(load('muted') === '1');
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
+  if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;
   game.sections = await loadSections();
   game.droppedRecords = dropStaleRecords();
   loadCleared();

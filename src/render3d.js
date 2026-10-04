@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { signalState } from './obstacles.js';
 import { pointAt, frontDistance, carCount } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, cellKey } from './map.js';
+import { PLAYER_CONFIG } from './player.js';
 
 const SKY = 0x232a36;
 const FOG_NEAR = 120;
@@ -26,11 +27,20 @@ const TILE = 120;
 const SEE_THROUGH = 0.22; // 透かしたときの不透明度
 const FADE_SPEED = 6; // 透かす・戻すの速さ（1 秒あたり）
 
-// 追いかける視点
-const CAMERA_BACK = 13; // 自転車の後ろ m
-const CAMERA_UP = 6.5; // 高さ m
-const LOOK_AHEAD = 8; // 自転車の前方のこの位置を見る m
-const CAMERA_TURN = 4; // 向きの追従の速さ（大きいほど速く回る）
+// 視点（C キー・右上のボタンで切り替え）。数値は m、fov は画角（度）。
+//   chase：自転車の後ろ上から追いかける。遅いときや曲がっているときは高く上げて見下ろし、
+//          曲がる方向を先に見る（交差点の先が建物に隠れにくいように）。速いほど画角を広げて速さを出す
+//   high ：高めの斜め上から見下ろす（道を覚えるとき向き）
+//   first：自転車に乗った目線
+const CAMERAS = {
+  chase: { name: '追いかけ', back: [13, 10], up: [11, 6], turnUp: 4, ahead: [8, 16], fov: [58, 72], turn: 4 },
+  high: { name: '見下ろし', back: [18, 18], up: [34, 30], turnUp: 0, ahead: [10, 14], fov: [55, 60], turn: 3 },
+  first: { name: '自転車目線', back: [0, 0], up: [1.7, 1.7], turnUp: 0, ahead: [20, 28], fov: [70, 82], turn: 9 },
+};
+const CAMERA_ORDER = ['chase', 'high', 'first'];
+const CAMERA_EASE = 2.5; // 高さ・距離・画角の変わる速さ（1 秒あたり）
+const LEAN_INTO_TURN = 0.35; // 曲がっているとき、向きの変わる速さ（rad/s）× この秒数ぶん先を見る
+const STORAGE_KEY = 'yamanote-race:camera3d';
 
 // 建物の高さが分からないとき：床面積から決め、建物ごとに少しばらつかせる
 function guessHeight(area, i) {
@@ -325,6 +335,18 @@ export function createRenderer3D(canvas) {
   const signalGroup = new THREE.Group();
   scene.add(signalGroup);
   let camAngle = null;
+  let cameraMode = 'chase';
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (CAMERAS[saved]) cameraMode = saved;
+  } catch {
+    // 保存できない環境でも遊べる
+  }
+  const cam = { back: null, up: 0, ahead: 0, fov: 60, turnRate: 0, prevAngle: null };
+  let viewW = 1, viewH = 1;
+  const goalVec = new THREE.Vector3();
+  const toGoal = new THREE.Vector3();
+  const camDir = new THREE.Vector3();
 
   // 区間が変わったら作り直す
   function setMap(map) {
@@ -339,6 +361,7 @@ export function createRenderer3D(canvas) {
     worldMap = map;
     scene.add(world);
     camAngle = null;
+    cam.back = null;
   }
 
   // 信号：交差点の地面の円（2D版の丸と同じ範囲）と、柱の上の灯り
@@ -448,16 +471,68 @@ export function createRenderer3D(canvas) {
     }
   }
 
+  const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const ease = (from, to, dt) => from + (to - from) * Math.min(1, CAMERA_EASE * dt);
+
   function placeCamera(game, dt) {
     const p = game.player;
+    const c = CAMERAS[cameraMode];
+    // 速さ（0〜1）と、曲がる速さ（rad/s。なめらかにする）
+    const k = Math.max(0, Math.min(1, p.speed / PLAYER_CONFIG.maxSpeed));
+    if (cam.prevAngle === null || dt <= 0) cam.prevAngle = p.angle;
+    const rate = dt > 0 ? wrap(p.angle - cam.prevAngle) / dt : 0;
+    cam.prevAngle = p.angle;
+    cam.turnRate += (rate - cam.turnRate) * Math.min(1, 5 * dt);
+    const turning = Math.min(1, Math.abs(cam.turnRate) / 1.2);
+
+    const target = {
+      back: c.back[0] + (c.back[1] - c.back[0]) * k,
+      up: c.up[0] + (c.up[1] - c.up[0]) * k + c.turnUp * turning,
+      ahead: c.ahead[0] + (c.ahead[1] - c.ahead[0]) * k,
+      fov: c.fov[0] + (c.fov[1] - c.fov[0]) * k,
+    };
+    if (cam.back === null) Object.assign(cam, target); // 最初と、区間が変わったときはすぐその位置に
+    else for (const key of ['back', 'up', 'ahead', 'fov']) cam[key] = ease(cam[key], target[key], dt);
+
     // 向きはなめらかに追いかける（急に回ると酔うので）
     if (camAngle === null) camAngle = p.angle;
-    let d = p.angle - camAngle;
-    d = Math.atan2(Math.sin(d), Math.cos(d));
-    camAngle += d * Math.min(1, CAMERA_TURN * dt);
+    camAngle += wrap(p.angle - camAngle) * Math.min(1, c.turn * dt);
     const fx = Math.sin(camAngle), fz = -Math.cos(camAngle);
-    camera.position.set(p.x - fx * CAMERA_BACK, CAMERA_UP, p.y - fz * CAMERA_BACK);
-    camera.lookAt(p.x + fx * LOOK_AHEAD, 1, p.y + fz * LOOK_AHEAD);
+    // 曲がっている方向を先に見る
+    const look = camAngle + Math.max(-0.5, Math.min(0.5, cam.turnRate * LEAN_INTO_TURN));
+    const lx = Math.sin(look), lz = -Math.cos(look);
+    camera.position.set(p.x - fx * cam.back, cam.up, p.y - fz * cam.back);
+    camera.lookAt(p.x + lx * cam.ahead, cameraMode === 'first' ? 1.5 : 1, p.y + lz * cam.ahead);
+    if (Math.abs(camera.fov - cam.fov) > 0.01) {
+      camera.fov = cam.fov;
+      camera.updateProjectionMatrix();
+    }
+    player.visible = cameraMode !== 'first'; // 自転車目線では自分の自転車は描かない
+  }
+
+  // ゴールが画面のどこに見えるか（HUD が距離や方向の矢印を出すのに使う）
+  function locateGoal(game) {
+    const g = game.map.goal;
+    goalVec.set(g.x, 3, g.y);
+    camera.getWorldDirection(camDir);
+    toGoal.copy(goalVec).sub(camera.position);
+    const behind = toGoal.dot(camDir) <= 0;
+    goalVec.project(camera);
+    let x = ((goalVec.x + 1) / 2) * viewW, y = ((1 - goalVec.y) / 2) * viewH;
+    // 後ろにあるときは、画面の中心について反対側に映る
+    if (behind) (x = viewW - x), (y = viewH - y);
+    r3d.hud.goal3d = { x, y, behind };
+  }
+
+  function setCameraMode(mode) {
+    cameraMode = mode;
+    cam.back = null;
+    camAngle = null;
+    try {
+      localStorage.setItem(STORAGE_KEY, mode);
+    } catch {
+      // 保存できなくても切り替えは効く
+    }
   }
 
   let lastTime = performance.now();
@@ -466,9 +541,20 @@ export function createRenderer3D(canvas) {
     mode: '3d',
     // HUD：3D では地図を真上から見ていないので、ランドマークの名前とゴール方向の矢印は出さない
     // （ゴールは光の柱とミニマップで分かる）
-    hud: { ppm: 1, landmarks: false, goalPointer: false },
+    hud: { ppm: 1, landmarks: false, goalPointer: false, goal3d: null },
+
+    // 視点の名前と切り替え（game.js の C キー・右上のボタンから）
+    get cameraName() {
+      return CAMERAS[cameraMode].name;
+    },
+    nextCamera() {
+      setCameraMode(CAMERA_ORDER[(CAMERA_ORDER.indexOf(cameraMode) + 1) % CAMERA_ORDER.length]);
+      return CAMERAS[cameraMode].name;
+    },
 
     resize(w, h, dpr) {
+      viewW = w;
+      viewH = h;
       renderer.setPixelRatio(dpr);
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
@@ -503,6 +589,7 @@ export function createRenderer3D(canvas) {
       syncAgents(game.obstacles);
       syncTrain(game);
       placeCamera(game, dt);
+      locateGoal(game);
       fadeOccluders(game, dt);
       renderer.render(scene, camera);
     },
