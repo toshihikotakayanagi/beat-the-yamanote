@@ -438,6 +438,9 @@ function act(action, x = null) {
     else if (s === 'ready' && !isUnlocked(game.sectionIndex)) selectSection(nextToPlay(game.sectionIndex));
   } else if (action === 'howto') {
     game.state = 'howto';
+  } else if (action === 'switch') {
+    // 2D版と3D版の切り替え（記録はブラウザに保存してあるので、どちらでも同じ）
+    location.href = renderer.mode === '3d' ? 'index.html' : '3d.html';
   } else if (action === 'ghost') {
     setShowGhost(!game.showGhost);
   } else if (action === 'title') {
@@ -558,6 +561,7 @@ export async function startGame(r) {
   resize();
   setMuted(load('muted') === '1');
   game.showGhost = load('showGhost') !== '0';
+  game.mode = renderer.mode ?? '2d';
   game.sections = await loadSections();
   game.droppedRecords = dropStaleRecords();
   loadCleared();

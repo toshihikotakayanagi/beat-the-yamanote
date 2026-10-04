@@ -10,6 +10,7 @@ const BACKGROUND = '#1b1d22';
 
 export function createRenderer2D() {
   return {
+    mode: '2d',
     hud: { ppm: 1, landmarks: true, goalPointer: true },
 
     resize(w, h) {

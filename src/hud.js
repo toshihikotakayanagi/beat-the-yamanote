@@ -205,6 +205,7 @@ function drawTitle(ctx, game, view) {
     ['', { size: 8 }],
     [`${tapOrSpace(game)}ではじめる`, { size: 22, weight: 'bold' }, 'start'],
     [game.touch ? '遊び方' : '遊び方（H）', { size: 17, color: YAMANOTE_GREEN }, 'howto'],
+    [game.mode === '3d' ? '2D版に切り替える' : '3D版で遊ぶ（試作）', { size: 15, color: QUIET }, 'switch'],
     ['', { size: 8 }],
     ...(game.droppedRecords
       ? [[`コースが変わった ${game.droppedRecords} 区間のベストとゴーストをリセットしました`, { size: 13, color: QUIET }]]

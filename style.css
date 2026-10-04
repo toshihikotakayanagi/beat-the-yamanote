@@ -100,3 +100,12 @@ button {
 #touch button.brake.active {
   background: rgba(255, 107, 94, 0.45);
 }
+
+/* 3D版：3D の世界（下）の上に、HUD のキャンバス（#game、背景は透明）を重ねる */
+#view3d {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}

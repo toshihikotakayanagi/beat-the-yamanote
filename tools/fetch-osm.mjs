@@ -522,10 +522,20 @@ function legalRouteLength(roads, start, goal) {
   return null;
 }
 
+// 建物の高さ m（3D版で使う）。height タグ、なければ階数 × 3.2m。分からなければ 0（描く側で決める）
+function buildingHeight(tags) {
+  const h = parseFloat(tags.height);
+  if (h > 0) return Math.round(h);
+  const levels = parseFloat(tags['building:levels']);
+  if (levels > 0) return Math.round(levels * 3.2 + (parseFloat(tags['roof:levels']) || 0) * 2);
+  return 0;
+}
+
 function convert(id, osm, frame) {
   const { from, to, toXY } = frame;
   const roads = [];
   const buildings = [];
+  const heights = []; // buildings と同じ順の高さ m
   const signals = [];
 
   // 橋・高架・屋根付きの道（駅の歩行者デッキなど）。スタートとゴールには選ばない
@@ -538,7 +548,10 @@ function convert(id, osm, frame) {
     } else if (el.type === 'way' && el.geometry) {
       const pts = el.geometry.flatMap((g) => toXY(g.lat, g.lon));
       if (tags.building && tags.building !== 'roof' && !tags.highway) {
-        if (pts.length >= 6) buildings.push(pts);
+        if (pts.length >= 6) {
+          buildings.push(pts);
+          heights.push(buildingHeight(tags));
+        }
       } else if (tags.highway && isRideable(tags, polylineLength(pts))) {
         if (pts.length >= 4) {
           const road = { t: tags.highway, w: ROAD_WIDTH[tags.highway], p: pts };
@@ -650,6 +663,7 @@ function convert(id, osm, frame) {
     roads,
     buildings,
     signals,
+    heights,
   };
   const info = {
     startOffset: start.d,
