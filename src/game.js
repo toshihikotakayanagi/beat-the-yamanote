@@ -228,6 +228,7 @@ function reset() {
   game.wrongWay = false;
   game.message = null;
   game.stats = { red: 0, car: 0, ped: 0 };
+  game.incidents = []; // 止まった場所（結果画面のルート地図に印を付ける）：{ type, x, y, stop }
   game.startDistance = distanceToGoal();
   game.distance = game.startDistance;
   game.recorder = createRecorder();
@@ -249,6 +250,7 @@ function finish(win) {
   // 結果画面で最速ルートと重ねて見せる、今回の走り（ghost.js の記録と同じ x, y, 向きの並び）
   r.track = game.recorder.samples;
   r.trackLength = trackLength(r.track);
+  r.incidents = game.incidents;
   // ゴーストとの差（マイナスならゴーストより速い）。負けたときは比べない
   r.ghostDiff = win && game.ghost ? Math.round((time - game.ghost.time) * 10) / 10 : null;
   if (win && (game.best == null || time < game.best)) {
@@ -279,6 +281,7 @@ function finish(win) {
 function penalize(type) {
   const pen = PENALTY[type];
   game.stats[type]++;
+  game.incidents.push({ type, x: game.player.x, y: game.player.y, stop: pen.stop });
   game.stopped = pen.stop;
   game.player.speed = 0;
   game.message = { text: pen.text, timer: Math.max(1.5, pen.stop) };

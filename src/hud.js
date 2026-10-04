@@ -386,6 +386,24 @@ function drawGo(ctx, game, view) {
 
 const km = (m) => `${(m / 1000).toFixed(2)} km`;
 
+// 止まった場所の印（結果画面のルート地図）。信号無視は赤い四角、車は橙の丸、歩行者は紫の丸
+const INCIDENT_STYLE = {
+  red: { color: '#ff4d4d', shape: 'square', label: '信号無視' },
+  car: { color: '#ff9f43', shape: 'circle', label: '車' },
+  ped: { color: '#c9b8ff', shape: 'circle', label: '歩行者' },
+};
+function drawIncident(ctx, x, y, type, size = 5) {
+  const st = INCIDENT_STYLE[type];
+  ctx.fillStyle = st.color;
+  ctx.strokeStyle = '#111317';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  if (st.shape === 'square') ctx.rect(x - size, y - size, size * 2, size * 2);
+  else ctx.arc(x, y, size, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+}
+
 // 結果画面のルート比較：区間の地図に、今回の走り（黄）と最速ルート（緑）を重ねる。北が上
 function drawRouteMap(ctx, game, view, y, h) {
   const map = game.map;
@@ -436,6 +454,9 @@ function drawRouteMap(ctx, game, view, y, h) {
   strokePath(route.length, (i) => route[i], 'rgba(80, 200, 120, 0.75)', 6);
   strokePath(track.length / 3, (i) => [track[3 * i], track[3 * i + 1]], PLAYER_YELLOW, 2.5);
 
+  // 止まった場所
+  for (const inc of game.result.incidents ?? []) drawIncident(ctx, ...toScreen(inc.x, inc.y), inc.type);
+
   // スタート（白）とゴール（緑の輪）
   const [sx, sy] = toScreen(map.start.x, map.start.y);
   ctx.fillStyle = TEXT;
@@ -481,6 +502,28 @@ function drawRouteLegend(ctx, game, view, y, h) {
   });
 }
 
+// 止まった場所の印の凡例：種類ごとの回数と、止まっていた秒数の合計
+function drawIncidentLegend(ctx, game, view, y, h) {
+  const incidents = game.result.incidents ?? [];
+  const items = Object.keys(INCIDENT_STYLE)
+    .map((type) => {
+      const list = incidents.filter((i) => i.type === type);
+      return list.length ? [type, `${INCIDENT_STYLE[type].label} ${list.length}回 −${list.reduce((s, i) => s + i.stop, 0)}秒`] : null;
+    })
+    .filter(Boolean);
+  const size = Math.min(13, h);
+  ctx.font = `${size}px ${FONT}`;
+  const gap = 18, mark = 14;
+  const widths = items.map(([, label]) => mark + ctx.measureText(label).width);
+  let x = view.w / 2 - (widths.reduce((a, b) => a + b, 0) + gap * (items.length - 1)) / 2;
+  const mid = y + h / 2;
+  items.forEach(([type, label], i) => {
+    drawIncident(ctx, x + 5, mid, type, 4.5);
+    text(ctx, label, x + mark, mid + size * 0.35, { size, color: QUIET });
+    x += widths[i] + gap;
+  });
+}
+
 function drawResult(ctx, game, view) {
   const r = game.result;
   const lines = r.win
@@ -502,10 +545,12 @@ function drawResult(ctx, game, view) {
     const msg = d < 0 ? `ゴーストより ${(-d).toFixed(1)} 秒速い！` : d > 0 ? `ゴーストより ${d.toFixed(1)} 秒遅い` : 'ゴーストと同着';
     lines.push([msg, { size: 15, color: d < 0 ? YAMANOTE_GREEN : QUIET }]);
   }
+  // 止まった回数は、ルート地図の下の凡例（drawIncidentLegend）に出す。一度も止まらなければここで知らせる
   const s = r.stats;
-  lines.push([`信号無視 ${s.red}回　車と衝突 ${s.car}回　歩行者と衝突 ${s.ped}回`, { size: 14, color: QUIET }]);
+  if (s.red + s.car + s.ped === 0) lines.push(['信号無視・衝突なし', { size: 14, color: YAMANOTE_GREEN }]);
   lines.push({ height: Math.round(Math.max(110, Math.min(220, view.h * 0.3))), draw: (y, h) => drawRouteMap(ctx, game, view, y, h) });
   lines.push({ height: 14, draw: (y, h) => drawRouteLegend(ctx, game, view, y, h) });
+  if (r.incidents?.length) lines.push({ height: 13, draw: (y, h) => drawIncidentLegend(ctx, game, view, y, h) });
   if (r.lapComplete) lines.push([`山手線1周達成！ 全${game.sections.length}区間クリア`, { size: 22, color: YAMANOTE_GREEN, weight: 'bold' }]);
   if (r.unlocked) lines.push([`新しい区間 ${r.unlocked.fromName} → ${r.unlocked.toName} が遊べるようになりました`, { size: 16, color: '#ffc93c', weight: 'bold' }]);
   if (r.next) {
