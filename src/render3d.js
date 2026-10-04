@@ -793,6 +793,99 @@ function nearestSeg(map, r, x, z) {
   return best;
 }
 
+// ---- 線路 ----
+// 砂利（バラスト）にコンクリートのまくらぎが並ぶ道床と、2 本のレール（軌間 1067mm）、線路の脇の架線柱と架線
+const TRACK_W = 3.0; // 道床の幅 m
+const SLEEPER_TILE = 4; // 道床の画像 1 枚が線路の長さ何 m ぶんか（まくらぎ 7 本）
+const RAIL_GAUGE = 1.067;
+const RAIL_TOP = 0.2; // レールの高さ（道床の上）m
+const RAIL_STEEL = [0.62, 0.63, 0.66];
+const WIRE = [0.16, 0.17, 0.19];
+const CATENARY_SPACING = 60; // 架線柱の間隔 m
+const CATENARY_H = 6.2; // 架線柱の高さ m
+const WIRE_H = 5.4; // 架線の高さ（レールの上）m
+
+// 線路の道床：幅 w の帯に、横 0〜1・縦は線路の長さ（SLEEPER_TILE m で 1）のテクスチャ座標を付ける
+function addTrackBed(b, p, w, y) {
+  const hw = w / 2;
+  let along = 0;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    if (len < 1e-6) continue;
+    const nx = (-(z2 - z1) / len) * hw, nz = ((x2 - x1) / len) * hw;
+    const v0 = along / SLEEPER_TILE, v1 = (along + len) / SLEEPER_TILE;
+    const a = [x1 + nx, y, z1 + nz], bb = [x1 - nx, y, z1 - nz], c = [x2 - nx, y, z2 - nz], d = [x2 + nx, y, z2 + nz];
+    b.tri(a, c, bb, UP, null, [[0, v0], [1, v1], [1, v0]]);
+    b.tri(a, d, c, UP, null, [[0, v0], [0, v1], [1, v1]]);
+    along += len;
+  }
+}
+
+// 線から横に off m ずらした、幅 width・高さ y の細い帯（レール・架線）
+function addOffsetStrip(b, p, off, width, y, color) {
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    if (len < 1e-6) continue;
+    const nx = -(z2 - z1) / len, nz = (x2 - x1) / len;
+    const ox = nx * off, oz = nz * off, wx = (nx * width) / 2, wz = (nz * width) / 2;
+    const a = [x1 + ox - wx, y, z1 + oz - wz], bb = [x1 + ox + wx, y, z1 + oz + wz], c = [x2 + ox + wx, y, z2 + oz + wz], d = [x2 + ox - wx, y, z2 + oz - wz];
+    b.tri(a, c, bb, UP, color);
+    b.tri(a, d, c, UP, color);
+  }
+}
+
+// 架線柱の位置（線に沿って CATENARY_SPACING m おき）：[x, z, 線の向き]
+function catenarySpots(p) {
+  const spots = [];
+  let next = CATENARY_SPACING / 3, walked = 0;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    while (next <= walked + len) {
+      const t = (next - walked) / len;
+      spots.push([x1 + (x2 - x1) * t, z1 + (z2 - z1) * t, Math.atan2(z2 - z1, x2 - x1)]);
+      next += CATENARY_SPACING;
+    }
+    walked += len;
+  }
+  return spots;
+}
+
+// 道床の画像：砂利と、等間隔のコンクリートのまくらぎ
+function trackBedTexture(maxAnisotropy) {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 256; // 縦が線路の向き（SLEEPER_TILE m）
+  const ctx = c.getContext('2d');
+  let seed = 3;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const img = ctx.createImageData(64, 256);
+  for (let i = 0; i < 64 * 256; i++) {
+    const v = 95 + rand() * 70;
+    img.data[4 * i] = v;
+    img.data[4 * i + 1] = v * 0.95;
+    img.data[4 * i + 2] = v * 0.88;
+    img.data[4 * i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const sleepers = 7;
+  for (let k = 0; k < sleepers; k++) {
+    const y = ((k + 0.5) * 256) / sleepers;
+    ctx.fillStyle = '#a7a59f';
+    ctx.fillRect(7, y - 6, 50, 12); // 幅 2.4m ほど
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.fillRect(7, y + 5, 50, 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.ClampToEdgeWrapping;
+  t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = maxAnisotropy;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 // ---- 道路の区画線・横断歩道・歩道 ----
 const WHITE_LINE = [0.86, 0.87, 0.85];
 const YELLOW_LINE = [0.9, 0.72, 0.2];
@@ -1017,22 +1110,52 @@ function* buildWorldSteps(map, textures) {
   yield 0.05;
   // 川と線路（トンネルは描かない）。高い所を走る線路（e: 1）は、柱の上の高架橋として持ち上げる
   const lineBuilders = {};
+  const trackBed = new GeometryBuilder(false, true), rails = new GeometryBuilder(true);
+  const catenary = []; // 架線柱：[x, z, 線の向き, 高さ]
   const deck = new GeometryBuilder();
   const pillars = [];
   for (let li = 0; li < map.lines.length; li++) {
     const l = map.lines[li];
     if (li > 0 && li % 150 === 0) yield 0.05 + (0.05 * li) / map.lines.length;
     if (l.u) continue;
-    const b = (lineBuilders[l.k] ??= new GeometryBuilder());
-    if (l.e && l.k !== 'river') {
-      addRibbon(b, l.p, l.w, ELEVATED_H + 0.05);
+    if (l.k === 'river') {
+      addRibbon((lineBuilders.river ??= new GeometryBuilder()), l.p, l.w, Y.river);
+      continue;
+    }
+    // 線路：道床・レール・架線（高架なら高架橋の上）
+    const base = l.e ? ELEVATED_H + 0.05 : Y.rail;
+    addTrackBed(trackBed, l.p, TRACK_W, base);
+    for (const side of [-1, 1]) addOffsetStrip(rails, l.p, (side * RAIL_GAUGE) / 2, 0.08, base + RAIL_TOP, RAIL_STEEL);
+    addOffsetStrip(rails, l.p, 0, 0.035, base + WIRE_H, WIRE);
+    for (const [x, z, ang] of catenarySpots(l.p)) catenary.push([x, z, ang, base]);
+    if (l.e) {
       addDeck(deck, l.p, l.w + DECK_EXTRA, ELEVATED_H);
       pillars.push(...pillarSpots(l.p));
-    } else {
-      addRibbon(b, l.p, l.w, l.k === 'river' ? Y.river : Y.rail);
     }
   }
-  for (const [k, b] of Object.entries(lineBuilders)) group.add(new THREE.Mesh(b.build(), mat(hex((LINE_STYLES[k] ?? LINE_STYLES.rail).color))));
+  if (lineBuilders.river) group.add(new THREE.Mesh(lineBuilders.river.build(), mat(hex(LINE_STYLES.river.color))));
+  const bedMesh = new THREE.Mesh(trackBed.build(), mat(0xffffff, { map: textures.trackBed }));
+  bedMesh.receiveShadow = true;
+  const railMesh = new THREE.Mesh(rails.build(), mat(0xffffff, { vertexColors: true }));
+  group.add(bedMesh, railMesh);
+  // 架線柱：線路の脇の柱と、線路の上へ伸びる腕
+  if (catenary.length) {
+    const poleGeo = new THREE.CylinderGeometry(0.12, 0.15, CATENARY_H, 6).translate(0, CATENARY_H / 2, 0);
+    const armGeo = new THREE.BoxGeometry(0.1, 0.1, 3.2).translate(0, CATENARY_H - 0.4, -1.4);
+    const metal = mat(0x6b7078);
+    const poles = new THREE.InstancedMesh(poleGeo, metal, catenary.length);
+    const arms = new THREE.InstancedMesh(armGeo, metal, catenary.length);
+    const m = new THREE.Matrix4(), r = new THREE.Matrix4();
+    catenary.forEach(([x, z, ang, y], i) => {
+      // 柱は線路の横 2.4m。腕は線路の上へ（ローカルの -z）
+      const nx = -Math.sin(ang), nz = Math.cos(ang);
+      m.makeTranslation(x + nx * 2.4, y, z + nz * 2.4).multiply(r.makeRotationY(Math.atan2(nx, nz)));
+      poles.setMatrixAt(i, m);
+      arms.setMatrixAt(i, m);
+    });
+    poles.castShadow = arms.castShadow = true;
+    group.add(poles, arms);
+  }
   const deckMesh = new THREE.Mesh(deck.build(), mat(DECK_COLOR));
   deckMesh.castShadow = deckMesh.receiveShadow = true;
   group.add(deckMesh);
@@ -1639,6 +1762,7 @@ export function createRenderer3D(canvas) {
   scene.add(sky);
   const textures = windowTextures(renderer.capabilities.getMaxAnisotropy());
   textures.ground = groundPatterns(); // 路面の模様
+  textures.trackBed = trackBedTexture(renderer.capabilities.getMaxAnisotropy()); // 線路の道床
   const camera = new THREE.PerspectiveCamera(60, 1, 0.5, FOG_FAR + 50);
 
   let world = null; // 今の区間の動かない物
@@ -1995,7 +2119,8 @@ export function createRenderer3D(canvas) {
       // 車両の前後の位置から向きを決める（曲線でも線路に沿う）
       const head = pointAt(route, front - 20 * i - 0.4);
       const tail = pointAt(route, front - 20 * (i + 1) + 0.4);
-      car.position.set((head.x + tail.x) / 2, (head.h + tail.h) / 2, (head.y + tail.y) / 2);
+      // 車輪がレールの上に乗るよう、道床とレールの高さぶん上げる
+      car.position.set((head.x + tail.x) / 2, (head.h + tail.h) / 2 + Y.rail + RAIL_TOP, (head.y + tail.y) / 2);
       car.rotation.order = 'YXZ';
       car.rotation.y = -Math.atan2(head.x - tail.x, -(head.y - tail.y));
       car.rotation.x = Math.atan2(head.h - tail.h, CAR_LEN); // 坂では前を上げ下げする
