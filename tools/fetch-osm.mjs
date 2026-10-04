@@ -1,0 +1,691 @@
+// OpenStreetMap から区間の道路・建物・信号と、背景（公園・水域・線路）を取得し、ゲーム用 JSON に変換する。
+//
+// 使い方:
+//   node tools/fetch-osm.mjs shibuya-harajuku            # キャッシュがあればそれを使う
+//   node tools/fetch-osm.mjs shibuya-harajuku --refresh  # Overpass から取り直す
+//   node tools/fetch-osm.mjs all                         # stations.json の全区間
+//
+// 取得結果は tools/.cache/ に保存し、変換だけやり直すときは再取得しない
+// （Overpass は無料の共用サーバーなので負荷をかけない）。
+
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const FETCH_INTERVAL_MS = 10000; // 続けて取得するときの間隔（サーバーへの配慮）
+const RETRY_LIMIT = 6; // 混雑で失敗したときに試す回数
+const RETRY_WAIT_MS = 60000;
+
+// 駅の代表点（駅舎の中心付近）と区間の一覧は data/stations.json で管理する
+const { stations: STATIONS, sections } = JSON.parse(await readFile(join(ROOT, 'data', 'stations.json'), 'utf8'));
+const SECTIONS = Object.fromEntries(sections.map((s) => [s.id, s]));
+
+const MARGIN_M = 400; // 2駅を囲む四角の余白
+const GOAL_RADIUS_M = 25;
+const M_PER_DEG_LAT = 110540;
+
+// highway 種別ごとの道幅 (m)。ここにない種別は取り込まない。
+const ROAD_WIDTH = {
+  trunk: 16,
+  trunk_link: 8,
+  primary: 14,
+  primary_link: 8,
+  secondary: 14,
+  secondary_link: 8,
+  tertiary: 10,
+  tertiary_link: 6,
+  unclassified: 6,
+  residential: 6,
+  living_street: 5,
+  service: 4,
+  pedestrian: 6,
+  footway: 3,
+  cycleway: 3,
+  path: 3,
+  track: 3,
+};
+
+const round = (v) => Math.round(v * 10) / 10;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 区間の座標系：2駅の中点を原点とするメートル座標（x は東、y は南が正）
+function sectionFrame(section) {
+  const from = STATIONS[section.from];
+  const to = STATIONS[section.to];
+  const lat0 = (from.lat + to.lat) / 2;
+  const lon0 = (from.lon + to.lon) / 2;
+  const mPerDegLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const toXY = (lat, lon) => [round((lon - lon0) * mPerDegLon), round(-(lat - lat0) * M_PER_DEG_LAT)];
+  const south = Math.min(from.lat, to.lat) - MARGIN_M / M_PER_DEG_LAT;
+  const north = Math.max(from.lat, to.lat) + MARGIN_M / M_PER_DEG_LAT;
+  const west = Math.min(from.lon, to.lon) - MARGIN_M / mPerDegLon;
+  const east = Math.max(from.lon, to.lon) + MARGIN_M / mPerDegLon;
+  const bbox = [south, west, north, east].map((v) => v.toFixed(5)).join(',');
+  return { from, to, lat0, lon0, toXY, south, north, west, east, bbox };
+}
+
+// 道路・建物・信号（走る地図そのもの）
+const roadsQuery = (bbox) => `[out:json][timeout:90];
+(
+  way["highway"](${bbox});
+  way["building"](${bbox});
+  node["highway"="traffic_signals"](${bbox});
+);
+out geom;`;
+
+// ランドマーク（地図に名前を出す目印）。位置は外枠（bb）から中心を求める
+const landmarksQuery = (bbox) => `[out:json][timeout:60];
+(
+  nwr["tourism"~"^(attraction|museum|gallery|zoo|theme_park|viewpoint|artwork)$"]["name"](${bbox});
+  nwr["historic"]["name"](${bbox});
+  nwr["shop"~"^(department_store|mall)$"]["name"](${bbox});
+  nwr["leisure"~"^(park|stadium)$"]["name"](${bbox});
+  nwr["amenity"~"^(place_of_worship|university)$"]["name"](${bbox});
+  wr["building"]["name"]["building:levels"](${bbox});
+);
+out tags bb;`;
+
+// 背景（見た目だけで、走れる場所や基準タイムには影響しない）：公園・緑地・水域の面と、川・線路の線。
+// 大きな公園や堀はリレーション（複数の線をつないだ面、穴あり）なので wr で取る
+const areasQuery = (bbox) => `[out:json][timeout:120];
+(
+  wr["leisure"~"^(park|garden)$"](${bbox});
+  wr["landuse"~"^(grass|forest|cemetery|recreation_ground|village_green|meadow)$"](${bbox});
+  wr["natural"~"^(wood|water|scrub|grassland)$"](${bbox});
+  wr["waterway"="riverbank"](${bbox});
+  way["waterway"~"^(river|canal|stream)$"](${bbox});
+  way["railway"~"^(rail|light_rail|monorail|narrow_gauge)$"](${bbox});
+);
+out geom;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路' };
+
+// kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
+async function loadOsm(id, kind, bbox, refresh) {
+  const cachePath = join(ROOT, 'tools', '.cache', kind === 'roads' ? `${id}.osm.json` : `${id}.${kind}.osm.json`);
+  if (!refresh) {
+    try {
+      const cached = JSON.parse(await readFile(cachePath, 'utf8'));
+      console.log(`キャッシュを使用: ${cachePath}`);
+      return cached;
+    } catch {
+      // キャッシュがなければ取得する
+    }
+  }
+  const query = QUERIES[kind](bbox);
+  let osm = null;
+  for (let attempt = 1; !osm; attempt++) {
+    // 続けて取得するときは間をあける（サーバーへの配慮）
+    const wait = lastFetchAt + FETCH_INTERVAL_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastFetchAt = Date.now();
+    console.log(`Overpass から${KIND_NAMES[kind]}を取得中 (bbox ${bbox}) ...`);
+    const res = await fetch(OVERPASS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'yamanote-race-game/0.1 (hobby project)',
+      },
+      body: new URLSearchParams({ data: query }),
+    });
+    // 混雑（429：回数制限、504：タイムアウト）のときは待って取り直す
+    if ((res.status === 429 || res.status === 504) && attempt < RETRY_LIMIT) {
+      console.log(`  混雑しています（${res.status}）。${RETRY_WAIT_MS / 1000} 秒後に取り直します（${attempt}/${RETRY_LIMIT}）`);
+      await sleep(RETRY_WAIT_MS);
+      continue;
+    }
+    if (!res.ok) throw new Error(`Overpass エラー: ${res.status} ${(await res.text()).slice(0, 300)}`);
+    osm = await res.json();
+  }
+  await mkdir(dirname(cachePath), { recursive: true });
+  await writeFile(cachePath, JSON.stringify(osm));
+  return osm;
+}
+let lastFetchAt = 0;
+
+// ランドマークの重要度（大きいほど優先して表示）と種類。表示しないものは null。
+// 有名かどうかは Wikipedia / Wikidata へのリンクの有無で判断する
+// （リンクのない小さな記念碑やカラオケ店、タワーマンションが並ぶのを防ぐ）
+function landmarkRank(tags, sizeM) {
+  const notable = Boolean(tags.wikidata || tags.wikipedia);
+  const levels = parseInt(tags['building:levels'], 10) || 0;
+  const residential = /^(apartments|residential|house)$/.test(tags.building) || tags['building:use'] === 'residential';
+  if (/^(attraction|museum|zoo|theme_park)$/.test(tags.tourism)) return { score: notable ? 100 : 40, kind: 'sight' };
+  if (tags.tourism === 'artwork' || tags.historic) return notable ? { score: 90, kind: 'sight' } : null;
+  if (/^(department_store|mall)$/.test(tags.shop)) return { score: notable ? 80 : 55, kind: 'shop' };
+  if (tags.leisure === 'stadium' || tags.amenity === 'university') return { score: notable ? 75 : 45, kind: 'building' };
+  if (tags.building && levels >= 20 && (!residential || notable)) {
+    return { score: (notable ? 70 : 40) + Math.min(levels, 60) / 6, kind: 'building' };
+  }
+  if (/^(gallery|viewpoint)$/.test(tags.tourism)) return notable ? { score: 60, kind: 'sight' } : null;
+  // 公園と神社・寺は小さいものが多いので、大きいほど優先（sizeM は外枠の対角線）
+  if (tags.leisure === 'park' && (sizeM >= 80 || notable)) {
+    return { score: 30 + Math.min(sizeM / 20, 30) + (notable ? 30 : 0), kind: 'park' };
+  }
+  if (tags.amenity === 'place_of_worship' && (sizeM >= 30 || notable)) {
+    return { score: 25 + Math.min(sizeM / 10, 30) + (notable ? 30 : 0), kind: 'worship' };
+  }
+  return null;
+}
+
+const LANDMARK_MIN_GAP_M = 60; // これより近い目印は重要度の低い方を出さない
+const LANDMARK_MAX = 40; // 1 区間あたりの上限
+
+function selectLandmarks(osm, frame) {
+  const { toXY } = frame;
+  const inFrame = (lat, lon) => lat >= frame.south && lat <= frame.north && lon >= frame.west && lon <= frame.east;
+  const candidates = [];
+  // 駅は必ず出す
+  for (const st of Object.values(STATIONS)) {
+    if (!inFrame(st.lat, st.lon)) continue;
+    const [x, y] = toXY(st.lat, st.lon);
+    candidates.push({ n: `${st.name}駅`, x, y, k: 'station', score: 1000 });
+  }
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    if (!tags.name) continue;
+    let lat, lon, sizeM = 0;
+    if (el.bounds) {
+      const b = el.bounds;
+      lat = (b.minlat + b.maxlat) / 2;
+      lon = (b.minlon + b.maxlon) / 2;
+      const [x0, y0] = toXY(b.minlat, b.minlon);
+      const [x1, y1] = toXY(b.maxlat, b.maxlon);
+      sizeM = Math.hypot(x1 - x0, y1 - y0);
+    } else if (el.lat != null) {
+      ({ lat, lon } = el);
+    } else continue;
+    if (!inFrame(lat, lon)) continue;
+    const rank = landmarkRank(tags, sizeM);
+    if (!rank) continue;
+    const [x, y] = toXY(lat, lon);
+    candidates.push({ n: tags.name, x, y, k: rank.kind, score: rank.score });
+  }
+  // 重要度の高い順に、近くにもう目印がなければ採用する
+  candidates.sort((a, b) => b.score - a.score);
+  const picked = [];
+  for (const c of candidates) {
+    if (picked.length >= LANDMARK_MAX) break;
+    if (picked.some((p) => p.n === c.n || Math.hypot(p.x - c.x, p.y - c.y) < LANDMARK_MIN_GAP_M)) continue;
+    picked.push(c);
+  }
+  return picked.map(({ n, x, y, k }) => ({ n, x, y, k }));
+}
+
+// ---- 背景（公園・水域・線路） ----
+
+// 面の種類。描く順（緑 → 水）は src/map.js が決める
+function areaKind(tags) {
+  if (tags.natural === 'water' || tags.waterway === 'riverbank') return 'water';
+  if (tags.landuse === 'cemetery') return 'cemetery';
+  if (tags.landuse === 'forest' || tags.natural === 'wood') return 'wood';
+  if (/^(park|garden)$/.test(tags.leisure)) return 'park';
+  if (/^(grass|recreation_ground|village_green|meadow)$/.test(tags.landuse) || /^(scrub|grassland)$/.test(tags.natural)) return 'grass';
+  return null;
+}
+
+const SHORT_RAIL_TUNNEL_M = 150; // 道路橋の下などをくぐる短い線路のトンネル（目白駅・目黒駅の山手線）は描く
+
+// 線の種類と幅 m。地下（トンネル・暗渠）は描かない。lengthM：その線の長さ
+function lineKind(tags, lengthM) {
+  if (tags.railway) {
+    // 線路は本物のトンネルと地下だけ外す。layer が負でも切り通し（目黒駅付近の山手線など）は地上から見え、
+    // 駅ビルの下をくぐる線路（tunnel=building_passage）も駅の中でつながっているので残す
+    const tunnel = tags.tunnel && tags.tunnel !== 'no' && tags.tunnel !== 'building_passage' && lengthM > SHORT_RAIL_TUNNEL_M;
+    const yamanote = /山手線/.test(tags.name ?? '');
+    // 山手線のトンネル（目黒駅の手前の約270mなど）は描かないが、電車が地図の上を走る道筋に使うので u: 1 を付けて残す
+    if (tunnel || tags.location === 'underground') return yamanote ? { k: 'yamanote', w: 3, u: 1 } : null;
+    // 山手線は路線の色で目立たせる（名前に「山手線」を含む線路）
+    return { k: yamanote ? 'yamanote' : 'rail', w: 3 };
+  }
+  // 川は暗渠（tunnel=culvert など）と地下を外す
+  if ((tags.tunnel && tags.tunnel !== 'no') || Number(tags.layer) < 0 || tags.location === 'underground') return null;
+  if (tags.waterway === 'river' || tags.waterway === 'canal') return { k: 'river', w: 8 };
+  if (tags.waterway === 'stream') return { k: 'river', w: 3 };
+  return null;
+}
+
+// 点列 [x0, y0, x1, y1, ...] を間引く（ダグラス・ポーカー法。tol m 以内のずれは省く）
+function simplify(p, tol) {
+  const n = p.length / 2;
+  if (n <= 2) return p;
+  const keep = new Uint8Array(n);
+  keep[0] = keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const ax = p[2 * a], ay = p[2 * a + 1], bx = p[2 * b], by = p[2 * b + 1];
+    const len = Math.hypot(bx - ax, by - ay);
+    let far = -1, farD = tol;
+    for (let i = a + 1; i < b; i++) {
+      // 両端が同じ点（閉じた輪）のときは、その点からの距離
+      const d = len < 1e-6
+        ? Math.hypot(p[2 * i] - ax, p[2 * i + 1] - ay)
+        : Math.abs((bx - ax) * (ay - p[2 * i + 1]) - (ax - p[2 * i]) * (by - ay)) / len;
+      if (d > farD) (farD = d), (far = i);
+    }
+    if (far >= 0) {
+      keep[far] = 1;
+      stack.push([a, far], [far, b]);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(p[2 * i], p[2 * i + 1]);
+  return out;
+}
+
+// 閉じた輪 [x0, y0, ...] を四角の範囲で切り取る（サザーランド・ホジマン法）
+function clipRing(ring, box) {
+  const inside = [
+    (x) => x >= box.minX,
+    (x) => x <= box.maxX,
+    (x, y) => y >= box.minY,
+    (x, y) => y <= box.maxY,
+  ];
+  const cross = [
+    (ax, ay, bx, by) => [box.minX, ay + ((by - ay) * (box.minX - ax)) / (bx - ax)],
+    (ax, ay, bx, by) => [box.maxX, ay + ((by - ay) * (box.maxX - ax)) / (bx - ax)],
+    (ax, ay, bx, by) => [ax + ((bx - ax) * (box.minY - ay)) / (by - ay), box.minY],
+    (ax, ay, bx, by) => [ax + ((bx - ax) * (box.maxY - ay)) / (by - ay), box.maxY],
+  ];
+  let pts = ring;
+  for (let e = 0; e < 4 && pts.length >= 6; e++) {
+    const out = [];
+    const n = pts.length / 2;
+    for (let i = 0; i < n; i++) {
+      const j = (i + n - 1) % n;
+      const ax = pts[2 * j], ay = pts[2 * j + 1];
+      const bx = pts[2 * i], by = pts[2 * i + 1];
+      const ain = inside[e](ax, ay), bin = inside[e](bx, by);
+      if (bin) {
+        if (!ain) out.push(...cross[e](ax, ay, bx, by));
+        out.push(bx, by);
+      } else if (ain) out.push(...cross[e](ax, ay, bx, by));
+    }
+    pts = out;
+  }
+  return pts.map(round);
+}
+
+// リレーションの部品の線（端どうしがつながる）をつないで閉じた輪にする。閉じられなかった線は捨てる。
+// 点は [lat, lon] の組
+function joinRings(lines) {
+  const rings = [];
+  const open = lines.map((l) => l.slice());
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1];
+  while (open.length) {
+    let cur = open.pop();
+    for (let grew = true; grew && !same(cur[0], cur.at(-1)); ) {
+      grew = false;
+      for (let i = 0; i < open.length; i++) {
+        const l = open[i];
+        if (same(cur.at(-1), l[0])) cur = cur.concat(l.slice(1));
+        else if (same(cur.at(-1), l.at(-1))) cur = cur.concat(l.slice(0, -1).reverse());
+        else if (same(cur[0], l.at(-1))) cur = l.concat(cur.slice(1));
+        else if (same(cur[0], l[0])) cur = l.slice().reverse().concat(cur.slice(1));
+        else continue;
+        open.splice(i, 1);
+        grew = true;
+        break;
+      }
+    }
+    if (cur.length >= 4 && same(cur[0], cur.at(-1))) rings.push(cur);
+  }
+  return rings;
+}
+
+const AREA_MIN_M2 = 150; // これより小さい面（植え込みなど）は描かない
+const SIMPLIFY_M = 1; // 背景の形を間引く許容誤差 m
+
+function ringArea(p) {
+  let a = 0;
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) a += (p[j] - p[i]) * (p[j + 1] + p[i + 1]);
+  return Math.abs(a / 2);
+}
+
+// 背景の面 areas: [{ k, r: [輪, ...] }]（輪は偶奇規則で塗る。穴も同じ配列に入る）と
+// 線 lines: [{ k, w, p }] を作る
+function convertAreas(osm, frame, bounds) {
+  const { toXY } = frame;
+  const box = { minX: bounds.minX - 20, minY: bounds.minY - 20, maxX: bounds.maxX + 20, maxY: bounds.maxY + 20 };
+  const areas = [];
+  const lines = [];
+  const latlon = (geom) => geom.map((g) => [g.lat, g.lon]);
+  const flat = (ring) => ring.flatMap(([lat, lon]) => toXY(lat, lon));
+  const addArea = (k, rings) => {
+    const r = [];
+    for (const ring of rings) {
+      const pts = clipRing(simplify(flat(ring), SIMPLIFY_M), box);
+      if (pts.length >= 6 && ringArea(pts) >= AREA_MIN_M2) r.push(pts);
+    }
+    if (r.length) areas.push({ k, r });
+  };
+  const inBox = (p) => {
+    for (let i = 0; i < p.length; i += 2) if (p[i] >= box.minX && p[i] <= box.maxX && p[i + 1] >= box.minY && p[i + 1] <= box.maxY) return true;
+    return false;
+  };
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    if (el.type === 'way' && el.geometry) {
+      const geom = latlon(el.geometry);
+      const closed = geom.length >= 4 && geom[0][0] === geom.at(-1)[0] && geom[0][1] === geom.at(-1)[1];
+      const area = areaKind(tags);
+      if (area && closed) {
+        addArea(area, [geom]);
+        continue;
+      }
+      const pts = flat(geom);
+      const line = lineKind(tags, polylineLength(pts));
+      if (line) {
+        const p = simplify(pts, SIMPLIFY_M);
+        if (p.length >= 4 && inBox(p)) lines.push({ ...line, p });
+      }
+    } else if (el.type === 'relation' && el.members && (tags.type === 'multipolygon' || !tags.type)) {
+      const area = areaKind(tags);
+      if (!area) continue;
+      const parts = el.members.filter((m) => m.type === 'way' && m.geometry?.length >= 2 && m.geometry.every(Boolean));
+      addArea(area, joinRings(parts.map((m) => latlon(m.geometry))));
+    }
+  }
+  return { areas, lines };
+}
+
+// 線路の下をくぐる短いガード下とみなすトンネルの長さの上限 m。
+// これより長いもの（六本木通り 96m、日比谷地下道 409m など）は本物の地下道・アンダーパスなので外す
+const SHORT_UNDERPASS_M = 80;
+const PATH_TYPES = new Set(['footway', 'path', 'pedestrian', 'cycleway', 'track']);
+
+// 座標列 [x0, y0, x1, y1, ...]（m）の長さ
+function polylineLength(p) {
+  let len = 0;
+  for (let i = 2; i < p.length; i += 2) len += Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]);
+  return len;
+}
+
+// lengthM：その道の長さ（短いガード下の判定に使う）
+function isRideable(tags, lengthM) {
+  if (!(tags.highway in ROAD_WIDTH)) return false;
+  // 屋内（indoor=yes のほか indoor=footway / highway などもある）
+  if (tags.indoor && tags.indoor !== 'no') return false;
+  // 地下は扱わない。ただし次の 2 つは地上の道としてつなぐ
+  //   ・建物の下をくぐる通路（tunnel=building_passage）
+  //   ・線路の下をくぐる短いガード下：車道で、長さ SHORT_UNDERPASS_M 以下、深さは layer -1 まで。
+  //     これがないと線路を渡れる場所が減り、新橋→浜松町や品川→大崎が大回りになる。
+  //     歩行者用の地下道は入れない（大通りを信号なしで渡れる抜け道になるため）
+  const tunnel = tags.tunnel && tags.tunnel !== 'no';
+  const shortUnderpass =
+    tunnel && !PATH_TYPES.has(tags.highway) && lengthM <= SHORT_UNDERPASS_M && (Number(tags.layer) || -1) >= -1;
+  if (tunnel && tags.tunnel !== 'building_passage' && !shortUnderpass) return false;
+  if (!shortUnderpass && (Number(tags.layer) < 0 || (tags.level ?? '').startsWith('-'))) return false;
+  // 駅のホーム（タグがなく「JR新宿駅;1階;1番線」のような名前だけのものもある）
+  if (tags.railway === 'platform' || tags.public_transport === 'platform' || /番線/.test(tags.name ?? '')) return false;
+  // 名前が「〜駅」の歩道は駅の構内（目白駅には線路沿いの約 230m の「目白駅」という通路がある）。
+  // 「駅前通り」のような道路は「駅」で終わらないので残る
+  // 駅舎の中の通路は「JR秋葉原駅;3階」「JR秋葉原駅(改札外);1階;電気街北口」のように
+  // 「駅;」「改札」「〜階」を含む名前が多い（地下鉄の出入口の短い歩道も外れるが、走る道には影響しない）
+  if (['footway', 'path', 'pedestrian'].includes(tags.highway) && /駅$|駅;|改札|\d階/.test(tags.name ?? '')) return false;
+  if (tags.area === 'yes' && tags.highway !== 'pedestrian') return false;
+  if (tags.motorroad === 'yes') return false; // 自動車専用道路
+  if (tags.access === 'private' || tags.access === 'no') return false;
+  return true;
+}
+
+function oneway(tags) {
+  if (tags.oneway === 'yes' || tags.oneway === '1') return 1;
+  if (tags.oneway === '-1') return -1;
+  return 0;
+}
+
+const STATION_SLACK_M = 60; // スタート・ゴールの候補にする範囲（駅にいちばん近い点からの距離）
+const STATION_MAX_CANDIDATES = 150;
+
+// source から各点までの最短コスト（adj: 点 → [[隣の点, コスト], ...]）。二分ヒープを使うダイクストラ法
+function shortestTimes(adj, source) {
+  const dist = new Map([[source, 0]]);
+  const heap = [[0, source]];
+  const push = (item) => {
+    heap.push(item);
+    for (let i = heap.length - 1; i > 0; ) {
+      const parent = (i - 1) >> 1;
+      if (heap[parent][0] <= heap[i][0]) break;
+      [heap[parent], heap[i]] = [heap[i], heap[parent]];
+      i = parent;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      for (let i = 0; ; ) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+        if (m === i) break;
+        [heap[m], heap[i]] = [heap[i], heap[m]];
+        i = m;
+      }
+    }
+    return top;
+  };
+  while (heap.length) {
+    const [d, u] = pop();
+    if (d > dist.get(u)) continue;
+    for (const [v, cost] of adj.get(u) ?? []) {
+      const nd = d + cost;
+      if (nd < (dist.get(v) ?? Infinity)) {
+        dist.set(v, nd);
+        push([nd, v]);
+      }
+    }
+  }
+  return dist;
+}
+
+// スタートからゴールまで、一方通行を守って行ける最短距離 m（行けなければ null）
+function legalRouteLength(roads, start, goal) {
+  const key = (x, y) => `${x},${y}`;
+  const adj = new Map();
+  const add = (a, b, l) => {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a).push([b, l]);
+  };
+  for (const r of roads) {
+    for (let i = 0; i + 3 < r.p.length; i += 2) {
+      const a = key(r.p[i], r.p[i + 1]), b = key(r.p[i + 2], r.p[i + 3]);
+      const l = Math.hypot(r.p[i + 2] - r.p[i], r.p[i + 3] - r.p[i + 1]);
+      if (r.o !== -1) add(a, b, l);
+      if (r.o !== 1) add(b, a, l);
+    }
+  }
+  const s = key(start.x, start.y), g = key(goal.x, goal.y);
+  const dist = new Map([[s, 0]]);
+  const queue = [[0, s]];
+  while (queue.length) {
+    let bi = 0;
+    for (let i = 1; i < queue.length; i++) if (queue[i][0] < queue[bi][0]) bi = i;
+    const [du, u] = queue.splice(bi, 1)[0];
+    if (u === g) return du;
+    if (du > dist.get(u)) continue;
+    for (const [v, l] of adj.get(u) ?? []) {
+      const nd = du + l;
+      if (nd < (dist.get(v) ?? Infinity)) {
+        dist.set(v, nd);
+        queue.push([nd, v]);
+      }
+    }
+  }
+  return null;
+}
+
+function convert(id, osm, frame) {
+  const { from, to, toXY } = frame;
+  const roads = [];
+  const buildings = [];
+  const signals = [];
+
+  // 橋・高架・屋根付きの道（駅の歩行者デッキなど）。スタートとゴールには選ばない
+  const elevated = new WeakSet();
+
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    if (el.type === 'node' && tags.highway === 'traffic_signals') {
+      signals.push(toXY(el.lat, el.lon));
+    } else if (el.type === 'way' && el.geometry) {
+      const pts = el.geometry.flatMap((g) => toXY(g.lat, g.lon));
+      if (tags.building && tags.building !== 'roof' && !tags.highway) {
+        if (pts.length >= 6) buildings.push(pts);
+      } else if (tags.highway && isRideable(tags, polylineLength(pts))) {
+        if (pts.length >= 4) {
+          const road = { t: tags.highway, w: ROAD_WIDTH[tags.highway], p: pts };
+          const ow = oneway(tags);
+          if (ow) road.o = ow;
+          if (tags.name) road.n = tags.name;
+          roads.push(road);
+          if ((tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.covered === 'yes') elevated.add(road);
+        }
+      }
+    }
+  }
+
+  // 道路網のつながり（一方通行は無視）。いちばん大きなまとまりを「本線」とする。
+  // 駅前には、どこにもつながっていない小さな広場や歩道が描かれていることがある（浜松町など）
+  const parent = new Map();
+  const find = (k) => {
+    while (parent.get(k) !== k) {
+      parent.set(k, parent.get(parent.get(k)));
+      k = parent.get(k);
+    }
+    return k;
+  };
+  const nodeKey = (x, y) => `${x},${y}`;
+  for (const r of roads) {
+    for (let i = 0; i < r.p.length; i += 2) {
+      const k = nodeKey(r.p[i], r.p[i + 1]);
+      if (!parent.has(k)) parent.set(k, k);
+      if (i > 0) parent.set(find(k), find(nodeKey(r.p[i - 2], r.p[i - 1])));
+    }
+  }
+  const size = new Map();
+  for (const k of parent.keys()) size.set(find(k), (size.get(find(k)) ?? 0) + 1);
+  const mainRoot = [...size.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  const onMain = (x, y) => find(nodeKey(x, y)) === mainRoot;
+
+  // スタート・ゴールの候補：駅の代表点のまわりの道路上の点（本線につながっている地上の点だけ）。
+  // いちばん近い点から STATION_SLACK_M 以内の点を候補にする
+  const stationCandidates = (x, y) => {
+    const list = [];
+    for (const r of roads) {
+      if (ROAD_WIDTH[r.t] < 5) continue; // 歩道ではなく車道から始める
+      // 一方通行は除く（地下へ入る一方通行の端だと、逆走しないと出られない）
+      if (r.o) continue;
+      // 駅の歩行者デッキなど高い所の道は除く（浜松町では入口が南側にしかなく、大回りになった）
+      if (elevated.has(r)) continue;
+      for (let i = 0; i < r.p.length; i += 2) {
+        if (!onMain(r.p[i], r.p[i + 1])) continue;
+        list.push({ d: Math.hypot(r.p[i] - x, r.p[i + 1] - y), x: r.p[i], y: r.p[i + 1], road: r, i, key: nodeKey(r.p[i], r.p[i + 1]) });
+      }
+    }
+    list.sort((a, b) => a.d - b.d);
+    return list.filter((c) => c.d <= list[0].d + STATION_SLACK_M).slice(0, STATION_MAX_CANDIDATES);
+  };
+
+  // 所要時間で重み付けした道路網（歩道は速度上限が半分なので 2 倍）。順方向と、ゴールからたどる逆方向
+  const forward = new Map();
+  const backward = new Map();
+  const link = (adj, a, b, cost) => {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a).push([b, cost]);
+  };
+  for (const r of roads) {
+    const factor = PATH_TYPES.has(r.t) ? 2 : 1;
+    for (let i = 0; i + 3 < r.p.length; i += 2) {
+      const a = nodeKey(r.p[i], r.p[i + 1]), b = nodeKey(r.p[i + 2], r.p[i + 3]);
+      const cost = Math.hypot(r.p[i + 2] - r.p[i], r.p[i + 3] - r.p[i + 1]) * factor;
+      if (r.o !== -1) link(forward, a, b, cost), link(backward, b, a, cost);
+      if (r.o !== 1) link(forward, b, a, cost), link(backward, a, b, cost);
+    }
+  }
+
+  // 駅のどちら側から出て、どちら側に着くか：電車と同じく線路を渡らずに済む側が自然なので、
+  // 駅にいちばん近いスタートから所要時間が最短のゴールを選び、そのゴールへ最短で着くスタートを選び直す
+  // （いちばん近い点を機械的に選ぶと、駅の反対側に置かれて線路を渡る回り道になることがある）
+  const [fx, fy] = toXY(from.lat, from.lon);
+  const [tx, ty] = toXY(to.lat, to.lon);
+  const startCands = stationCandidates(fx, fy);
+  const goalCands = stationCandidates(tx, ty);
+  const pickBest = (cands, dist) =>
+    cands.reduce((best, c) => ((dist.get(c.key) ?? Infinity) < (dist.get(best.key) ?? Infinity) ? c : best), cands[0]);
+  const goal = pickBest(goalCands, shortestTimes(forward, startCands[0].key));
+  const start = pickBest(startCands, shortestTimes(backward, goal.key));
+
+  // スタート時の向きは道路に沿った前後どちらかのうち、ゴールに近い方
+  // （ゴールへの直線方向だと、目の前が駅ビルで動けないことがある）
+  const toGoal = Math.atan2(goal.x - start.x, -(goal.y - start.y));
+  let startAngle = toGoal;
+  let bestDot = -Infinity;
+  for (const j of [start.i - 2, start.i + 2]) {
+    const p = start.road.p;
+    if (j < 0 || j >= p.length) continue;
+    const a = Math.atan2(p[j] - start.x, -(p[j + 1] - start.y));
+    const dot = Math.cos(a - toGoal);
+    if (dot > bestDot) (bestDot = dot), (startAngle = a);
+  }
+
+  const [minX, minY] = toXY(frame.north, frame.west);
+  const [maxX, maxY] = toXY(frame.south, frame.east);
+
+  const data = {
+    id,
+    from: from.name,
+    to: to.name,
+    origin: { lat: frame.lat0, lon: frame.lon0 },
+    bounds: { minX, minY, maxX, maxY },
+    start: { x: start.x, y: start.y, angle: Math.round(startAngle * 100) / 100 },
+    goal: { x: goal.x, y: goal.y, radius: GOAL_RADIUS_M },
+    roads,
+    buildings,
+    signals,
+  };
+  const info = {
+    startOffset: start.d,
+    goalOffset: goal.d,
+    route: legalRouteLength(roads, start, goal),
+  };
+  return { data, info };
+}
+
+async function processSection(id, refresh) {
+  const section = SECTIONS[id];
+  const frame = sectionFrame(section);
+  const osm = await loadOsm(id, 'roads', frame.bbox, refresh);
+  const { data, info } = convert(id, osm, frame);
+  data.landmarks = selectLandmarks(await loadOsm(id, 'landmarks', frame.bbox, refresh), frame);
+  Object.assign(data, convertAreas(await loadOsm(id, 'areas', frame.bbox, refresh), frame, data.bounds));
+
+  const outPath = join(ROOT, 'data', `${id}.json`);
+  await mkdir(dirname(outPath), { recursive: true });
+  const json = JSON.stringify(data);
+  await writeFile(outPath, json);
+  console.log(
+    `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length}`,
+  );
+  console.log(
+    `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +
+      (info.route == null ? '一方通行を守るとゴールに行けません（要確認）' : `一方通行を守った最短ルート ${info.route.toFixed(0)} m`),
+  );
+}
+
+const target = process.argv[2];
+const refresh = process.argv.includes('--refresh');
+const ids = target === 'all' ? Object.keys(SECTIONS) : [target];
+if (!ids.every((id) => SECTIONS[id])) {
+  console.error(`区間名を指定してください: all, ${Object.keys(SECTIONS).join(', ')}`);
+  process.exit(1);
+}
+for (const id of ids) await processSection(id, refresh);

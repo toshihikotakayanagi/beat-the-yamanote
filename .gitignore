@@ -1,0 +1,4 @@
+# Overpass から取得した元データ（約100MB。tools/fetch-osm.mjs で取り直せる）
+tools/.cache/
+# Claude Code の個人設定
+.claude/settings.local.json

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "yamanote-race",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["tools/serve.py", "8173"],
+      "port": 8173
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #1b1d22;
+  /* スマホでのスクロール・ズーム・長押しの選択を防ぐ */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#game {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  font-family: system-ui, sans-serif;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#corner {
+  position: fixed;
+  top: calc(6px + env(safe-area-inset-top));
+  right: calc(6px + env(safe-area-inset-right));
+  display: flex;
+  gap: 6px;
+}
+
+#corner button {
+  height: 30px;
+  min-width: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  background: rgba(20, 22, 26, 0.8);
+  border: 1px solid #4a4f5a;
+  border-radius: 8px;
+}
+
+#touch {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 calc(12px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom))
+    calc(12px + env(safe-area-inset-left));
+  pointer-events: none; /* ボタンの間の空きは地図に触れても何も起きない */
+}
+
+#touch .pad {
+  display: flex;
+  gap: 12px;
+}
+
+#touch button {
+  pointer-events: auto;
+  width: 72px;
+  height: 72px;
+  font-size: 22px;
+  background: rgba(40, 44, 52, 0.75);
+  border: 2px solid #5a606b;
+  border-radius: 50%;
+  touch-action: none;
+}
+
+#touch button.accel,
+#touch button.brake {
+  width: 84px;
+  height: 84px;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+#touch button.accel {
+  border-color: #9acd32;
+}
+
+#touch button.brake {
+  border-color: #ff6b5e;
+}
+
+#touch button.active {
+  background: rgba(154, 205, 50, 0.45);
+}
+
+#touch button.brake.active {
+  background: rgba(255, 107, 94, 0.45);
+}
