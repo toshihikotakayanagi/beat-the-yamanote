@@ -886,6 +886,141 @@ function trackBedTexture(maxAnisotropy) {
   return t;
 }
 
+// ---- 駅のホーム ----
+// 電車が発車・到着する位置（経路の始めと終わりの、編成の長さぶん）に沿ってホームを置く。
+// 向かいに線路があれば線路にはさまれた島式、なければ片側の相対式。線路側の端に白線と点字ブロック、中央部に屋根、駅名標
+const PLATFORM_TOP = 1.1; // ホームの高さ（レールの上）m
+const PLATFORM_EDGE = 1.65; // 線路の中心からホームの端まで m
+const CANOPY_H = 4.4; // 屋根の高さ（ホームの上）m
+
+// 線路の点 at（経路の pointAt）から横（左が正）に、ほかの線路がどれだけ離れてあるか（左右それぞれ一番近いもの）
+function nearbyTracks(map, at) {
+  const nx = -Math.cos(at.angle), nz = -Math.sin(at.angle); // 進む向きの左（地図の座標で）。ホームの左右もこの向きを正とする
+  const fx = Math.sin(at.angle), fz = -Math.cos(at.angle);
+  let left = Infinity, right = Infinity;
+  for (const l of map.lines) {
+    if (l.k === 'river' || l.u) continue;
+    for (let i = 0; i + 3 < l.p.length; i += 2) {
+      // 線分のうち、点 at の真横（前後 6m 以内）の所
+      const ax = l.p[i] - at.x, az = l.p[i + 1] - at.y, bx = l.p[i + 2] - at.x, bz = l.p[i + 3] - at.y;
+      const fa = ax * fx + az * fz, fb = bx * fx + bz * fz;
+      if ((fa > 6 && fb > 6) || (fa < -6 && fb < -6)) continue;
+      const t = Math.abs(fb - fa) < 1e-6 ? 0 : Math.max(0, Math.min(1, -fa / (fb - fa)));
+      const lat = (ax + (bx - ax) * t) * nx + (az + (bz - az) * t) * nz;
+      if (lat > 1.5) right = Math.min(right, lat);
+      else if (lat < -1.5) left = Math.min(left, -lat);
+    }
+  }
+  return { left, right };
+}
+
+// 駅名標の画像（JR東日本風：白地に黄緑の帯、駅名、山手線、隣の駅）
+function stationSignTexture(name, prev, next) {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 192;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f7f8f6';
+  ctx.fillRect(0, 0, 512, 192);
+  ctx.fillStyle = '#8cc63f';
+  ctx.fillRect(0, 128, 512, 26);
+  ctx.fillStyle = '#1b1d22';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 84px system-ui, sans-serif';
+  ctx.fillText(name, 256, 100);
+  ctx.font = 'bold 18px system-ui, sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('山手線', 256, 148);
+  ctx.fillStyle = '#1b1d22';
+  ctx.font = '22px system-ui, sans-serif';
+  if (prev) (ctx.textAlign = 'left'), ctx.fillText(`← ${prev}`, 14, 180);
+  if (next) (ctx.textAlign = 'right'), ctx.fillText(`${next} →`, 498, 180);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function addStations(group, map, textures) {
+  const route = map.trainRoute;
+  if (!route) return;
+  const trainLen = carCount(route) * 20;
+  const body = new GeometryBuilder(true);
+  const GRAY = [0.62, 0.63, 0.64], SIDE = [0.42, 0.43, 0.46], WHITE = [0.92, 0.92, 0.9], YELLOW = [0.95, 0.78, 0.15];
+  const ROOF = [0.55, 0.57, 0.6], COLUMN = [0.5, 0.52, 0.56];
+  const signs = [];
+  // 出発駅（経路の始め）と到着駅（終わり）
+  for (const [s0, s1, name, prev, next] of [
+    [0, trainLen, map.from, null, map.to],
+    [route.length - trainLen, route.length, map.to, map.from, null],
+  ]) {
+    const mid = pointAt(route, (s0 + s1) / 2);
+    const { left, right } = nearbyTracks(map, mid);
+    // 島式：片側 6〜16m に線路があれば、そのあいだ。なければ広い方の側に幅 6m の相対式
+    let side, width;
+    const island = [[right, 1], [left, -1]].filter(([d]) => d >= 6 && d <= 16).sort((a, b) => a[0] - b[0])[0];
+    if (island) (side = island[1]), (width = island[0] - 2 * PLATFORM_EDGE);
+    else (side = right >= left ? 1 : -1), (width = Math.min(6, Math.max(3, (side > 0 ? right : left) - 2 * PLATFORM_EDGE)));
+    const inner = PLATFORM_EDGE, outer = PLATFORM_EDGE + width; // 線路の中心からの横の距離
+    const steps = Math.max(2, Math.ceil((s1 - s0) / 5));
+    const P = (s, lat, up) => {
+      const at = pointAt(route, s);
+      const nx = -Math.cos(at.angle), nz = -Math.sin(at.angle);
+      return [at.x + nx * lat * side, at.h + Y.rail + up, at.y + nz * lat * side];
+    };
+    const quad = (a, b, c, d, n, col) => {
+      body.tri(a, b, c, n, col);
+      body.tri(a, c, d, n, col);
+    };
+    for (let k = 0; k < steps; k++) {
+      const sa = s0 + ((s1 - s0) * k) / steps, sb = s0 + ((s1 - s0) * (k + 1)) / steps;
+      const top = PLATFORM_TOP;
+      // 上面（灰色）・線路側の白線と点字ブロック・側面
+      quad(P(sa, inner + 0.25, top), P(sb, inner + 0.25, top), P(sb, outer, top), P(sa, outer, top), UP, GRAY);
+      quad(P(sa, inner, top + 0.005), P(sb, inner, top + 0.005), P(sb, inner + 0.12, top + 0.005), P(sa, inner + 0.12, top + 0.005), UP, WHITE);
+      quad(P(sa, inner + 0.12, top), P(sb, inner + 0.12, top), P(sb, inner + 0.25, top), P(sa, inner + 0.25, top), UP, GRAY);
+      quad(P(sa, inner + 0.75, top + 0.01), P(sb, inner + 0.75, top + 0.01), P(sb, inner + 1.05, top + 0.01), P(sa, inner + 1.05, top + 0.01), UP, YELLOW);
+      if (!island) quad(P(sa, outer - 1.05, top + 0.01), P(sb, outer - 1.05, top + 0.01), P(sb, outer - 0.75, top + 0.01), P(sa, outer - 0.75, top + 0.01), UP, GRAY);
+      // 側面の向き（線路側は線路へ、反対側は外へ）
+      const am = pointAt(route, (sa + sb) / 2);
+      const lx = -Math.cos(am.angle) * side, lz = -Math.sin(am.angle) * side;
+      quad(P(sa, inner, 0), P(sb, inner, 0), P(sb, inner, top), P(sa, inner, top), [-lx, 0, -lz], SIDE);
+      quad(P(sa, outer, 0), P(sb, outer, 0), P(sb, outer, top), P(sa, outer, top), [lx, 0, lz], SIDE);
+      // 屋根（ホームの中央部 6 割）
+      const f0 = (sa - s0) / (s1 - s0), f1 = (sb - s0) / (s1 - s0);
+      if (f0 >= 0.2 && f1 <= 0.8) {
+        const rh = top + CANOPY_H;
+        quad(P(sa, inner + 0.3, rh), P(sb, inner + 0.3, rh), P(sb, outer - 0.3, rh), P(sa, outer - 0.3, rh), UP, ROOF);
+        quad(P(sa, inner + 0.3, rh + 0.25), P(sb, inner + 0.3, rh + 0.25), P(sb, outer - 0.3, rh + 0.25), P(sa, outer - 0.3, rh + 0.25), UP, ROOF);
+        if (k % 2 === 0) {
+          // 柱（ホームの真ん中に 1 本）
+          const c = P(sa, (inner + outer) / 2, 0);
+          addBox(body, c[0] - 0.15, c[0] + 0.15, c[1] + top, c[1] + rh, c[2] - 0.15, c[2] + 0.15, COLUMN);
+        }
+      }
+    }
+    // 駅名標：ホームの 3 か所に、線路に向けて立てる
+    for (const f of [0.25, 0.5, 0.75]) {
+      const s = s0 + (s1 - s0) * f;
+      const at = pointAt(route, s);
+      const pos = P(s, inner + 2.2, PLATFORM_TOP + 2.2);
+      signs.push({ pos, angle: at.angle, name, prev, next });
+    }
+  }
+  const mesh = new THREE.Mesh(body.build(), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  mesh.castShadow = mesh.receiveShadow = true;
+  group.add(mesh);
+  // 駅名標（板と、両側の柱）
+  const texCache = new Map();
+  for (const sg of signs) {
+    const key = `${sg.name}|${sg.prev}|${sg.next}`;
+    if (!texCache.has(key)) texCache.set(key, stationSignTexture(sg.name, sg.prev, sg.next));
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.9), new THREE.MeshBasicMaterial({ map: texCache.get(key), side: THREE.DoubleSide }));
+    board.position.set(...sg.pos);
+    board.rotation.y = -sg.angle + Math.PI / 2; // 板の面を線路に向ける（線路と平行に立てる）
+    group.add(board);
+  }
+}
+
 // ---- 道路の区画線・横断歩道・歩道 ----
 const WHITE_LINE = [0.86, 0.87, 0.85];
 const YELLOW_LINE = [0.9, 0.72, 0.2];
@@ -1281,6 +1416,8 @@ function* buildWorldSteps(map, textures) {
   group.userData = { tiles, heights, tileOf, roadHeights };
 
   addStreetLights(group, map, roadHeights);
+  yield 0.985;
+  addStations(group, map, textures);
 
   // ゴール：地面の輪と、遠くから見える光の柱
   const g = map.goal;

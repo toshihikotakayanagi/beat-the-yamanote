@@ -257,7 +257,11 @@ function prefetchSection(i) {
   if (!mapCache.has(section.id)) mapCache.set(section.id, loadMap(`data/${section.id}.json`));
   mapCache
     .get(section.id)
-    .then((map) => renderer.prepare?.(map))
+    .then((map) => {
+      // 3D版は駅のホームを電車の経路に沿って置くので、経路を先に求めておく
+      if (map.trainRoute === undefined) map.trainRoute = trainPath(map, section.fromStation, section.toStation);
+      renderer.prepare?.(map);
+    })
     .catch(() => mapCache.delete(section.id));
 }
 
