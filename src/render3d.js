@@ -11,6 +11,7 @@ import { AREA_COLORS, LINE_STYLES, cellKey, nodeKey, surfaceAt } from './map.js'
 import { PLAYER_CONFIG } from './player.js';
 import { pedLook, pedSwing } from './pedestrians.js';
 import { carLook } from './vehicles.js';
+import { signalPose, LAMPS } from './signals.js';
 
 // 夕暮れ：空は上ほど濃い紺、地平線は赤みのある紫。霧は地平線の色に合わせて遠くを溶かす
 const SKY_TOP = 0x10162a;
@@ -1176,9 +1177,12 @@ export function createRenderer3D(canvas) {
   const agentGroup = new THREE.Group();
   scene.add(agentGroup);
   for (const m of Object.values(crowd)) scene.add(m);
-  let signalMeshes = []; // [{ light, pad, group }]
+  // 信号機：区間の信号ぜんぶを、部品（地面の円・柱・腕・箱・3 つの灯）ごとに 1 つの InstancedMesh にまとめる
+  // （1 区間に 100〜200 個あり、1 個ずつ別の立体にすると描く回数が数百回増える）
+  let signalMeshes = []; // [{ group }]（並びは InstancedMesh の番号と同じ）
   const signalGroup = new THREE.Group();
   scene.add(signalGroup);
+  const signalParts = {}; // 部品の名前 → InstancedMesh
   let camAngle = null;
   let cameraMode = 'chase';
   try {
@@ -1317,27 +1321,86 @@ export function createRenderer3D(canvas) {
   }
 
   // 信号：交差点の地面の円（2D版の丸と同じ範囲）と、柱の上の灯り
+  // 信号機の形：道の左端に柱、道の上へ腕、その先に道を横切る向きの横長の箱と 3 つの灯（左から青・黄・赤）。
+  // 灯は箱を前後に突き抜ける短い円柱なので、どちらから来ても見える。高さは m
+  const SIG = { poleH: 5.6, armY: 5.45, boxY: 5.05, lampGap: 0.5 };
+  const sigGeo = {
+    pad: new THREE.CircleGeometry(2.2, 20).rotateX(-Math.PI / 2),
+    pole: new THREE.CylinderGeometry(0.09, 0.12, SIG.poleH, 8).translate(0, SIG.poleH / 2, 0),
+    arm: new THREE.BoxGeometry(1, 0.12, 0.12), // 長さは道幅に合わせて伸ばす
+    box: new THREE.BoxGeometry(1.65, 0.52, 0.36),
+    lamp: new THREE.CylinderGeometry(0.17, 0.17, 0.42, 14).rotateX(Math.PI / 2),
+  };
+  const sigMat = {
+    pad: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4, depthWrite: false }),
+    pole: new THREE.MeshLambertMaterial({ color: 0x7a808b }),
+    box: new THREE.MeshLambertMaterial({ color: 0x23262c }),
+    lamp: new THREE.MeshBasicMaterial({ color: 0xffffff }), // 光って見える（色は 1 個ずつ）
+  };
+  const sigTmp = { base: new THREE.Matrix4(), local: new THREE.Matrix4(), out: new THREE.Matrix4(), color: new THREE.Color() };
+
   function syncSignals(obs) {
     if (signalMeshes.obs === obs || !world) return;
-    signalGroup.clear();
+    for (const m of Object.values(signalParts)) {
+      signalGroup.remove(m);
+      m.dispose();
+    }
     signalMeshes = [];
     signalMeshes.obs = obs;
+    const places = [];
     for (const g of obs.signals) {
       for (const [x, z] of g.nodes) {
         // 橋や坂の上の交差点なら、その高さに置く（重なる道路のうち一番高いもの）
         const segs = surfaceAt(worldMap, x, z).segs ?? [];
         const h = Math.max(0, ...segs.map((sg) => segHeight(roadH(), sg, x, z)));
-        const pad = new THREE.Mesh(new THREE.CircleGeometry(2.2, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }));
-        pad.rotation.x = -Math.PI / 2;
-        pad.position.set(x, h + Y.signal + (h > 0 ? 0.35 : 0), z); // 坂の上では少し浮かせる（平らな円が坂に埋もれないように）
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 4.2, 6), mat(0x5a606b));
-        pole.position.set(x + 2.6, h + 2.1, z);
-        const light = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-        light.position.set(x + 2.6, h + 4.4, z);
-        signalGroup.add(pad, pole, light);
-        signalMeshes.push({ group: g, pad, light });
+        places.push({ group: g, x, z, h, pose: signalPose(worldMap, x, z) });
       }
     }
+    const n = places.length;
+    const make = (name, geo, material, shadow = false) => {
+      const m = new THREE.InstancedMesh(geo, material, Math.max(1, n));
+      m.count = n;
+      m.castShadow = shadow;
+      signalParts[name] = m;
+      signalGroup.add(m);
+      return m;
+    };
+    const pad = make('pad', sigGeo.pad, sigMat.pad);
+    const pole = make('pole', sigGeo.pole, sigMat.pole, true);
+    const arm = make('arm', sigGeo.arm, sigMat.pole, true);
+    const box = make('box', sigGeo.box, sigMat.box, true);
+    const lamps = LAMPS.map((l, i) => make(`lamp${i}`, sigGeo.lamp, sigMat.lamp));
+    const { base, local, out } = sigTmp;
+    places.forEach((p, i) => {
+      // 向き：道の向き。腕と箱は道を横切る向き（ローカルの x）、柱は道の左端（ローカルの -x）
+      base.makeTranslation(p.x, p.h, p.z).multiply(local.makeRotationY(-p.pose.angle));
+      const reach = p.pose.hw + 0.6;
+      const put = (mesh, x, y, z, sx = 1) => {
+        local.makeTranslation(x, y, z);
+        if (sx !== 1) local.multiply(out.makeScale(sx, 1, 1));
+        mesh.setMatrixAt(i, out.multiplyMatrices(base, local));
+      };
+      put(pad, 0, Y.signal + (p.h > 0 ? 0.35 : 0), 0); // 坂の上では少し浮かせる（平らな円が坂に埋もれないように）
+      put(pole, -reach, 0, 0);
+      put(arm, -reach / 2, SIG.armY, 0, reach);
+      put(box, 0, SIG.boxY, 0);
+      lamps.forEach((lamp, k) => put(lamp, (k - 1) * SIG.lampGap, SIG.boxY, 0));
+      signalMeshes.push({ group: p.group });
+    });
+    for (const m of Object.values(signalParts)) m.instanceMatrix.needsUpdate = true;
+  }
+
+  // 信号の色：点いている灯だけ明るく、地面の円は今の色
+  function updateSignalColors(obs) {
+    const { color } = sigTmp;
+    const states = new Map();
+    signalMeshes.forEach((s, i) => {
+      let st = states.get(s.group);
+      if (!st) states.set(s.group, (st = signalState(s.group, obs.clock)));
+      signalParts.pad.setColorAt(i, color.setHex(SIGNAL_COLORS[st]));
+      LAMPS.forEach((l, k) => signalParts[`lamp${k}`].setColorAt(i, color.set(l.state === st ? l.on : l.off)));
+    });
+    for (const m of Object.values(signalParts)) if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }
 
   function syncAgents(obs) {
@@ -1686,11 +1749,7 @@ export function createRenderer3D(canvas) {
       sun.position.set(p.x + SUN_DIR.x * 300, SUN_DIR.y * 300, p.y + SUN_DIR.z * 300);
 
       syncSignals(game.obstacles);
-      for (const s of signalMeshes) {
-        const c = SIGNAL_COLORS[signalState(s.group, game.obstacles.clock)];
-        s.light.material.color.setHex(c);
-        s.pad.material.color.setHex(c);
-      }
+      updateSignalColors(game.obstacles);
       syncAgents(game.obstacles);
       syncTrain(game);
       placeCamera(game, dt);

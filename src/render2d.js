@@ -34,7 +34,7 @@ export function createRenderer2D() {
       const halfH = canvas.height / 2 / scale;
       const view = { left: p.x - halfW, top: p.y - halfH, right: p.x + halfW, bottom: p.y + halfH };
       drawMap(ctx, game.map, view);
-      drawObstacles(ctx, game.obstacles, view, { weather: game.weather });
+      drawObstacles(ctx, game.obstacles, view, { weather: game.weather, map: game.map });
       // ライバルの電車：カウントダウン〜結果のあいだ、線路の上を走る（自転車やゴーストより下）
       if (game.inRace && game.map.trainRoute) drawTrain(ctx, game.map.trainRoute, game.trainProgress);
       // ゴーストは自転車の下に描く

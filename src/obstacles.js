@@ -3,6 +3,7 @@
 import { cellKey, nodeKey } from './map.js';
 import { pedLook, pedSwing } from './pedestrians.js';
 import { carLook } from './vehicles.js';
+import { signalPose, LAMPS } from './signals.js';
 
 // 信号のサイクル（秒）。近くの信号（同じ交差点）は同じ色になる。
 // 赤の平均待ち時間（6秒）と信号無視のペナルティ（main.js で 5 秒）を近くして、
@@ -380,7 +381,41 @@ function drawCar(ctx, a) {
   ctx.restore();
 }
 
-// opts.weather：天気（雨の日は歩行者が傘をさす）
+// 信号機を真上から見た形で描く：道の端の柱から道の上へ伸びる腕と、道を横切る向きの横長の箱に 3 つの灯（左から青・黄・赤）。
+// 点いている灯だけ明るい。見やすいよう実寸より大きい
+function drawSignalHead(ctx, x, y, pose, state) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(pose.angle);
+  // 腕（道の左端から中央へ）
+  ctx.strokeStyle = '#7a808b';
+  ctx.lineWidth = 0.25;
+  ctx.beginPath();
+  ctx.moveTo(-pose.hw - 0.6, 0);
+  ctx.lineTo(0, 0);
+  ctx.stroke();
+  ctx.fillStyle = '#7a808b';
+  ctx.beginPath();
+  ctx.arc(-pose.hw - 0.6, 0, 0.35, 0, Math.PI * 2);
+  ctx.fill();
+  // 箱と灯
+  ctx.fillStyle = '#1b1d22';
+  ctx.strokeStyle = '#5a606b';
+  ctx.lineWidth = 0.12;
+  ctx.beginPath();
+  ctx.roundRect(-1.5, -0.55, 3, 1.1, 0.4);
+  ctx.fill();
+  ctx.stroke();
+  LAMPS.forEach((lamp, i) => {
+    ctx.fillStyle = lamp.state === state ? lamp.on : lamp.off;
+    ctx.beginPath();
+    ctx.arc(-0.95 + i * 0.95, 0, 0.36, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
+// opts.weather：天気（雨の日は歩行者が傘をさす）、opts.map：地図（信号機の向きを道に合わせる）
 export function drawObstacles(ctx, obs, view, opts = {}) {
   const visible = (x, y) => x > view.left - 5 && x < view.right + 5 && y > view.top - 5 && y < view.bottom + 5;
 
@@ -388,13 +423,17 @@ export function drawObstacles(ctx, obs, view, opts = {}) {
     const state = signalState(g, obs.clock);
     for (const [x, y] of g.nodes) {
       if (!visible(x, y)) continue;
+      // 地面の円（信号の色。この近くで赤だと信号無視）
+      ctx.globalAlpha = 0.5;
       ctx.fillStyle = SIGNAL_COLORS[state];
-      ctx.strokeStyle = '#111317';
-      ctx.lineWidth = 0.6;
       ctx.beginPath();
       ctx.arc(x, y, 2.2, 0, Math.PI * 2);
       ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = SIGNAL_COLORS[state];
+      ctx.lineWidth = 0.35;
       ctx.stroke();
+      if (opts.map) drawSignalHead(ctx, x, y, signalPose(opts.map, x, y), state);
     }
   }
 
