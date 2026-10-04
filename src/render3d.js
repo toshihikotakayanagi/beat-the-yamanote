@@ -6,7 +6,7 @@
 // 向き：自転車などの angle（北が 0、時計回り）は rotation.y = -angle（前が -z 方向のモデル）。
 import * as THREE from 'three';
 import { signalState } from './obstacles.js';
-import { pointAt, frontDistance, carCount } from './trainpath.js';
+import { pointAt, frontDistance, carCount, ELEVATED_H } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, cellKey } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
 
@@ -47,6 +47,7 @@ const CAMERA_EASE = 2.5; // 高さ・距離・画角の変わる速さ（1 秒�
 const LEAN_INTO_TURN = 0.35; // 曲がっているとき、向きの変わる速さ（rad/s）× この秒数ぶん先を見る
 const STORAGE_KEY = 'yamanote-race:camera3d';
 const LANDMARK_RANGE = 380; // この距離までのランドマークの名前を出す m
+const SHADOW_RANGE = 110; // 影を付ける範囲（自転車のまわり、この距離の四方）m
 
 // 空：カメラを囲む球の内側に、上ほど濃い色のグラデーションを描く
 function makeSky() {
@@ -202,6 +203,48 @@ function addDisc(b, x, z, r, y, seg) {
   }
 }
 
+// 高架橋：線の下に厚さ DECK_T の板（上面と両側面）を作る
+const DECK_T = 1.1;
+const DECK_EXTRA = 1.6; // 線路の幅より広げる m
+const DECK_COLOR = 0x6a6e78;
+const PILLAR_SPACING = 16;
+
+function addDeck(b, p, w, y) {
+  addRibbon(b, p, w, y); // 上面
+  const hw = w / 2;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    if (len < 1e-6) continue;
+    const nx = -(z2 - z1) / len, nz = (x2 - x1) / len;
+    for (const side of [1, -1]) {
+      const ox = nx * hw * side, oz = nz * hw * side;
+      const a = [x1 + ox, y, z1 + oz], c = [x2 + ox, y, z2 + oz], d = [x2 + ox, y - DECK_T, z2 + oz], e = [x1 + ox, y - DECK_T, z1 + oz];
+      const n = [nx * side, 0, nz * side];
+      b.tri(a, c, d, n);
+      b.tri(a, d, e, n);
+    }
+  }
+  addRibbon(b, p, w, y - DECK_T); // 下面
+}
+
+// 高架橋の柱の位置（線に沿って PILLAR_SPACING m おき）
+function pillarSpots(p) {
+  const spots = [];
+  let next = PILLAR_SPACING / 2, walked = 0;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const x1 = p[i], z1 = p[i + 1], x2 = p[i + 2], z2 = p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    while (next <= walked + len) {
+      const t = (next - walked) / len;
+      spots.push([x1 + (x2 - x1) * t, z1 + (z2 - z1) * t]);
+      next += PILLAR_SPACING;
+    }
+    walked += len;
+  }
+  return spots;
+}
+
 // 多角形（[x0, y0, ...]）を高さ y の平面として塗る
 function addPolygon(b, p, y) {
   const ring = openRing(p);
@@ -300,7 +343,7 @@ function addStreetLights(group, map) {
   poolGeo.rotateX(-Math.PI / 2);
   const pool = new THREE.InstancedMesh(
     poolGeo,
-    new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ color: 0x8a6a48, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }),
     spots.length,
   );
   const m = new THREE.Matrix4();
@@ -318,6 +361,7 @@ function buildWorld(map, textures) {
   const { minX, minY, maxX, maxY } = map.bounds;
 
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(maxX - minX + 2000, maxY - minY + 2000), mat(GROUND));
+  ground.receiveShadow = true;
   ground.rotation.x = -Math.PI / 2;
   ground.position.set((minX + maxX) / 2, 0, (minY + maxY) / 2);
   group.add(ground);
@@ -328,16 +372,38 @@ function buildWorld(map, textures) {
     const b = (areaBuilders[a.k] ??= new GeometryBuilder());
     for (const r of a.r) addPolygon(b, r, a.k === 'water' ? Y.water : Y.area);
   }
-  for (const [k, b] of Object.entries(areaBuilders)) group.add(new THREE.Mesh(b.build(), mat(hex(AREA_COLORS[k] ?? AREA_COLORS.grass))));
+  for (const [k, b] of Object.entries(areaBuilders)) {
+    const m = new THREE.Mesh(b.build(), mat(hex(AREA_COLORS[k] ?? AREA_COLORS.grass)));
+    m.receiveShadow = true;
+    group.add(m);
+  }
 
-  // 川と線路（トンネルは描かない）
+  // 川と線路（トンネルは描かない）。高い所を走る線路（e: 1）は、柱の上の高架橋として持ち上げる
   const lineBuilders = {};
+  const deck = new GeometryBuilder();
+  const pillars = [];
   for (const l of map.lines) {
     if (l.u) continue;
     const b = (lineBuilders[l.k] ??= new GeometryBuilder());
-    addRibbon(b, l.p, l.w, l.k === 'river' ? Y.river : Y.rail);
+    if (l.e && l.k !== 'river') {
+      addRibbon(b, l.p, l.w, ELEVATED_H + 0.05);
+      addDeck(deck, l.p, l.w + DECK_EXTRA, ELEVATED_H);
+      pillars.push(...pillarSpots(l.p));
+    } else {
+      addRibbon(b, l.p, l.w, l.k === 'river' ? Y.river : Y.rail);
+    }
   }
   for (const [k, b] of Object.entries(lineBuilders)) group.add(new THREE.Mesh(b.build(), mat(hex((LINE_STYLES[k] ?? LINE_STYLES.rail).color))));
+  const deckMesh = new THREE.Mesh(deck.build(), mat(DECK_COLOR));
+  deckMesh.castShadow = deckMesh.receiveShadow = true;
+  group.add(deckMesh);
+  if (pillars.length) {
+    const pillar = new THREE.InstancedMesh(new THREE.BoxGeometry(1.1, ELEVATED_H - DECK_T, 1.1), mat(DECK_COLOR), pillars.length);
+    const m = new THREE.Matrix4();
+    pillars.forEach(([x, z], i) => pillar.setMatrixAt(i, m.makeTranslation(x, (ELEVATED_H - DECK_T) / 2, z)));
+    pillar.castShadow = true;
+    group.add(pillar);
+  }
 
   // 道路（歩道・車道）と一方通行の矢印
   const paths = new GeometryBuilder(), roads = new GeometryBuilder(), arrows = new GeometryBuilder();
@@ -351,8 +417,11 @@ function buildWorld(map, textures) {
       arrows.tri(at(0, -2.2), at(0, 0.6), at(1.6, 1.4), UP);
     }
   }
-  group.add(new THREE.Mesh(paths.build(), mat(PATH)));
-  group.add(new THREE.Mesh(roads.build(), mat(ROAD)));
+  for (const [b, color] of [[paths, PATH], [roads, ROAD]]) {
+    const m = new THREE.Mesh(b.build(), mat(color));
+    m.receiveShadow = true;
+    group.add(m);
+  }
   group.add(new THREE.Mesh(arrows.build(), mat(ARROW, { side: THREE.DoubleSide })));
 
   // 建物（高い建物ほど少し明るく）。TILE ごとに 1 つの立体にまとめる
@@ -383,6 +452,7 @@ function buildWorld(map, textures) {
       emissiveIntensity: 0.9,
     });
     const mesh = new THREE.Mesh(b.build(), material);
+    mesh.castShadow = mesh.receiveShadow = true;
     mesh.userData.opacity = 1;
     tiles.set(key, mesh);
     group.add(mesh);
@@ -411,21 +481,70 @@ function buildWorld(map, textures) {
   return group;
 }
 
-// 自転車（黄色。前に赤い印）と、乗っている人
+// 自転車（黄色の車体、前に赤い印）と、乗っている人。車輪は回り、足はこぎ、曲がるときは傾く（animateBike）
+const WHEEL_R = 0.34;
 function makeBike(color = 0xffcc33, nose = 0xe8443a, opacity = 1) {
   const transparent = opacity < 1;
   const o = { transparent, opacity, depthWrite: !transparent };
   const bike = new THREE.Group();
-  const frame = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.7, 1.7), mat(color, o));
-  frame.position.y = 0.55;
-  const front = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.4), mat(nose, o));
-  front.position.set(0, 0.95, -0.75);
-  const rider = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.75, 0.4), mat(color, o));
-  rider.position.set(0, 1.45, 0.1);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 8), mat(0xf2d0a9, o));
-  head.position.set(0, 1.98, 0.05);
-  bike.add(frame, front, rider, head);
+  bike.rotation.order = 'YXZ'; // 向き（y）のあとに傾き（z）
+  const body = new THREE.Group(); // 傾く部分
+  bike.add(body);
+  const wheelGeo = new THREE.TorusGeometry(WHEEL_R, 0.05, 6, 18);
+  wheelGeo.rotateY(Math.PI / 2);
+  const wheels = [-0.55, 0.55].map((z) => {
+    const w = new THREE.Mesh(wheelGeo, mat(0x1b1d22, o));
+    w.position.set(0, WHEEL_R, z);
+    // 車輪の向きがわかるよう、スポークを 1 本
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.03, WHEEL_R * 2, 0.03), mat(0x9aa0aa, o));
+    w.add(spoke);
+    body.add(w);
+    return w;
+  });
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.1), mat(color, o));
+  frame.position.set(0, 0.62, 0);
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.1), mat(color, o));
+  post.position.set(0, 0.85, 0.15);
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.08), mat(nose, o));
+  bar.position.set(0, 1.05, -0.5);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.62, 0.3), mat(color, o));
+  torso.position.set(0, 1.42, -0.02);
+  torso.rotation.x = -0.35; // 前かがみ
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), mat(0xf2d0a9, o));
+  head.position.set(0, 1.86, -0.18);
+  body.add(frame, post, bar, torso, head);
+  // 足：腰を軸に前後にこぐ
+  const legs = [-0.12, 0.12].map((x) => {
+    const hip = new THREE.Group();
+    hip.position.set(x, 1.12, 0.12);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.75, 0.15), mat(0x2c3e66, o));
+    leg.position.y = -0.37;
+    hip.add(leg);
+    body.add(hip);
+    return hip;
+  });
+  bike.userData = { body, wheels, legs, phase: 0, lean: 0, prevAngle: null };
   return bike;
+}
+
+// 自転車を pose（x, y, angle）に置き、速さ speed（m/s）に合わせて車輪を回し足をこがせ、曲がる速さに合わせて傾ける
+function animateBike(bike, pose, speed, dt) {
+  const s = bike.userData;
+  bike.position.set(pose.x, 0, pose.y);
+  bike.rotation.y = -pose.angle;
+  if (s.prevAngle === null || dt <= 0) s.prevAngle = pose.angle;
+  const turn = dt > 0 ? Math.atan2(Math.sin(pose.angle - s.prevAngle), Math.cos(pose.angle - s.prevAngle)) / dt : 0;
+  s.prevAngle = pose.angle;
+  // 傾き：曲がる速さ × 速さ（遠心力の向きと逆、つまり曲がる側に倒す）。急に変わらないよう追いかける
+  const target = Math.max(-0.4, Math.min(0.4, -turn * Math.abs(speed) * 0.045));
+  s.lean += (target - s.lean) * Math.min(1, 8 * dt);
+  s.body.rotation.z = s.lean;
+  // 車輪とペダル：進んだ距離だけ回す（ペダルは車輪よりゆっくり）
+  s.phase += (speed * dt) / WHEEL_R;
+  for (const w of s.wheels) w.rotation.x = -s.phase;
+  const pedal = s.phase * 0.45;
+  s.legs[0].rotation.x = Math.sin(pedal) * 0.55;
+  s.legs[1].rotation.x = -Math.sin(pedal) * 0.55;
 }
 
 // 電車 1 両：銀色の車体に黄緑の帯、先頭車は黒い窓
@@ -444,7 +563,11 @@ function makeTrainCar(lead) {
     cab.position.set(0, 3, -CAR_LEN / 2 - 0.02);
     car.add(cab);
   }
-  car.traverse((m) => m.material && (m.material.transparent = true));
+  car.traverse((m) => {
+    if (!m.material) return;
+    m.material.transparent = true;
+    m.castShadow = true;
+  });
   return car;
 }
 
@@ -470,7 +593,25 @@ export function createRenderer3D(canvas) {
   scene.add(new THREE.HemisphereLight(0x9aa6d8, 0x2a2228, 1.5));
   const sun = new THREE.DirectionalLight(0xffb07a, 1.5);
   sun.position.set(-1, 0.35, 0.25);
-  scene.add(sun);
+  scene.add(sun, sun.target);
+  // 影：夕日なので長く伸びる。重いので、タッチ操作の端末（スマホ・タブレット）では今は付けない
+  const shadows = !window.matchMedia('(pointer: coarse)').matches;
+  if (shadows) {
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    const sc = sun.shadow.camera;
+    sc.left = -SHADOW_RANGE;
+    sc.right = SHADOW_RANGE;
+    sc.top = SHADOW_RANGE;
+    sc.bottom = -SHADOW_RANGE;
+    sc.near = 1;
+    sc.far = 600;
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.6;
+  }
+  const SUN_DIR = new THREE.Vector3(-1, 0.35, 0.25).normalize();
   const sky = makeSky();
   scene.add(sky);
   const textures = windowTextures(renderer.capabilities.getMaxAnisotropy());
@@ -480,7 +621,9 @@ export function createRenderer3D(canvas) {
   let worldMap = null;
   const player = makeBike();
   const ghost = makeBike(0xe8ecf4, 0x9aa0aa, 0.45);
+  player.traverse((m) => m.isMesh && (m.castShadow = true));
   scene.add(player, ghost);
+  let ghostPrev = null; // ゴーストの速さを求めるための前回の位置
   const train = [];
   const trainGroup = new THREE.Group();
   scene.add(trainGroup);
@@ -558,6 +701,7 @@ export function createRenderer3D(canvas) {
           m = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 1.65, 8), mat(0xc9b8ff));
           m.geometry.translate(0, 0.83, 0);
         }
+        m.traverse((o) => o.isMesh && (o.castShadow = true));
         agentMeshes.set(a, m);
         agentGroup.add(m);
       }
@@ -584,8 +728,10 @@ export function createRenderer3D(canvas) {
       // 車両の前後の位置から向きを決める（曲線でも線路に沿う）
       const head = pointAt(route, front - 20 * i - 0.4);
       const tail = pointAt(route, front - 20 * (i + 1) + 0.4);
-      car.position.set((head.x + tail.x) / 2, 0, (head.y + tail.y) / 2);
+      car.position.set((head.x + tail.x) / 2, (head.h + tail.h) / 2, (head.y + tail.y) / 2);
+      car.rotation.order = 'YXZ';
       car.rotation.y = -Math.atan2(head.x - tail.x, -(head.y - tail.y));
+      car.rotation.x = Math.atan2(head.h - tail.h, CAR_LEN); // 坂では前を上げ下げする
       const under = head.under || tail.under;
       car.traverse((m) => m.material && (m.material.opacity = under ? 0.25 : 1));
     });
@@ -746,12 +892,20 @@ export function createRenderer3D(canvas) {
       if (game.map !== worldMap) setMap(game.map);
 
       const p = game.player;
-      player.position.set(p.x, 0, p.y);
-      player.rotation.y = -p.angle;
+      animateBike(player, p, game.state === 'racing' ? p.speed : 0, dt);
       ghost.visible = Boolean(game.ghostPose);
       if (game.ghostPose) {
-        ghost.position.set(game.ghostPose.x, 0, game.ghostPose.y);
-        ghost.rotation.y = -game.ghostPose.angle;
+        const gp = game.ghostPose;
+        const gs = ghostPrev && dt > 0 ? Math.hypot(gp.x - ghostPrev.x, gp.y - ghostPrev.y) / dt : 0;
+        animateBike(ghost, gp, Math.min(gs, 20), dt);
+        ghostPrev = { x: gp.x, y: gp.y };
+      } else {
+        ghostPrev = null;
+      }
+      if (shadows) {
+        // 影を付ける範囲を自転車について動かす
+        sun.target.position.set(p.x, 0, p.y);
+        sun.position.set(p.x + SUN_DIR.x * 300, SUN_DIR.y * 300, p.y + SUN_DIR.z * 300);
       }
 
       syncSignals(game.obstacles);

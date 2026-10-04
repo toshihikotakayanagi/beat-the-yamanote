@@ -238,8 +238,12 @@ function lineKind(tags, lengthM) {
     const yamanote = /山手線/.test(tags.name ?? '');
     // 山手線のトンネル（目黒駅の手前の約270mなど）は描かないが、電車が地図の上を走る道筋に使うので u: 1 を付けて残す
     if (tunnel || tags.location === 'underground') return yamanote ? { k: 'yamanote', w: 3, u: 1 } : null;
-    // 山手線は路線の色で目立たせる（名前に「山手線」を含む線路）
-    return { k: yamanote ? 'yamanote' : 'rail', w: 3 };
+    // 山手線は路線の色で目立たせる（名前に「山手線」を含む線路）。
+    // e: 1 は高い所を走る線路（橋・高架・土手）。3D版で持ち上げて描き、電車もその高さを走る
+    const line = { k: yamanote ? 'yamanote' : 'rail', w: 3 };
+    const elevated = (tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.embankment === 'yes' || tags.viaduct === 'yes';
+    if (elevated && !line.u) line.e = 1;
+    return line;
   }
   // 川は暗渠（tunnel=culvert など）と地下を外す
   if ((tags.tunnel && tags.tunnel !== 'no') || Number(tags.layer) < 0 || tags.location === 'underground') return null;

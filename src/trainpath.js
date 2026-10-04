@@ -7,7 +7,9 @@ const GAP_M = 60; // 線路の切れ目（地下の部分を外したところ�
 const GAP_COST = 3; // 切れ目をつなぐ線は、線路より通りにくくする（線路があればそちらを選ぶ）
 const STATION_SLACK_M = 150; // 駅のまわりで出発・到着の候補にする範囲
 const STATION_COST = 4; // 駅から離れた点ほど割高にする（駅の手前で道のりを縮めないように）
-const OTHER_RAIL_COST = 2; // 山手線以外の線路（渡り線など）は、必要なところだけ通るよう割高にする
+const OTHER_RAIL_COST = 2;
+export const ELEVATED_H = 6; // 高い所を走る線路（橋・高架・土手。e: 1）の高さ m（3D版）
+const RAMP_M = 45; // 高さの変わり目は、前後この距離で平均してなめらかにする（電車が段差を跳ねないように） // 山手線以外の線路（渡り線など）は、必要なところだけ通るよう割高にする
 
 // 駅の緯度経度 → 区間の座標（m。x は東、y は南が正）
 export function stationXY(map, st) {
@@ -25,12 +27,12 @@ export function trainPath(map, from, to) {
   const key = (x, y) => `${x},${y}`;
   const pos = new Map();
   const adj = new Map();
-  // 辺：[行き先, コスト, 切れ目をつないだ線か, トンネルか]
-  const link = (a, b, cost, jump = false, under = false) => {
+  // 辺：[行き先, コスト, 切れ目をつないだ線か, トンネルか, 高い所か]
+  const link = (a, b, cost, jump = false, under = false, high = false) => {
     if (!adj.has(a)) adj.set(a, []);
     if (!adj.has(b)) adj.set(b, []);
-    adj.get(a).push([b, cost, jump, under]);
-    adj.get(b).push([a, cost, jump, under]);
+    adj.get(a).push([b, cost, jump, under, high]);
+    adj.get(b).push([a, cost, jump, under, high]);
   };
   for (const t of tracks) {
     for (let i = 0; i + 3 < t.p.length; i += 2) {
@@ -38,7 +40,7 @@ export function trainPath(map, from, to) {
       pos.set(a, [t.p[i], t.p[i + 1]]);
       pos.set(b, [t.p[i + 2], t.p[i + 3]]);
       const cost = Math.hypot(t.p[i + 2] - t.p[i], t.p[i + 3] - t.p[i + 1]) * (t.k === 'yamanote' ? 1 : OTHER_RAIL_COST);
-      link(a, b, cost, false, Boolean(t.u));
+      link(a, b, cost, false, Boolean(t.u), Boolean(t.e));
     }
   }
   // 行き止まりの点から近くの線路の点へ、切れ目をつなぐ線を足す
@@ -80,20 +82,20 @@ export function trainPath(map, from, to) {
     for (const [k, d] of dist) if (!done.has(k) && d < du) (u = k), (du = d);
     if (u === null || u === g) break;
     done.add(u);
-    for (const [v, cost, jump, under] of adj.get(u)) {
+    for (const [v, cost, jump, under, high] of adj.get(u)) {
       if (du + cost < (dist.get(v) ?? Infinity)) {
         dist.set(v, du + cost);
-        prev.set(v, [u, jump, under]);
+        prev.set(v, [u, jump, under, high]);
       }
     }
   }
   if (!dist.has(g)) return null;
   const path = [];
   let jumps = 0;
-  // 点は [x, y, その点に着く区間がトンネルか]
+  // 点は [x, y, その点に着く区間がトンネルか, その点に着く区間が高い所か]
   for (let c = prev.get(g)[0]; c !== s; ) {
     const p = prev.get(c);
-    path.unshift([...pos.get(c), p[2] ? 1 : 0]);
+    path.unshift([...pos.get(c), p[2] ? 1 : 0, p[3] ? 1 : 0]);
     if (p[1]) jumps++;
     c = p[0];
   }
@@ -101,7 +103,25 @@ export function trainPath(map, from, to) {
   const offsets = [Math.hypot(path[0][0] - fromXY[0], path[0][1] - fromXY[1]), Math.hypot(path.at(-1)[0] - toXY[0], path.at(-1)[1] - toXY[1])];
   const cum = [0];
   for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
-  return { path, cum, length: cum.at(-1), offsets, jumps };
+  return { path, cum, length: cum.at(-1), offsets, jumps, heights: smoothHeights(path, cum) };
+}
+
+// 経路の点ごとの高さ m（3D版）。区間ごとの高さ（高い所なら ELEVATED_H）を、前後 RAMP_M の範囲で平均する
+function smoothHeights(path, cum) {
+  const n = path.length;
+  // 区間 i（点 i-1 → i）の高さ。最初の点は次の区間に合わせる
+  const seg = path.map((p, i) => (i === 0 ? (path[1]?.[3] ?? 0) : p[3]) * ELEVATED_H);
+  return path.map((_, i) => {
+    let sum = 0, weight = 0;
+    for (let j = 1; j < n; j++) {
+      // 区間 j のうち、点 i の前後 RAMP_M に入る長さで重みをつける
+      const a = Math.max(cum[j - 1], cum[i] - RAMP_M), b = Math.min(cum[j], cum[i] + RAMP_M);
+      if (b <= a) continue;
+      sum += seg[j] * (b - a);
+      weight += b - a;
+    }
+    return weight > 0 ? sum / weight : seg[i];
+  });
 }
 
 // 経路の先頭から d m の位置と向き（angle は北が 0、時計回り。自転車と同じ）。under：トンネルの中か
@@ -113,7 +133,8 @@ export function pointAt(route, d) {
   const [ax, ay] = path[i - 1], [bx, by] = path[i];
   const seg = cum[i] - cum[i - 1] || 1;
   const t = (d - cum[i - 1]) / seg;
-  return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t, angle: Math.atan2(bx - ax, -(by - ay)), under: Boolean(path[i][2]) };
+  const h = route.heights ? route.heights[i - 1] + (route.heights[i] - route.heights[i - 1]) * t : 0;
+  return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t, h, angle: Math.atan2(bx - ax, -(by - ay)), under: Boolean(path[i][2]) };
 }
 
 // ---- 描画 ----
