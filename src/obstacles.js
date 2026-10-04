@@ -2,6 +2,7 @@
 // 歩行者と車は自転車の周りだけに出し、遠ざかったら消す（地図全体には置かない）。
 import { cellKey, nodeKey } from './map.js';
 import { pedLook, pedSwing } from './pedestrians.js';
+import { carLook } from './vehicles.js';
 
 // 信号のサイクル（秒）。近くの信号（同じ交差点）は同じ色になる。
 // 赤の平均待ち時間（6秒）と信号無視のペナルティ（main.js で 5 秒）を近くして、
@@ -312,6 +313,73 @@ function drawPedestrian(ctx, a, weather) {
   ctx.restore();
 }
 
+// 色を明るく・暗くする（#rrggbb、k > 1 で明るく）
+function shade(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  const c = (v) => Math.max(0, Math.min(255, Math.round(v * k)));
+  return `rgb(${c(n >> 16)}, ${c((n >> 8) & 255)}, ${c(n & 255)})`;
+}
+
+// 車を真上から見た形で描く：角の丸い車体、前後の窓、屋根、ドアミラー、ライト（タクシーは屋根の行灯）
+function drawCar(ctx, a) {
+  const c = carLook(a);
+  const hl = c.L / 2, hw = c.W / 2;
+  const [fb, bb] = c.cabinBottom, [ft, bt] = c.cabinTop; // 窓の部分の前後（下と上）
+  const glass = 'rgba(25, 30, 40, 0.92)';
+  ctx.save();
+  ctx.translate(a.x, a.y);
+  ctx.rotate(a.angle);
+  // 影（車体の縁取り）
+  ctx.fillStyle = 'rgba(10, 12, 16, 0.55)';
+  ctx.beginPath();
+  ctx.roundRect(-hw - 0.08, -hl - 0.08, c.W + 0.16, c.L + 0.16, 0.55);
+  ctx.fill();
+  // 車体
+  ctx.fillStyle = c.color;
+  ctx.beginPath();
+  ctx.roundRect(-hw, -hl, c.W, c.L, 0.5);
+  ctx.fill();
+  // ドアミラー
+  ctx.fillRect(-hw - 0.14, fb + 0.15, 0.14, 0.18);
+  ctx.fillRect(hw, fb + 0.15, 0.14, 0.18);
+  // 前の窓（フロントガラス）と後ろの窓：窓の部分の下と上のあいだ
+  ctx.fillStyle = glass;
+  ctx.beginPath();
+  ctx.moveTo(-hw * 0.88, fb);
+  ctx.lineTo(hw * 0.88, fb);
+  ctx.lineTo(hw * 0.78, ft);
+  ctx.lineTo(-hw * 0.78, ft);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-hw * 0.78, bt);
+  ctx.lineTo(hw * 0.78, bt);
+  ctx.lineTo(hw * 0.86, bb);
+  ctx.lineTo(-hw * 0.86, bb);
+  ctx.closePath();
+  ctx.fill();
+  // 横の窓（細い帯）
+  ctx.fillRect(-hw * 0.9, ft, 0.12, bt - ft);
+  ctx.fillRect(hw * 0.9 - 0.12, ft, 0.12, bt - ft);
+  // 屋根（少し明るく）
+  ctx.fillStyle = shade(c.color.startsWith('#') ? c.color : '#888888', 1.12);
+  ctx.beginPath();
+  ctx.roundRect(-hw * 0.74, ft + 0.05, hw * 1.48, bt - ft - 0.1, 0.25);
+  ctx.fill();
+  if (c.sign) {
+    ctx.fillStyle = '#ffd34d'; // タクシーの行灯
+    ctx.fillRect(-0.28, (ft + bt) / 2 - 0.12, 0.56, 0.24);
+  }
+  // ライト：前は白、後ろは赤
+  ctx.fillStyle = '#fff6d5';
+  ctx.fillRect(-hw + 0.12, -hl + 0.02, 0.38, 0.16);
+  ctx.fillRect(hw - 0.5, -hl + 0.02, 0.38, 0.16);
+  ctx.fillStyle = '#ff4d4d';
+  ctx.fillRect(-hw + 0.1, hl - 0.16, 0.36, 0.13);
+  ctx.fillRect(hw - 0.46, hl - 0.16, 0.36, 0.13);
+  ctx.restore();
+}
+
 // opts.weather：天気（雨の日は歩行者が傘をさす）
 export function drawObstacles(ctx, obs, view, opts = {}) {
   const visible = (x, y) => x > view.left - 5 && x < view.right + 5 && y > view.top - 5 && y < view.bottom + 5;
@@ -335,14 +403,7 @@ export function drawObstacles(ctx, obs, view, opts = {}) {
     if (a.kind === 'ped') {
       drawPedestrian(ctx, a, opts.weather);
     } else {
-      ctx.save();
-      ctx.translate(a.x, a.y);
-      ctx.rotate(a.angle);
-      ctx.fillStyle = a.color;
-      ctx.fillRect(-0.95, -2.25, 1.9, 4.5);
-      ctx.fillStyle = 'rgba(20, 24, 30, 0.7)'; // フロントガラス
-      ctx.fillRect(-0.8, -1.3, 1.6, 0.9);
-      ctx.restore();
+      drawCar(ctx, a);
     }
   }
 }

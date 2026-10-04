@@ -10,6 +10,7 @@ import { pointAt, frontDistance, carCount, ELEVATED_H } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, cellKey, nodeKey, surfaceAt } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
 import { pedLook, pedSwing } from './pedestrians.js';
+import { carLook } from './vehicles.js';
 
 // 夕暮れ：空は上ほど濃い紺、地平線は赤みのある紫。霧は地平線の色に合わせて遠くを溶かす
 const SKY_TOP = 0x10162a;
@@ -917,13 +918,102 @@ function makeCrowd() {
   return crowd;
 }
 
-function makeCar(color) {
+// ---- 車 ----
+// 車体・窓の部分（前後が斜め）・屋根・タイヤ・バンパーを 1 つの立体に、ライト（光って見える）をもう 1 つにまとめる。
+// 車種と色が同じ車は同じ形を使い回す
+const rgb = (hex) => {
+  const c = new THREE.Color(hex);
+  return [c.r, c.g, c.b];
+};
+// 8 つの角（下の 4 つ・上の 4 つ。同じ順で回る）の六面体
+function addHexa(b, corners, color) {
+  const [b0, b1, b2, b3, t0, t1, t2, t3] = corners;
+  const center = corners.reduce((s, p) => [s[0] + p[0] / 8, s[1] + p[1] / 8, s[2] + p[2] / 8], [0, 0, 0]);
+  const quad = (p0, p1, p2, p3) => {
+    const u = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]], v = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const len = Math.hypot(...n) || 1;
+    n = n.map((x) => x / len);
+    const fc = [(p0[0] + p2[0]) / 2 - center[0], (p0[1] + p2[1]) / 2 - center[1], (p0[2] + p2[2]) / 2 - center[2]];
+    if (n[0] * fc[0] + n[1] * fc[1] + n[2] * fc[2] < 0) n = n.map((x) => -x); // 外向きに
+    b.tri(p0, p1, p2, n, color);
+    b.tri(p0, p2, p3, n, color);
+  };
+  quad(b0, b1, b2, b3); // 底
+  quad(t0, t1, t2, t3); // 上
+  quad(b0, b1, t1, t0);
+  quad(b1, b2, t2, t1);
+  quad(b2, b3, t3, t2);
+  quad(b3, b0, t0, t3);
+}
+// 箱（x：左右、y：高さ、z：前後）
+function addBox(b, x0, x1, y0, y1, z0, z1, color) {
+  addHexa(b, [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], color);
+}
+// 横向きの円柱（タイヤ）
+function addWheel(b, x, y, z, r, w, color, sides = 10) {
+  for (let i = 0; i < sides; i++) {
+    const a0 = (i / sides) * Math.PI * 2, a1 = ((i + 1) / sides) * Math.PI * 2;
+    const p = (a, dx) => [x + dx, y + Math.sin(a) * r, z + Math.cos(a) * r];
+    const n = [0, Math.sin((a0 + a1) / 2), Math.cos((a0 + a1) / 2)];
+    b.tri(p(a0, -w / 2), p(a1, -w / 2), p(a1, w / 2), n, color);
+    b.tri(p(a0, -w / 2), p(a1, w / 2), p(a0, w / 2), n, color);
+    b.tri([x - w / 2, y, z], p(a1, -w / 2), p(a0, -w / 2), [-1, 0, 0], color);
+    b.tri([x + w / 2, y, z], p(a0, w / 2), p(a1, w / 2), [1, 0, 0], color);
+  }
+}
+
+const carGeometries = new Map(); // 車種と色 → { body, lights }
+function carGeometry(look) {
+  const key = `${look.type}:${look.color}`;
+  let g = carGeometries.get(key);
+  if (g) return g;
+  const body = new GeometryBuilder(true), lights = new GeometryBuilder(true);
+  const hl = look.L / 2, hw = look.W / 2;
+  const paint = rgb(look.color), glass = rgb('#1c222b'), dark = rgb('#25282e'), tire = rgb('#141518');
+  const [y0, y1] = look.body, [c0, c1] = look.cabin;
+  // 下の車体（前後の端は少し低く削る）
+  addHexa(body, [[-hw, y0, -hl], [hw, y0, -hl], [hw, y0, hl], [-hw, y0, hl], [-hw, y1 - 0.1, -hl], [hw, y1 - 0.1, -hl], [hw, y1, hl - 0.2], [-hw, y1, hl - 0.2]], paint);
+  addBox(body, -hw + 0.02, hw - 0.02, y1 - 0.1, y1, -hl + 0.25, hl - 0.2, paint);
+  // 窓の部分（前後が斜めのガラス）と屋根
+  const [fb, bb] = look.cabinBottom, [ft, bt] = look.cabinTop;
+  const bw = hw * 0.94, tw = hw * 0.84;
+  addHexa(body, [[-bw, c0, fb], [bw, c0, fb], [bw, c0, bb], [-bw, c0, bb], [-tw, c1 - 0.06, ft], [tw, c1 - 0.06, ft], [tw, c1 - 0.06, bt], [-tw, c1 - 0.06, bt]], glass);
+  addBox(body, -tw - 0.02, tw + 0.02, c1 - 0.08, c1, ft - 0.03, bt + 0.03, paint);
+  // 窓のあいだの柱（前・真ん中・後ろ）
+  const pillar = (z0, z1) => {
+    addBox(body, -bw - 0.01, -bw + 0.07, c0, c1 - 0.06, z0, z1, paint);
+    addBox(body, bw - 0.07, bw + 0.01, c0, c1 - 0.06, z0, z1, paint);
+  };
+  pillar((fb + ft) / 2 - 0.06, (fb + ft) / 2 + 0.06);
+  pillar((ft + bt) / 2 - 0.07, (ft + bt) / 2 + 0.07);
+  pillar((bb + bt) / 2 - 0.06, (bb + bt) / 2 + 0.06);
+  // バンパー（前後）
+  addBox(body, -hw + 0.05, hw - 0.05, y0, y0 + 0.22, -hl - 0.06, -hl + 0.1, dark);
+  addBox(body, -hw + 0.05, hw - 0.05, y0, y0 + 0.22, hl - 0.1, hl + 0.06, dark);
+  // タイヤ
+  const wr = 0.32, wz = hl - 0.75;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) addWheel(body, sx * (hw - 0.08), wr, sz * wz, wr, 0.24, tire);
+  // ライト：前は白、後ろは赤。タクシーは屋根の行灯
+  const lightY = y1 - 0.28;
+  for (const sx of [-1, 1]) {
+    addBox(lights, sx * (hw - 0.42) - 0.17, sx * (hw - 0.42) + 0.17, lightY, lightY + 0.14, -hl - 0.04, -hl + 0.02, rgb('#fff4d0'));
+    addBox(lights, sx * (hw - 0.36) - 0.16, sx * (hw - 0.36) + 0.16, lightY + 0.04, lightY + 0.16, hl - 0.02, hl + 0.04, rgb('#ff3b3b'));
+  }
+  if (look.sign) addBox(lights, -0.26, 0.26, c1, c1 + 0.2, (ft + bt) / 2 - 0.12, (ft + bt) / 2 + 0.12, rgb('#ffd34d'));
+  g = { body: body.build(), lights: lights.build() };
+  carGeometries.set(key, g);
+  return g;
+}
+const CAR_BODY_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+const CAR_LIGHT_MAT = new THREE.MeshBasicMaterial({ vertexColors: true }); // ライトは光って見える（明るさが光の当たり方によらない）
+
+function makeCar(a) {
+  const g = carGeometry(carLook(a));
   const car = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.8, 4.4), mat(color));
-  body.position.y = 0.6;
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 2.2), mat(0x1e232b));
-  cabin.position.set(0, 1.3, 0.2);
-  car.add(body, cabin);
+  const body = new THREE.Mesh(g.body, CAR_BODY_MAT);
+  body.castShadow = body.receiveShadow = true;
+  car.add(body, new THREE.Mesh(g.lights, CAR_LIGHT_MAT));
   return car;
 }
 
@@ -1161,8 +1251,7 @@ export function createRenderer3D(canvas) {
       }
       let m = agentMeshes.get(a);
       if (!m) {
-        m = makeCar(a.color);
-        m.traverse((o) => o.isMesh && (o.castShadow = true));
+        m = makeCar(a);
         agentMeshes.set(a, m);
         agentGroup.add(m);
       }
