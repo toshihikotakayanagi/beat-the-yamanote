@@ -172,28 +172,59 @@ export function trainDistance(route, progress, x, y) {
 export function drawTrain(ctx, route, progress) {
   const front = frontDistance(route, progress);
   const n = carCount(route);
+  const hw = CAR_WIDTH / 2, hl = CAR_LENGTH / 2;
   for (let i = n - 1; i >= 0; i--) {
     const p = pointAt(route, front - CAR_LENGTH * (i + 0.5));
     ctx.save();
     ctx.globalAlpha = p.under ? UNDER_ALPHA : 1;
     ctx.translate(p.x, p.y);
     ctx.rotate(p.angle);
-    // 車体（両端を少し空けて連結部に見せる）
+    // 車体を真上から：銀色の車体（両端を少し空けて連結部に見せる）
     ctx.fillStyle = CAR_BODY;
     ctx.strokeStyle = '#1b1d22';
     ctx.lineWidth = 0.4;
     ctx.beginPath();
-    ctx.roundRect(-CAR_WIDTH / 2, -CAR_LENGTH / 2 + 0.4, CAR_WIDTH, CAR_LENGTH - 0.8, 0.8);
+    ctx.roundRect(-hw, -hl + 0.4, CAR_WIDTH, CAR_LENGTH - 0.8, 0.8);
     ctx.fill();
     ctx.stroke();
-    // 黄緑の帯（車体の両側）
+    // 横から少し見える黄緑のドア（片側 4 つ）
     ctx.fillStyle = CAR_BAND;
-    ctx.fillRect(-CAR_WIDTH / 2 + 0.3, -CAR_LENGTH / 2 + 1, 0.7, CAR_LENGTH - 2);
-    ctx.fillRect(CAR_WIDTH / 2 - 1, -CAR_LENGTH / 2 + 1, 0.7, CAR_LENGTH - 2);
-    // 先頭車の運転席（黒い窓）
+    for (const dz of [-6.9, -2.3, 2.3, 6.9]) {
+      ctx.fillRect(-hw + 0.15, dz - 0.75, 0.45, 1.5);
+      ctx.fillRect(hw - 0.6, dz - 0.75, 0.45, 1.5);
+    }
+    // 屋根（少し暗い灰色）と冷房装置
+    ctx.fillStyle = '#9ea4ad';
+    ctx.fillRect(-hw + 0.75, -hl + 1.2, CAR_WIDTH - 1.5, CAR_LENGTH - 2.4);
+    ctx.fillStyle = '#7d838c';
+    for (const az of [-4.5, 4.5]) ctx.fillRect(-0.85, az - 1.2, 1.7, 2.4);
+    // パンタグラフ（4 両に 1 両。ひし形の枠）
+    if (i % 4 === 2) {
+      ctx.strokeStyle = '#2a2e35';
+      ctx.lineWidth = 0.18;
+      const pz = -hl + 3.2;
+      ctx.beginPath();
+      ctx.moveTo(-0.85, pz + 0.4);
+      ctx.lineTo(0.85, pz + 0.4);
+      ctx.moveTo(-0.45, pz - 0.6);
+      ctx.lineTo(0, pz + 0.4);
+      ctx.lineTo(0.45, pz - 0.6);
+      ctx.stroke();
+    }
+    // 先頭車の黒い顔と前照灯、最後尾の尾灯
     if (i === 0) {
-      ctx.fillStyle = '#1b1d22';
-      ctx.fillRect(-CAR_WIDTH / 2 + 0.4, -CAR_LENGTH / 2 + 0.8, CAR_WIDTH - 0.8, 1.6);
+      ctx.fillStyle = '#15181d';
+      ctx.fillRect(-hw + 0.3, -hl + 0.4, CAR_WIDTH - 0.6, 1.4);
+      ctx.fillStyle = '#fff6d5';
+      ctx.fillRect(-hw + 0.5, -hl + 0.3, 0.5, 0.35);
+      ctx.fillRect(hw - 1.0, -hl + 0.3, 0.5, 0.35);
+    }
+    if (i === n - 1) {
+      ctx.fillStyle = '#15181d';
+      ctx.fillRect(-hw + 0.3, hl - 1.8, CAR_WIDTH - 0.6, 1.4);
+      ctx.fillStyle = '#ff4d4d';
+      ctx.fillRect(-hw + 0.5, hl - 0.65, 0.5, 0.35);
+      ctx.fillRect(hw - 1.0, hl - 0.65, 0.5, 0.35);
     }
     ctx.restore();
   }

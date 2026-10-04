@@ -1357,22 +1357,106 @@ function animateBike(bike, pose, speed, dt, h = 0) {
   }
 }
 
-// 電車 1 両：銀色の車体に黄緑の帯、先頭車は黒い窓
-const CAR_LEN = 19.2, CAR_W = 2.95, CAR_H = 3.6;
-function makeTrainCar(lead) {
-  const car = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(CAR_W, CAR_H, CAR_LEN), mat(0xd4d8de));
-  body.position.y = CAR_H / 2 + 0.4;
-  const band = new THREE.Mesh(new THREE.BoxGeometry(CAR_W + 0.04, 0.45, CAR_LEN - 0.4), mat(0x8cc63f));
-  band.position.y = 2.1;
-  const windows = new THREE.Mesh(new THREE.BoxGeometry(CAR_W + 0.03, 0.8, CAR_LEN - 2), mat(0x2a3038));
-  windows.position.y = 2.95;
-  car.add(body, band, windows);
-  if (lead) {
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(CAR_W - 0.3, 1.2, 0.1), mat(0x15181d));
-    cab.position.set(0, 3, -CAR_LEN / 2 - 0.02);
-    car.add(cab);
+// ---- 電車（E235系の山手線） ----
+// 丸みのある断面の銀色の車体、黄緑のドア（片側 4 つ）、灯る窓、台車と車輪、床下の機器、連結部（ほろ）、
+// 先頭は黒い顔と前照灯と行き先表示、最後尾は尾灯、一部の車両はパンタグラフ。前は -z、高さはレールの上から
+const CAR_LEN = 19.2, CAR_W = 2.95;
+const STAINLESS = [0.78, 0.8, 0.83], SKIRT = [0.42, 0.44, 0.47], ROOF = [0.6, 0.62, 0.65];
+const DOOR_GREEN = [0.42, 0.74, 0.22], DARK = [0.12, 0.13, 0.15], CAB_BLACK = [0.06, 0.07, 0.08];
+// 断面（片側。下から屋根の真ん中まで）[x, y]
+const CAR_PROFILE = [[1.38, 1.0], [1.47, 1.3], [1.48, 2.0], [1.47, 3.25], [1.4, 3.52], [1.16, 3.74], [0.62, 3.84], [0, 3.87]];
+const DOORS_Z = [-6.9, -2.3, 2.3, 6.9]; // ドアの位置（前後）
+const DOOR_W = 1.5;
+
+function trainCarGeometry(kind, pantograph) {
+  const body = new GeometryBuilder(true), glass = new GeometryBuilder(), lights = new GeometryBuilder(true);
+  const hl = CAR_LEN / 2;
+  const colorAt = (y) => (y < 1.32 ? SKIRT : y > 3.45 ? ROOF : STAINLESS);
+  // 車体：断面を前後に伸ばす（左右）
+  for (const side of [-1, 1]) {
+    for (let k = 0; k + 1 < CAR_PROFILE.length; k++) {
+      const [x0, y0] = CAR_PROFILE[k], [x1, y1] = CAR_PROFILE[k + 1];
+      const ex = (x1 - x0) * side, ey = y1 - y0, el = Math.hypot(ex, ey) || 1;
+      const n = [ey / el, -ex / el, 0];
+      // 断面の中心（0, 2.4）から外へ向くようにそろえる
+      const mx = ((x0 + x1) / 2) * side, my = (y0 + y1) / 2 - 2.4;
+      if (n[0] * mx + n[1] * my < 0) (n[0] = -n[0]), (n[1] = -n[1]);
+      const a = [x0 * side, y0, -hl], b = [x1 * side, y1, -hl], c = [x1 * side, y1, hl], d = [x0 * side, y0, hl];
+      const col = colorAt((y0 + y1) / 2);
+      body.tri(a, b, c, n, col);
+      body.tri(a, c, d, n, col);
+    }
   }
+  // 車体の前後の面（断面の形）と床
+  for (const z of [-hl, hl]) {
+    const nz = [0, 0, Math.sign(z)];
+    const center = [0, 2.4, z];
+    const pts = [...CAR_PROFILE.map(([x, y]) => [x, y, z]), ...CAR_PROFILE.slice(0, -1).reverse().map(([x, y]) => [-x, y, z])];
+    for (let k = 0; k + 1 < pts.length; k++) body.tri(center, pts[k], pts[k + 1], nz, STAINLESS);
+    body.tri(center, pts[pts.length - 1], pts[0], nz, STAINLESS);
+  }
+  addBox(body, -1.38, 1.38, 0.98, 1.0, -hl, hl, SKIRT);
+  // ドア（黄緑）とドアの窓、ドアのあいだの窓（夜は灯る）
+  for (const side of [-1, 1]) {
+    const xo = side * 1.49, xi = side * 1.485;
+    for (const dz of DOORS_Z) {
+      addBox(body, Math.min(xi, xo + side * 0.02), Math.max(xi, xo + side * 0.02), 1.15, 3.2, dz - DOOR_W / 2, dz + DOOR_W / 2, DOOR_GREEN);
+      for (const pane of [-0.36, 0.36]) addBox(glass, Math.min(xo, xo + side * 0.03), Math.max(xo, xo + side * 0.03), 2.2, 3.0, dz + pane - 0.27, dz + pane + 0.27);
+    }
+    const gaps = [[-hl + 1.0, DOORS_Z[0] - DOOR_W / 2 - 0.3], ...DOORS_Z.slice(0, -1).map((z, k) => [z + DOOR_W / 2 + 0.3, DOORS_Z[k + 1] - DOOR_W / 2 - 0.3]), [DOORS_Z[3] + DOOR_W / 2 + 0.3, hl - 1.0]];
+    for (const [z0, z1] of gaps) if (z1 - z0 > 0.5) addBox(glass, Math.min(xo, xo + side * 0.02), Math.max(xo, xo + side * 0.02), 2.05, 3.05, z0, z1);
+  }
+  // 台車と車輪、床下の機器
+  for (const bz of [-hl + 2.6, hl - 2.6]) {
+    addBox(body, -1.15, 1.15, 0.45, 0.95, bz - 1.4, bz + 1.4, DARK);
+    for (const wz of [-0.9, 0.9]) for (const sx of [-1, 1]) addWheel(body, sx * 0.76, 0.43, bz + wz, 0.43, 0.14, DARK, 10);
+  }
+  addBox(body, -1.2, 1.2, 0.55, 1.0, -hl + 4.3, hl - 4.3, DARK);
+  // 連結部（ほろ）：先頭以外の前の端
+  if (kind !== 'lead') addBox(body, -0.62, 0.62, 1.05, 3.2, -hl - 0.42, -hl, DARK);
+  // 運転台：先頭は前（-z）、最後尾は後ろ（+z）に黒い顔と黄緑の帯。先頭は前照灯と行き先表示、最後尾は尾灯
+  const cab = (z0, z1, front) => {
+    addBox(body, -1.42, 1.42, 1.3, 3.55, z0, z1, CAB_BLACK);
+    addBox(body, -1.43, 1.43, 1.3, 1.55, z0 - 0.005, z1 + 0.005, DOOR_GREEN);
+    const ez = front ? z0 - 0.01 : z1 + 0.01, ez2 = front ? z0 + 0.02 : z1 - 0.02;
+    const [lz0, lz1] = [Math.min(ez, ez2), Math.max(ez, ez2)];
+    for (const sx of [-1, 1]) addBox(lights, sx * 0.95 - 0.2, sx * 0.95 + 0.2, 1.65, 1.85, lz0, lz1, front ? [1, 0.97, 0.85] : [1, 0.15, 0.12]);
+    if (front) addBox(lights, -0.6, 0.6, 3.15, 3.4, lz0, lz1, [1, 0.6, 0.15]); // 行き先表示
+  };
+  if (kind === 'lead') cab(-hl - 0.12, -hl + 0.01, true);
+  if (kind === 'tail') cab(hl - 0.01, hl + 0.12, false);
+  // 屋根の冷房装置
+  for (const az of [-4.5, 4.5]) addBox(body, -0.85, 0.85, 3.85, 4.15, az - 1.2, az + 1.2, ROOF.map((v) => v * 0.9));
+  // パンタグラフ（ひし形の枠と、上の集電の板）
+  if (pantograph) {
+    const pz = -hl + 3.2, top = 4.75;
+    addBox(body, -0.7, 0.7, 3.87, 3.95, pz - 0.7, pz + 0.7, DARK);
+    for (const [y0, y1, z0, z1] of [[3.95, 4.38, pz - 0.6, pz - 0.05], [4.38, top, pz - 0.05, pz + 0.4]]) {
+      for (const sx of [-0.45, 0.45]) {
+        const dy = y1 - y0, dz = z1 - z0, steps = 6;
+        for (let k = 0; k < steps; k++) {
+          const ya = y0 + (dy * k) / steps, za = z0 + (dz * k) / steps;
+          addBox(body, sx - 0.025, sx + 0.025, ya, ya + dy / steps + 0.02, za, za + dz / steps + 0.02, DARK);
+        }
+      }
+    }
+    addBox(body, -0.85, 0.85, top, top + 0.06, pz + 0.3, pz + 0.5, DARK);
+  }
+  return { body: body.build(), glass: glass.build(), lights: lights.build() };
+}
+
+const trainGeometries = new Map(); // 種類 → 形（使い回す）
+function makeTrainCar(kind, pantograph) {
+  const key = `${kind}:${pantograph}`;
+  if (!trainGeometries.has(key)) trainGeometries.set(key, trainCarGeometry(kind, pantograph));
+  const g = trainGeometries.get(key);
+  const car = new THREE.Group();
+  // 材質は車両ごと（トンネルの中の車両だけ薄くするため）
+  const body = new THREE.Mesh(g.body, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  const glass = new THREE.Mesh(g.glass, new THREE.MeshLambertMaterial({ color: 0x1d242d, emissive: 0xfff1d0, emissiveIntensity: windowGlow * 0.7, side: THREE.DoubleSide }));
+  glass.userData.trainGlass = true; // 時間帯で灯りの強さを変える
+  const lights = new THREE.Mesh(g.lights, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  car.add(body, glass, lights);
   car.traverse((m) => {
     if (!m.material) return;
     m.material.transparent = true;
@@ -1508,7 +1592,7 @@ function carGeometry(look) {
   return g;
 }
 const CAR_BODY_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
-const CAR_LIGHT_MAT = new THREE.MeshBasicMaterial({ vertexColors: true }); // ライトは光って見える（明るさが光の当たり方によらない）
+const CAR_LIGHT_MAT = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }); // ライトは光って見える（明るさが光の当たり方によらない）
 
 function makeCar(a) {
   const g = carGeometry(carLook(a));
@@ -1890,10 +1974,19 @@ export function createRenderer3D(canvas) {
     trainGroup.visible = Boolean(show);
     if (!show) return;
     const n = carCount(route);
-    while (train.length < n) {
-      const car = makeTrainCar(train.length === 0);
-      train.push(car);
-      trainGroup.add(car);
+    // 両数が変わったら作り直す（先頭・最後尾・パンタグラフの位置が変わるため）
+    if (train.length !== n) {
+      for (const car of train) {
+        trainGroup.remove(car);
+        car.traverse((m) => m.material?.dispose());
+      }
+      train.length = 0;
+      for (let i = 0; i < n; i++) {
+        const kind = i === 0 ? 'lead' : i === n - 1 ? 'tail' : 'middle';
+        const car = makeTrainCar(kind, i % 4 === 2); // パンタグラフは 4 両に 1 両
+        train.push(car);
+        trainGroup.add(car);
+      }
     }
     const front = frontDistance(route, game.trainProgress);
     train.forEach((car, i) => {
@@ -2070,6 +2163,7 @@ export function createRenderer3D(canvas) {
       // 窓の灯り（今ある区間の立体すべてと、これから作る区間）
       windowGlow = t.glow;
       for (const wd of worlds.values()) for (const m of wd.group?.userData.tiles?.values() ?? []) m.material.emissiveIntensity = t.glow;
+      for (const car of train) car.traverse((m) => m.userData?.trainGlass && (m.material.emissiveIntensity = t.glow * 0.7)); // 電車の窓
       // 街灯：昼は消す。夜は足もとをより明るく
       LAMP_MAT.color.set(t.lamps ? 0xffd9a0 : 0x6b6e75);
       POOL_MAT.visible = t.lamps;
