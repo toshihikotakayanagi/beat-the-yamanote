@@ -42,22 +42,71 @@ export function updatePlayer(p, input, dt, limit = PLAYER_CONFIG.maxSpeed, cfg =
 }
 
 // 実寸だと地図上で小さすぎるので、見た目だけ DRAW_SCALE 倍で描く（当たり判定は中心点のみ）
-const DRAW_SCALE = 1.6;
+const DRAW_SCALE = 2.7;
 
-const PLAYER_STYLE = { body: '#ffcc33', nose: '#e8443a', alpha: 1 };
-export const GHOST_STYLE = { body: '#e8ecf4', nose: '#9aa0aa', alpha: 0.6 }; // ゴースト（ベストの走り）
+// body：ジャージとフレームの色、nose：ヘルメットの色、tire：タイヤとハンドルの色
+const PLAYER_STYLE = { body: '#ffcc33', nose: '#e8443a', tire: '#15171b', alpha: 1 };
+export const GHOST_STYLE = { body: '#e8ecf4', nose: '#c9ced8', tire: '#9aa0aa', alpha: 0.6 }; // ゴースト（ベストの走り）
 
-export function drawPlayer(ctx, p, style = PLAYER_STYLE, cfg = PLAYER_CONFIG) {
+// 自転車を真上から見た形で描く：前後の車輪・フレーム・ハンドル、乗っている人（肩・ハンドルを握る腕・ヘルメット）。前が -y
+export function drawPlayer(ctx, p, style = PLAYER_STYLE) {
   ctx.save();
   ctx.globalAlpha = style.alpha;
   ctx.translate(p.x, p.y);
   ctx.rotate(p.angle);
   ctx.scale(DRAW_SCALE, DRAW_SCALE);
-  // 車体
+  ctx.lineCap = 'round';
+  // 縁取り（暗い地図の上でも形が分かるように）
+  ctx.strokeStyle = 'rgba(10, 12, 16, 0.6)';
+  ctx.lineWidth = 0.16;
+  ctx.beginPath();
+  ctx.moveTo(0, -0.86);
+  ctx.lineTo(0, 0.86);
+  ctx.stroke();
+  // 車輪（前後）
+  ctx.strokeStyle = style.tire;
+  ctx.lineWidth = 0.08;
+  for (const y of [-0.53, 0.52]) {
+    ctx.beginPath();
+    ctx.moveTo(0, y - 0.33);
+    ctx.lineTo(0, y + 0.33);
+    ctx.stroke();
+  }
+  // フレーム
+  ctx.strokeStyle = style.body;
+  ctx.lineWidth = 0.06;
+  ctx.beginPath();
+  ctx.moveTo(0, -0.42);
+  ctx.lineTo(0, 0.5);
+  ctx.stroke();
+  // ハンドル
+  ctx.strokeStyle = style.tire;
+  ctx.lineWidth = 0.05;
+  ctx.beginPath();
+  ctx.moveTo(-0.26, -0.36);
+  ctx.lineTo(0.26, -0.36);
+  ctx.stroke();
+  // 腕（肩からハンドルへ）
+  ctx.strokeStyle = style.body;
+  ctx.lineWidth = 0.07;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(side * 0.17, -0.06);
+    ctx.lineTo(side * 0.24, -0.34);
+    ctx.stroke();
+  }
+  // 背中と肩
   ctx.fillStyle = style.body;
-  ctx.fillRect(-cfg.width / 2, -cfg.length / 2, cfg.width, cfg.length);
-  // 前輪側の目印
+  ctx.beginPath();
+  ctx.ellipse(0, 0.08, 0.17, 0.24, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(0, -0.04, 0.21, 0.11, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // ヘルメット（前に少し長い）
   ctx.fillStyle = style.nose;
-  ctx.fillRect(-cfg.width / 2, -cfg.length / 2, cfg.width, cfg.length * 0.25);
+  ctx.beginPath();
+  ctx.ellipse(0, -0.17, 0.1, 0.14, 0, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }

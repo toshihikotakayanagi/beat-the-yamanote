@@ -789,53 +789,147 @@ function buildWorld(map, textures) {
   return r.value;
 }
 
-// 自転車（黄色の車体、前に赤い印）と、乗っている人。車輪は回り、足はこぎ、曲がるときは傾く（animateBike）
+// ---- 自転車 ----
+// ひし形のフレーム・フォーク・スポークの車輪・サドル・ハンドル・クランクとペダルの自転車と、乗っている人
+// （前かがみの胴体・ヘルメット・ハンドルを握る腕・ペダルに足を乗せてひざを曲げ伸ばしする脚）。
+// 車輪とクランクは進んだ距離で回り、曲がるときは車体ごと傾く（animateBike）。前は -z
 const WHEEL_R = 0.34;
-function makeBike(color = 0xffcc33, nose = 0xe8443a, opacity = 1) {
+const BIKE = {
+  rearAxle: [0, WHEEL_R, 0.52],
+  frontAxle: [0, WHEEL_R, -0.53],
+  bb: [0, 0.3, 0.06], // ペダルの軸（ボトムブラケット）
+  seat: [0, 0.86, 0.2], // シートチューブの上
+  headTop: [0, 0.9, -0.38],
+  headBottom: [0, 0.74, -0.42],
+  saddle: [0, 0.97, 0.24],
+  bar: [0, 1.02, -0.36],
+  crank: 0.17, // クランクの長さ m
+  hip: [0, 1.03, 0.21],
+  shoulder: [0, 1.43, -0.12],
+  thigh: 0.46, // 太もも m
+  shin: 0.46, // すね m
+  gear: 0.5, // クランクは車輪の何倍の速さで回るか（ギアの比を見た目に合わせて）
+};
+const UNIT_TUBE = new THREE.CylinderGeometry(1, 1, 1, 8); // 高さ 1・半径 1（tube で伸ばして使う）
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const tubeTmp = { a: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
+
+// a から b までの太さ r の管（腕や脚は毎回置き直す）
+function placeTube(mesh, a, b, r) {
+  const { a: va, b: vb, d } = tubeTmp;
+  va.set(...a);
+  vb.set(...b);
+  d.subVectors(vb, va);
+  const len = d.length() || 1e-6;
+  mesh.position.addVectors(va, vb).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(Y_AXIS, d.divideScalar(len));
+  mesh.scale.set(r, len, r);
+}
+
+function makeBike(colors = {}, opacity = 1) {
+  const c = { frame: 0xffcc33, jersey: 0xffcc33, shorts: 0x22324f, helmet: 0xe8443a, skin: 0xf2d0a9, tire: 0x1b1d22, metal: 0x9aa0aa, saddle: 0x15171b, ...colors };
   const transparent = opacity < 1;
   const o = { transparent, opacity, depthWrite: !transparent };
+  const m = (color) => mat(color, o);
   const bike = new THREE.Group();
   bike.rotation.order = 'YXZ'; // 向き（y）のあとに傾き（z）
   const body = new THREE.Group(); // 傾く部分
   bike.add(body);
-  const wheelGeo = new THREE.TorusGeometry(WHEEL_R, 0.05, 6, 18);
-  wheelGeo.rotateY(Math.PI / 2);
-  const wheels = [-0.55, 0.55].map((z) => {
-    const w = new THREE.Mesh(wheelGeo, mat(0x1b1d22, o));
-    w.position.set(0, WHEEL_R, z);
-    // 車輪の向きがわかるよう、スポークを 1 本
-    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.03, WHEEL_R * 2, 0.03), mat(0x9aa0aa, o));
-    w.add(spoke);
+  const tube = (a, b, r, material) => {
+    const mesh = new THREE.Mesh(UNIT_TUBE, material);
+    placeTube(mesh, a, b, r);
+    body.add(mesh);
+    return mesh;
+  };
+  const B = BIKE;
+  const frameMat = m(c.frame), metalMat = m(c.metal);
+  // フレーム：トップ・ダウン・シートの各チューブ、後ろの三角（チェーンステー・シートステー）、ヘッドチューブとフォーク
+  tube(B.seat, B.headTop, 0.022, frameMat);
+  tube(B.bb, B.headBottom, 0.026, frameMat);
+  tube(B.bb, B.seat, 0.024, frameMat);
+  for (const x of [-0.06, 0.06]) {
+    tube([x, B.bb[1], B.bb[2]], [x, B.rearAxle[1], B.rearAxle[2]], 0.014, frameMat);
+    tube([x * 0.5, B.seat[1] - 0.04, B.seat[2]], [x, B.rearAxle[1], B.rearAxle[2]], 0.012, frameMat);
+    tube([x * 0.6, B.headBottom[1], B.headBottom[2]], [x, B.frontAxle[1], B.frontAxle[2]], 0.014, metalMat);
+  }
+  tube(B.headBottom, B.headTop, 0.03, frameMat);
+  // ハンドル（ステム・横のバー・握り）とサドル
+  tube(B.headTop, B.bar, 0.018, metalMat);
+  tube([-0.26, B.bar[1], B.bar[2]], [0.26, B.bar[1], B.bar[2]], 0.016, metalMat);
+  for (const x of [-0.26, 0.26]) tube([x * 0.82, B.bar[1], B.bar[2]], [x, B.bar[1], B.bar[2]], 0.022, m(c.saddle));
+  tube(B.seat, B.saddle, 0.014, metalMat);
+  const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.26), m(c.saddle));
+  saddle.position.set(...B.saddle);
+  body.add(saddle);
+  // 車輪：タイヤ・リム・スポーク（回る）
+  const tireGeo = new THREE.TorusGeometry(WHEEL_R - 0.02, 0.025, 6, 24);
+  tireGeo.rotateY(Math.PI / 2);
+  const wheels = [B.rearAxle, B.frontAxle].map((axle) => {
+    const w = new THREE.Group();
+    w.position.set(...axle);
+    w.add(new THREE.Mesh(tireGeo, m(c.tire)));
+    for (let k = 0; k < 6; k++) {
+      const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.008, (WHEEL_R - 0.03) * 2, 0.008), metalMat);
+      spoke.rotation.x = (k * Math.PI) / 6;
+      w.add(spoke);
+    }
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.1, 8), metalMat);
+    hub.rotation.z = Math.PI / 2;
+    w.add(hub);
     body.add(w);
     return w;
   });
-  const frame = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.1), mat(color, o));
-  frame.position.set(0, 0.62, 0);
-  const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.1), mat(color, o));
-  post.position.set(0, 0.85, 0.15);
-  const bar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.08), mat(nose, o));
-  bar.position.set(0, 1.05, -0.5);
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.62, 0.3), mat(color, o));
-  torso.position.set(0, 1.42, -0.02);
-  torso.rotation.x = -0.35; // 前かがみ
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), mat(0xf2d0a9, o));
-  head.position.set(0, 1.86, -0.18);
-  body.add(frame, post, bar, torso, head);
-  // 足：腰を軸に前後にこぐ
-  const legs = [-0.12, 0.12].map((x) => {
-    const hip = new THREE.Group();
-    hip.position.set(x, 1.12, 0.12);
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.75, 0.15), mat(0x2c3e66, o));
-    leg.position.y = -0.37;
-    hip.add(leg);
-    body.add(hip);
-    return hip;
-  });
-  bike.userData = { body, wheels, legs, phase: 0, lean: 0, prevAngle: null };
+  // クランクとペダル（回る）
+  const crank = new THREE.Group();
+  crank.position.set(...B.bb);
+  const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.015, 16), metalMat);
+  ring.rotation.z = Math.PI / 2;
+  ring.position.x = 0.05;
+  crank.add(ring);
+  for (const side of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.02, B.crank, 0.03), metalMat);
+    arm.position.set(side * 0.08, (side * B.crank) / 2, 0);
+    const pedal = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.07), m(c.saddle));
+    pedal.position.set(side * 0.12, side * B.crank, 0);
+    crank.add(arm, pedal);
+  }
+  body.add(crank);
+  // 乗っている人：胴体（腰から肩へ）・頭とヘルメット・腕（肩からハンドルへ）・脚（腰からひざ、ひざからペダルへ）
+  const jersey = m(c.jersey), skin = m(c.skin), shorts = m(c.shorts);
+  tube(B.hip, B.shoulder, 0.15, jersey);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 8), skin);
+  head.position.set(0, B.shoulder[1] + 0.2, B.shoulder[2] - 0.1);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.125, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), m(c.helmet));
+  helmet.position.copy(head.position).add(new THREE.Vector3(0, 0.02, 0.01));
+  helmet.scale.set(1, 0.95, 1.2);
+  body.add(head, helmet);
+  for (const x of [-0.17, 0.17]) {
+    const shoulder = [x, B.shoulder[1] - 0.02, B.shoulder[2]];
+    const elbow = [x * 1.25, B.shoulder[1] - 0.2, B.shoulder[2] - 0.14];
+    const grip = [Math.sign(x) * 0.24, B.bar[1] + 0.02, B.bar[2]];
+    tube(shoulder, elbow, 0.038, jersey);
+    tube(elbow, grip, 0.032, skin);
+  }
+  const legs = [-1, 1].map((side) => ({
+    side,
+    thigh: tube([0, 0, 0], [0, -1, 0], 0.06, shorts),
+    shin: tube([0, 0, 0], [0, -1, 0], 0.045, skin),
+  }));
+  bike.userData = { body, wheels, crank, legs, phase: 0, lean: 0, prevAngle: null };
   return bike;
 }
 
-// 自転車を pose（x, y, angle）に置き、速さ speed（m/s）に合わせて車輪を回し足をこがせ、曲がる速さに合わせて傾ける
+// 腰 hip からペダル foot まで、太もも・すねの 2 本で届くひざの位置（横から見た y-z の面で、ひざは前に出る）
+function kneeOf(hip, foot) {
+  const dy = foot[1] - hip[1], dz = foot[2] - hip[2];
+  const d = Math.min(BIKE.thigh + BIKE.shin - 1e-3, Math.hypot(dy, dz));
+  const base = Math.atan2(dz, dy); // 腰から足への向き
+  const bend = Math.acos((BIKE.thigh ** 2 + d * d - BIKE.shin ** 2) / (2 * BIKE.thigh * d));
+  const a = base + bend; // ひざは前（-z）側に曲がる
+  return [foot[0], hip[1] + Math.cos(a) * BIKE.thigh, hip[2] + Math.sin(a) * BIKE.thigh];
+}
+
+// 自転車を pose（x, y, angle）に置き、速さ speed（m/s）に合わせて車輪とクランクを回して脚を動かし、曲がる速さに合わせて傾ける
 function animateBike(bike, pose, speed, dt, h = 0) {
   const s = bike.userData;
   bike.position.set(pose.x, h, pose.y);
@@ -847,12 +941,22 @@ function animateBike(bike, pose, speed, dt, h = 0) {
   const target = Math.max(-0.4, Math.min(0.4, -turn * Math.abs(speed) * 0.045));
   s.lean += (target - s.lean) * Math.min(1, 8 * dt);
   s.body.rotation.z = s.lean;
-  // 車輪とペダル：進んだ距離だけ回す（ペダルは車輪よりゆっくり）
+  // 車輪とクランク：進んだ距離だけ回す
   s.phase += (speed * dt) / WHEEL_R;
   for (const w of s.wheels) w.rotation.x = -s.phase;
-  const pedal = s.phase * 0.45;
-  s.legs[0].rotation.x = Math.sin(pedal) * 0.55;
-  s.legs[1].rotation.x = -Math.sin(pedal) * 0.55;
+  const crankAngle = -s.phase * BIKE.gear;
+  s.crank.rotation.x = crankAngle;
+  // 脚：ペダルの位置に足を置き、ひざを曲げる
+  for (const leg of s.legs) {
+    const a = crankAngle + (leg.side > 0 ? 0 : Math.PI);
+    // クランクの回転（x 軸まわり）と同じ向きに回るペダルの位置
+    const foot = [leg.side * 0.13, BIKE.bb[1] + Math.cos(a) * BIKE.crank, BIKE.bb[2] + Math.sin(a) * BIKE.crank];
+    const hip = [leg.side * 0.1, BIKE.hip[1], BIKE.hip[2]];
+    const knee = kneeOf(hip, foot);
+    knee[0] = leg.side * 0.12;
+    placeTube(leg.thigh, hip, knee, 0.06);
+    placeTube(leg.shin, knee, foot, 0.045);
+  }
 }
 
 // 電車 1 両：銀色の車体に黄緑の帯、先頭車は黒い窓
@@ -1057,7 +1161,8 @@ export function createRenderer3D(canvas) {
   let world = null; // 今の区間の動かない物
   let worldMap = null;
   const player = makeBike();
-  const ghost = makeBike(0xe8ecf4, 0x9aa0aa, 0.45);
+  // ゴースト：同じ形の半透明の白
+  const ghost = makeBike({ frame: 0xe8ecf4, jersey: 0xe8ecf4, shorts: 0xc9ced8, helmet: 0xffffff, skin: 0xe8ecf4, tire: 0x9aa0aa, metal: 0xd0d4dc, saddle: 0xb0b5bf }, 0.45);
   player.traverse((m) => m.isMesh && (m.castShadow = true));
   scene.add(player, ghost);
   let ghostPrev = null; // ゴーストの速さを求めるための前回の位置
