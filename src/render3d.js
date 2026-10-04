@@ -793,12 +793,204 @@ function nearestSeg(map, r, x, z) {
   return best;
 }
 
+// ---- 道路の区画線・横断歩道・歩道 ----
+const WHITE_LINE = [0.86, 0.87, 0.85];
+const YELLOW_LINE = [0.9, 0.72, 0.2];
+const SIDEWALK = [0.4, 0.42, 0.46];
+const MAJOR_CENTER = new Set(['trunk', 'primary', 'trunk_link', 'primary_link']); // 中央線が黄色（追い越し禁止）の道
+const INTERSECTION_GAP = 7; // 交差点の中心からこの距離 m までは線を引かない（線は交差点で途切れる）
+
+// 道路 r の点ごとの、先頭からの距離 m と、交差点（ほかの車道とつながる点）までの距離
+function roadMeasures(map, r, carRoad) {
+  const n = r.p.length / 2;
+  const cum = [0];
+  for (let v = 1; v < n; v++) cum.push(cum[v - 1] + Math.hypot(r.p[2 * v] - r.p[2 * v - 2], r.p[2 * v + 1] - r.p[2 * v - 1]));
+  const crossings = [];
+  for (let v = 0; v < n; v++) {
+    const others = (map.nodes.get(nodeKey(r.p[2 * v], r.p[2 * v + 1])) ?? []).filter((o) => o.road !== r && carRoad(o.road));
+    if (others.length) crossings.push(cum[v]);
+  }
+  return { cum, crossings };
+}
+
+// 区間 [a, b]（先頭からの距離）から、交差点のまわりを除いた残り
+function clipCrossings(a, b, crossings, gap) {
+  let pieces = [[a, b]];
+  for (const d of crossings) {
+    const next = [];
+    for (const [s0, s1] of pieces) {
+      if (s1 <= d - gap || s0 >= d + gap) next.push([s0, s1]);
+      else {
+        if (s0 < d - gap) next.push([s0, d - gap]);
+        if (s1 > d + gap) next.push([d + gap, s1]);
+      }
+    }
+    pieces = next;
+  }
+  return pieces;
+}
+
+// 道の中心線から横に off m（進む向きの右が正）ずらした、幅 width の線。dash > 0 なら破線（dash m 引いて gap m あける）。
+// y：高さ（道路の点 i から次の点への割合 t の関数）。交差点のまわりは引かない
+function addLaneLine(b, r, meas, off, width, yAt, color, dash = 0, gap = 0, skip = INTERSECTION_GAP) {
+  const { cum, crossings } = meas;
+  const pattern = dash > 0 ? dash + gap : 0;
+  for (let i = 0; i + 3 < r.p.length; i += 2) {
+    const v = i / 2;
+    const x1 = r.p[i], z1 = r.p[i + 1], x2 = r.p[i + 2], z2 = r.p[i + 3];
+    const len = cum[v + 1] - cum[v];
+    if (len < 1e-6) continue;
+    const dx = (x2 - x1) / len, dz = (z2 - z1) / len;
+    const nx = -dz, nz = dx; // 進む向きの右（地図の座標で）
+    // この線分で引く区間（先頭からの距離）
+    let spans = [[cum[v], cum[v + 1]]];
+    if (pattern) {
+      spans = [];
+      let s0 = Math.ceil(cum[v] / pattern) * pattern - pattern;
+      for (; s0 < cum[v + 1]; s0 += pattern) {
+        const a = Math.max(cum[v], s0), c = Math.min(cum[v + 1], s0 + dash);
+        if (c > a) spans.push([a, c]);
+      }
+    }
+    for (const [a0, a1] of spans) {
+      for (const [s0, s1] of clipCrossings(a0, a1, crossings, skip)) {
+        const t0 = (s0 - cum[v]) / len, t1 = (s1 - cum[v]) / len;
+        const ya = yAt(v, t0), yb = yAt(v, t1);
+        const ax = x1 + (x2 - x1) * t0 + nx * off, az = z1 + (z2 - z1) * t0 + nz * off;
+        const bx = x1 + (x2 - x1) * t1 + nx * off, bz = z1 + (z2 - z1) * t1 + nz * off;
+        const wx = nx * (width / 2), wz = nz * (width / 2);
+        b.tri([ax - wx, ya, az - wz], [bx + wx, yb, bz + wz], [ax + wx, ya, az + wz], UP, color);
+        b.tri([ax - wx, ya, az - wz], [bx - wx, yb, bz - wz], [bx + wx, yb, bz + wz], UP, color);
+      }
+    }
+  }
+}
+
+// 長方形（中心 (x, z)、向き (dx, dz) に沿った長さ len、横幅 w）を高さ y に置く
+function addRect(b, x, z, dx, dz, len, w, y, color) {
+  const nx = -dz, nz = dx;
+  const P = (u, s) => [x + dx * u + nx * s, y, z + dz * u + nz * s];
+  b.tri(P(-len / 2, -w / 2), P(len / 2, w / 2), P(-len / 2, w / 2), UP, color);
+  b.tri(P(-len / 2, -w / 2), P(len / 2, -w / 2), P(len / 2, w / 2), UP, color);
+}
+
+// 道路 r の区画線と歩道。hs：道路の点ごとの高さ（橋・坂。なければ地面）
+function addRoadMarkings(markings, sidewalks, map, r, hs, lift) {
+  const meas = roadMeasures(map, r, (o) => !o.path && o.t !== 'service');
+  const yAt = (dy) => (v, t) => (hs ? hs[v] + (hs[Math.min(hs.length - 1, v + 1)] - hs[v]) * t : 0) + lift + dy;
+  const hw = r.w / 2;
+  const line = yAt(0.02);
+  if (r.w >= 12) {
+    // 幹線道路：両端の白線、中央は対面通行なら黄（国道・都道クラス）か白、一方通行なら車線の境の白の破線
+    addLaneLine(markings, r, meas, hw - 0.5, 0.15, line, WHITE_LINE);
+    addLaneLine(markings, r, meas, -(hw - 0.5), 0.15, line, WHITE_LINE);
+    if (r.o) addLaneLine(markings, r, meas, 0, 0.15, line, WHITE_LINE, 5, 5);
+    else {
+      const center = MAJOR_CENTER.has(r.t) ? YELLOW_LINE : WHITE_LINE;
+      addLaneLine(markings, r, meas, -0.12, 0.15, line, center);
+      addLaneLine(markings, r, meas, 0.12, 0.15, line, center);
+    }
+  } else if (r.w >= 8) {
+    // 中くらいの道：両端の白線と、中央の白の破線
+    addLaneLine(markings, r, meas, hw - 0.4, 0.15, line, WHITE_LINE);
+    addLaneLine(markings, r, meas, -(hw - 0.4), 0.15, line, WHITE_LINE);
+    if (!r.o) addLaneLine(markings, r, meas, 0, 0.15, line, WHITE_LINE, 5, 5);
+  } else {
+    // 住宅街の道：両端の路側帯の白線
+    addLaneLine(markings, r, meas, hw - 0.6, 0.12, line, WHITE_LINE, 0, 0, 4);
+    addLaneLine(markings, r, meas, -(hw - 0.6), 0.12, line, WHITE_LINE, 0, 0, 4);
+  }
+  // 歩道（幅 8m 以上の道の両側。交差点では途切れる）
+  if (r.w >= 8) {
+    const walk = yAt(0.12);
+    addLaneLine(sidewalks, r, meas, hw + 1.1, 2.2, walk, SIDEWALK, 0, 0, INTERSECTION_GAP + 2);
+    addLaneLine(sidewalks, r, meas, -(hw + 1.1), 2.2, walk, SIDEWALK, 0, 0, INTERSECTION_GAP + 2);
+  }
+}
+
+// 信号のある交差点の横断歩道（白いしま）と停止線。信号の位置を通る道の両側に引く
+function addCrosswalks(markings, map, roadHeights) {
+  for (const [x, z] of map.signals) {
+    const pose = signalPose(map, x, z);
+    if (pose.hw < 2.5) continue;
+    const dx = Math.sin(pose.angle), dz = -Math.cos(pose.angle);
+    const seg = surfaceAt(map, x, z).seg;
+    const y = (seg ? segHeight(roadHeights, seg, x, z) : 0) + Y.arrow + 0.01;
+    for (const side of [-1, 1]) {
+      // しま：道の向きに長い白い帯を、道幅いっぱいに並べる
+      const cx = x + dx * side * (INTERSECTION_GAP + 1.5), cz = z + dz * side * (INTERSECTION_GAP + 1.5);
+      for (let o = -pose.hw + 0.5; o <= pose.hw - 0.4; o += 0.9) addRect(markings, cx - dz * o, cz + dx * o, dx, dz, 3, 0.45, y, WHITE_LINE);
+      // 停止線：横断歩道の手前、交差点へ向かう車線（左側通行なので、交差点へ向かう向きの左）
+      const sx = x + dx * side * (INTERSECTION_GAP + 4.5), sz = z + dz * side * (INTERSECTION_GAP + 4.5);
+      const hx = -dx * side, hz = -dz * side; // 交差点へ向かう向き
+      const lx = hz, lz = -hx; // その左
+      addRect(markings, sx + lx * pose.hw * 0.5, sz + lz * pose.hw * 0.5, lx, lz, pose.hw, 0.45, y, WHITE_LINE);
+    }
+  }
+}
+
+// 路面の模様（アスファルトのざらつき・歩道の敷石）：地面の位置（ワールドの xz）で模様の画像を貼る
+function groundPatterns() {
+  const make = (draw, size = 256) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    draw(c.getContext('2d'), size);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  let seed = 11;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const asphalt = make((ctx, n) => {
+    const img = ctx.createImageData(n, n);
+    for (let i = 0; i < n * n; i++) {
+      const v = 200 + rand() * 55;
+      img.data[4 * i] = img.data[4 * i + 1] = img.data[4 * i + 2] = v;
+      img.data[4 * i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    // 補修のあと（少し暗い四角）
+    for (let k = 0; k < 6; k++) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.04 + rand() * 0.05})`;
+      ctx.fillRect(rand() * n, rand() * n, 20 + rand() * 60, 10 + rand() * 30);
+    }
+  });
+  const pavers = make((ctx, n) => {
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, n, n);
+    const cell = n / 8;
+    for (let j = 0; j < 8; j++) {
+      for (let i = 0; i < 8; i++) {
+        const v = 215 + Math.floor(rand() * 40);
+        ctx.fillStyle = `rgb(${v}, ${v}, ${v})`;
+        ctx.fillRect(i * cell + 2 + (j % 2) * (cell / 2), j * cell + 2, cell - 4, cell - 4);
+      }
+    }
+  });
+  return { asphalt, pavers };
+}
+// 材質に、地面の位置で貼る模様を足す（scale：模様 1 枚が何 m 四方か）
+function useGroundPattern(material, texture, scale, key) {
+  material.customProgramCacheKey = () => `ground-${key}`;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.groundTex = { value: texture };
+    shader.vertexShader = 'varying vec2 vGroundXZ;\n' + shader.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n  vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
+    shader.fragmentShader = 'uniform sampler2D groundTex;\nvarying vec2 vGroundXZ;\n' + shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>\n  diffuseColor.rgb *= texture2D(groundTex, vGroundXZ / ${scale.toFixed(1)}).rgb;`,
+    );
+  };
+  return material;
+}
+
 // 区間の立体を作る。区間を選んだときに画面が止まらないよう、少しずつ作る（ジェネレーター）。
 // yield する値は進み具合（0〜1）、最後に立体（THREE.Group）を返す。textures：窓のテクスチャ（windowTextures）
 const BUILDINGS_PER_STEP = 150; // 1 回に作る建物の数
 const ROADS_PER_STEP = 120; // 1 回に作る道路の数
 const TILES_PER_STEP = 4; // 1 回に仕上げる建物のまとまりの数
 function* buildWorldSteps(map, textures) {
+  const patterns = textures.ground;
   const group = new THREE.Group();
   const { minX, minY, maxX, maxY } = map.bounds;
 
@@ -858,6 +1050,9 @@ function* buildWorldSteps(map, textures) {
   // 道路も TILE m 四方ごとに分ける（初めて描くときに GPU へ送る量を分け、画面の外の区画は描かない）
   const roadTiles = new Map(); // 区画 → { paths, roads }
   const arrows = new GeometryBuilder(), roadDeck = new GeometryBuilder();
+  const markings = new GeometryBuilder(true); // 区画線・横断歩道・停止線（白・黄）
+  const sidewalks = new GeometryBuilder(true); // 幅の広い道の両側の歩道（少し高い）
+  const carRoad = (o) => !o.path && o.t !== 'service';
   const roadPillars = [];
   for (let ri = 0; ri < map.roads.length; ri++) {
     const r = map.roads[ri];
@@ -869,6 +1064,7 @@ function* buildWorldSteps(map, textures) {
     const b = r.path ? roadTiles.get(tileKey).paths : roadTiles.get(tileKey).roads;
     const lift = r.path ? Y.path : Y.road;
     const hs = roadHeights.get(r);
+    if (carRoad(r) && r.w >= 6) addRoadMarkings(markings, sidewalks, map, r, hs, lift);
     if (!hs) {
       addRibbon(b, r.p, r.w, lift);
       continue;
@@ -901,8 +1097,14 @@ function* buildWorldSteps(map, textures) {
       arrows.tri(at(0, -2.2), at(0, 0.6), at(1.6, 1.4), UP);
     }
   }
+  addCrosswalks(markings, map, roadHeights);
+  const markMesh = new THREE.Mesh(markings.build(), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  markMesh.receiveShadow = true;
+  const walkMesh = new THREE.Mesh(sidewalks.build(), useGroundPattern(mat(0xffffff, { vertexColors: true }), patterns.pavers, 2.4, 'pavers'));
+  walkMesh.receiveShadow = true;
+  group.add(markMesh, walkMesh);
   yield 0.26;
-  const pathMat = mat(PATH), roadMat = mat(ROAD);
+  const pathMat = useGroundPattern(mat(PATH), patterns.pavers, 2.4, 'pavers'), roadMat = useGroundPattern(mat(ROAD), patterns.asphalt, 7, 'asphalt');
   let rt = 0;
   for (const t of roadTiles.values()) {
     if (++rt % 8 === 0) yield 0.26 + (0.04 * rt) / roadTiles.size;
@@ -1352,6 +1554,7 @@ export function createRenderer3D(canvas) {
   const sky = makeSky();
   scene.add(sky);
   const textures = windowTextures(renderer.capabilities.getMaxAnisotropy());
+  textures.ground = groundPatterns(); // 路面の模様
   const camera = new THREE.PerspectiveCamera(60, 1, 0.5, FOG_FAR + 50);
 
   let world = null; // 今の区間の動かない物
