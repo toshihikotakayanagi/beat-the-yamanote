@@ -36,6 +36,13 @@ const PENALTY = {
 };
 const INVINCIBLE_AFTER_STOP = 1; // 停止明けに連続でぶつからないための猶予 秒
 
+// 天気の影響（区間選択画面で「あり」にしたとき）：自転車の性能の倍率と、電車の制限時間の倍率。
+// 雨はブレーキが効きにくく少し遅い、雪はさらに遅く滑りやすい。制限時間は自動運転で計った遅れに合わせて延ばす
+const WEATHER_EFFECTS = {
+  rain: { name: '雨', note: 'ブレーキが効きにくく、少し遅い', maxSpeed: 0.9, accel: 0.9, brake: 0.5, turnRate: 0.85, drag: 0.8, time: 1.12 },
+  snow: { name: '雪', note: '遅く、加速も弱く、よく滑る', maxSpeed: 0.75, accel: 0.6, brake: 0.35, turnRate: 0.75, drag: 0.6, time: 1.32 },
+};
+
 // HUD を描くキャンバス（2D版では世界も同じキャンバスに描く）。タップの判定もこのキャンバスで受ける
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -106,8 +113,33 @@ function remove(key) {
     // 消せなくてもゲームは続ける
   }
 }
-const bestKey = (sectionId) => `best:${sectionId}:${DIFFICULTIES[game.difficulty].id}`;
-const ghostKey = (sectionId) => `ghost:${sectionId}:${DIFFICULTIES[game.difficulty].id}`;
+// 今の天気の影響（影響なし・晴れなら null）
+const activeEffect = () => (game.weatherEffects && WEATHER_EFFECTS[game.weather] ? game.weather : null);
+// 記録は区間・難易度ごと。天気の影響ありの雨・雪は別の記録にする（晴れ・影響なしは今までと同じ記録）
+const recordSuffix = () => (activeEffect() ? `:${activeEffect()}` : '');
+const bestKey = (sectionId) => `best:${sectionId}:${DIFFICULTIES[game.difficulty].id}${recordSuffix()}`;
+const ghostKey = (sectionId) => `ghost:${sectionId}:${DIFFICULTIES[game.difficulty].id}${recordSuffix()}`;
+
+// 天気の影響を入れた自転車の性能
+let effectConfig = { weather: null, cfg: PLAYER_CONFIG };
+function playerConfig() {
+  const w = activeEffect();
+  if (effectConfig.weather !== w) {
+    const e = WEATHER_EFFECTS[w];
+    const cfg = { ...PLAYER_CONFIG };
+    if (e) for (const k of ['maxSpeed', 'accel', 'brake', 'turnRate', 'drag']) cfg[k] = PLAYER_CONFIG[k] * e[k];
+    effectConfig = { weather: w, cfg };
+  }
+  return effectConfig.cfg;
+}
+
+// 電車（制限時間）。天気の影響ありの雨・雪では延ばす
+function makeTrain(section) {
+  const train = createTrain(section, DIFFICULTIES[game.difficulty]);
+  const e = WEATHER_EFFECTS[activeEffect()];
+  if (e) train.limit = Math.round(train.limit * e.time);
+  return train;
+}
 
 // コースが変わった区間の古い記録（ベストとゴースト）を消す。
 // スタート・ゴールや道路データを作り直すと基準タイムを計り直すので、記録を作ったときの基準タイムを
@@ -118,7 +150,9 @@ function dropStaleRecords() {
   for (const s of game.sections) {
     const course = String(s.parSeconds);
     if (load(`course:${s.id}`) === course) continue;
-    const keys = DIFFICULTIES.flatMap((d) => [`best:${s.id}:${d.id}`, `ghost:${s.id}:${d.id}`]);
+    const keys = DIFFICULTIES.flatMap((d) =>
+      ['', ...Object.keys(WEATHER_EFFECTS).map((w) => `:${w}`)].flatMap((sfx) => [`best:${s.id}:${d.id}${sfx}`, `ghost:${s.id}:${d.id}${sfx}`]),
+    );
     if (keys.some((k) => load(k) != null)) dropped++;
     for (const k of keys) remove(k);
     save(`course:${s.id}`, course);
@@ -170,7 +204,7 @@ function distanceToGoal() {
 
 function setDifficulty(i) {
   game.difficulty = (i + DIFFICULTIES.length) % DIFFICULTIES.length;
-  if (game.section) game.train = createTrain(game.section, DIFFICULTIES[game.difficulty]);
+  if (game.section) game.train = makeTrain(game.section);
   loadBests();
   loadGhost();
   save('difficulty', game.difficulty);
@@ -203,7 +237,7 @@ async function selectSection(i) {
   game.map = map;
   // 地図の上を走る電車の道筋（地図ごとに一度だけ作る。線路がなければ null で、電車は描かない）
   if (map.trainRoute === undefined) map.trainRoute = trainPath(map, section.fromStation, section.toStation);
-  game.train = createTrain(section, DIFFICULTIES[game.difficulty]);
+  game.train = makeTrain(section);
   game.best = game.bests[section.id];
   loadGhost();
   reset();
@@ -334,7 +368,7 @@ function updatePhysics(dt) {
   game.wrongWay = isWrongWay();
   if (game.wrongWay) limit = Math.min(limit, WRONG_WAY_LIMIT);
   if (game.wrongWay && !wasWrongWay) audio.warn();
-  updatePlayer(p, input, dt, limit);
+  updatePlayer(p, input, dt, limit, playerConfig());
 
   const next = surfaceAt(game.map, p.x, p.y);
   if (next.kind === 'building') {
@@ -452,6 +486,21 @@ function setAtmosphere(time, weather) {
   audio.setRain(game.weather === 'rain');
   save('timeOfDay', game.timeOfDay);
   save('weather', game.weather);
+  applyWeatherEffects();
+}
+
+// 天気の影響を「あり」にしたり天気を変えたりしたら、記録・ゴースト・制限時間を、その条件のものにする
+function setWeatherEffects(on) {
+  game.weatherEffects = on;
+  save('weatherEffects', on ? 1 : 0);
+  applyWeatherEffects();
+}
+function applyWeatherEffects() {
+  game.effect = WEATHER_EFFECTS[activeEffect()] ?? null; // HUD 用
+  if (!game.sections.length) return;
+  loadBests();
+  loadGhost();
+  if (game.section) game.train = makeTrain(game.section);
 }
 const cycle = (list, v) => list[(list.indexOf(v) + 1) % list.length];
 
@@ -477,6 +526,8 @@ function act(action, x = null) {
     setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
+  } else if (action === 'weatherEffects') {
+    if (s === 'ready' || s === 'title') setWeatherEffects(!game.weatherEffects);
   } else if (action === 'switch') {
     // 2D版と3D版の切り替え（記録はブラウザに保存してあるので、どちらでも同じ）
     location.href = renderer.mode === '3d' ? 'index.html' : '3d.html';
@@ -529,6 +580,8 @@ window.addEventListener('keydown', (e) => {
     act('time');
   } else if (e.code === 'KeyY') {
     act('weather');
+  } else if (e.code === 'KeyE') {
+    act('weatherEffects');
   } else if (e.code === 'KeyC' && renderer.nextCamera) {
     switchCamera();
   } else if (e.code === 'KeyH' && s === 'title') {
@@ -622,6 +675,7 @@ export async function startGame(r) {
   window.addEventListener('resize', resize);
   resize();
   setMuted(load('muted') === '1');
+  game.weatherEffects = load('weatherEffects') === '1';
   setAtmosphere(load('timeOfDay'), load('weather'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
@@ -631,6 +685,7 @@ export async function startGame(r) {
   loadCleared();
   const savedDifficulty = Number(load('difficulty') ?? 1);
   setDifficulty(Number.isInteger(savedDifficulty) ? savedDifficulty : 1);
+  applyWeatherEffects();
   // 前回選んでいた区間から。まだ遊べない区間なら最初の区間
   const savedSection = Number(load('section') ?? 0);
   const validSection = Number.isInteger(savedSection) && savedSection < game.sections.length && isUnlocked(savedSection);

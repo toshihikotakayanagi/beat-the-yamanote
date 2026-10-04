@@ -307,7 +307,7 @@ function drawTitle(ctx, game, view) {
 function drawHowto(ctx, game, view) {
   const controls = game.touch
     ? '画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）'
-    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト　T：時間帯　Y：天気${game.mode === '3d' ? '　C：視点' : ''}`;
+    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響${game.mode === '3d' ? '　C：視点' : ''}`;
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
     ['電車（上のバーの黄緑）より先に、緑の円のゴールへ', { size: 16 }],
@@ -389,6 +389,13 @@ function drawReady(ctx, game, view) {
       { title: `天気：${WEATHER_NAMES[game.weather]}`, note: game.touch ? 'タップで切り替え' : 'Y で切り替え', color: TEXT, noteColor: QUIET, action: 'weather' },
     ],
   });
+  // 天気の影響：あり／なし（雨・雪で走りやすさが変わる。記録は別）
+  const eff = game.weatherEffects
+    ? game.effect
+      ? `天気の影響：あり（${game.effect.name}：${game.effect.note}。記録は別）`
+      : '天気の影響：あり（晴れでは変わらない）'
+    : '天気の影響：なし';
+  lines.push([game.touch ? eff : `${eff}（E）`, { size: 13, color: game.effect ? '#7ec8ff' : QUIET }, 'weatherEffects']);
   lines.push([`◀  難易度：${DIFFICULTIES[game.difficulty].name}  ▶`, { size: 17, weight: 'bold', color: YAMANOTE_GREEN }, 'difficulty']);
   if (!game.isUnlocked(game.sectionIndex)) {
     // あと何区間勝てば遊べるかと、次に遊ぶ区間への移動
