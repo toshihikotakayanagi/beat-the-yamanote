@@ -352,6 +352,9 @@ function drawReady(ctx, game, view) {
     lines.push([`${tapOrSpace(game)}で ${target.fromName} → ${target.toName} へ`, { size: 18, weight: 'bold' }, 'start']);
   } else if (game.loadingMap || game.section !== section) {
     lines.push(['地図を読み込み中…', { size: 16, color: QUIET }]);
+  } else if (game.preparing != null) {
+    // 3D版：区間の街を少しずつ作っているあいだ
+    lines.push([`街を準備中… ${Math.floor(game.preparing * 100)}%${game.startWhenReady ? '（できたらスタート）' : ''}`, { size: 16, color: QUIET }]);
   } else {
     lines.push([`電車より先に${section.toName}駅へ！ 制限時間 ${formatTime(game.train.limit)}`, { size: 15, color: QUIET }]);
     if (game.ghost) {

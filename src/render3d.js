@@ -111,13 +111,12 @@ class GeometryBuilder {
     this.uv = withUV ? [] : null;
   }
   // uvs：3 つの頂点のテクスチャ座標 [[u, v], [u, v], [u, v]]（withUV のとき）
+  // 区間ごとに何十万回も呼ぶので、配列の展開（...）を使わずに 1 つずつ入れる
   tri(a, b, c, n, color, uvs = ROOF_UV) {
-    this.pos.push(...a, ...b, ...c);
-    for (let k = 0; k < 3; k++) {
-      this.nor.push(...n);
-      if (this.col) this.col.push(...color);
-      if (this.uv) this.uv.push(...uvs[k]);
-    }
+    this.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    this.nor.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
+    if (this.col) this.col.push(color[0], color[1], color[2], color[0], color[1], color[2], color[0], color[1], color[2]);
+    if (this.uv) this.uv.push(uvs[0][0], uvs[0][1], uvs[1][0], uvs[1][1], uvs[2][0], uvs[2][1]);
   }
   build() {
     const g = new THREE.BufferGeometry();
@@ -521,8 +520,12 @@ function nearestSeg(map, r, x, z) {
   return best;
 }
 
-// textures：窓のテクスチャ（windowTextures）
-function buildWorld(map, textures) {
+// 区間の立体を作る。区間を選んだときに画面が止まらないよう、少しずつ作る（ジェネレーター）。
+// yield する値は進み具合（0〜1）、最後に立体（THREE.Group）を返す。textures：窓のテクスチャ（windowTextures）
+const BUILDINGS_PER_STEP = 150; // 1 回に作る建物の数
+const ROADS_PER_STEP = 120; // 1 回に作る道路の数
+const TILES_PER_STEP = 4; // 1 回に仕上げる建物のまとまりの数
+function* buildWorldSteps(map, textures) {
   const group = new THREE.Group();
   const { minX, minY, maxX, maxY } = map.bounds;
 
@@ -534,7 +537,9 @@ function buildWorld(map, textures) {
 
   // 公園・水域（種類ごとに 1 つにまとめる）
   const areaBuilders = {};
-  for (const a of map.areas) {
+  for (let ai = 0; ai < map.areas.length; ai++) {
+    const a = map.areas[ai];
+    if (ai > 0 && ai % 20 === 0) yield (0.05 * ai) / map.areas.length;
     const b = (areaBuilders[a.k] ??= new GeometryBuilder());
     for (const r of a.r) addPolygon(b, r, a.k === 'water' ? Y.water : Y.area);
   }
@@ -544,11 +549,14 @@ function buildWorld(map, textures) {
     group.add(m);
   }
 
+  yield 0.05;
   // 川と線路（トンネルは描かない）。高い所を走る線路（e: 1）は、柱の上の高架橋として持ち上げる
   const lineBuilders = {};
   const deck = new GeometryBuilder();
   const pillars = [];
-  for (const l of map.lines) {
+  for (let li = 0; li < map.lines.length; li++) {
+    const l = map.lines[li];
+    if (li > 0 && li % 150 === 0) yield 0.05 + (0.05 * li) / map.lines.length;
     if (l.u) continue;
     const b = (lineBuilders[l.k] ??= new GeometryBuilder());
     if (l.e && l.k !== 'river') {
@@ -571,12 +579,21 @@ function buildWorld(map, textures) {
     group.add(pillar);
   }
 
+  yield 0.1;
   // 道路（歩道・車道）と一方通行の矢印
   const roadHeights = computeRoadHeights(map); // 道路の高さ（建物の高さとは別）
-  const paths = new GeometryBuilder(), roads = new GeometryBuilder(), arrows = new GeometryBuilder(), roadDeck = new GeometryBuilder();
+  // 道路も TILE m 四方ごとに分ける（初めて描くときに GPU へ送る量を分け、画面の外の区画は描かない）
+  const roadTiles = new Map(); // 区画 → { paths, roads }
+  const arrows = new GeometryBuilder(), roadDeck = new GeometryBuilder();
   const roadPillars = [];
-  for (const r of map.roads) {
-    const b = r.path ? paths : roads;
+  for (let ri = 0; ri < map.roads.length; ri++) {
+    const r = map.roads[ri];
+    if (ri > 0 && ri % ROADS_PER_STEP === 0) yield 0.1 + (0.15 * ri) / map.roads.length;
+    let cx = 0, cz = 0;
+    for (let k = 0; k < r.p.length; k += 2) (cx += r.p[k]), (cz += r.p[k + 1]);
+    const tileKey = `${Math.floor(cx / (r.p.length / 2) / TILE)},${Math.floor(cz / (r.p.length / 2) / TILE)}`;
+    if (!roadTiles.has(tileKey)) roadTiles.set(tileKey, { paths: new GeometryBuilder(), roads: new GeometryBuilder() });
+    const b = r.path ? roadTiles.get(tileKey).paths : roadTiles.get(tileKey).roads;
     const lift = r.path ? Y.path : Y.road;
     const hs = roadHeights.get(r);
     if (!hs) {
@@ -611,18 +628,28 @@ function buildWorld(map, textures) {
       arrows.tri(at(0, -2.2), at(0, 0.6), at(1.6, 1.4), UP);
     }
   }
-  for (const [b, color] of [[paths, PATH], [roads, ROAD]]) {
-    const m = new THREE.Mesh(b.build(), mat(color));
-    m.receiveShadow = true;
-    group.add(m);
+  yield 0.26;
+  const pathMat = mat(PATH), roadMat = mat(ROAD);
+  let rt = 0;
+  for (const t of roadTiles.values()) {
+    if (++rt % 8 === 0) yield 0.26 + (0.04 * rt) / roadTiles.size;
+    for (const [b, material] of [[t.paths, pathMat], [t.roads, roadMat]]) {
+      if (!b.pos.length) continue;
+      const m = new THREE.Mesh(b.build(), material);
+      m.receiveShadow = true;
+      group.add(m);
+    }
   }
   group.add(new THREE.Mesh(arrows.build(), mat(ARROW, { side: THREE.DoubleSide })));
 
+  yield 0.3;
   // 建物（高い建物ほど少し明るく）。TILE ごとに 1 つの立体にまとめる
   const tileBuilders = new Map();
   const heights = []; // 建物ごとの高さ m（高さが分からない建物は推定した値）
   const tileOf = []; // 建物ごとのまとまりの名前
-  map.buildings.forEach((bd, i) => {
+  for (let i = 0; i < map.buildings.length; i++) {
+    const bd = map.buildings[i];
+    if (i > 0 && i % BUILDINGS_PER_STEP === 0) yield 0.3 + (0.6 * i) / map.buildings.length;
     const area = Math.abs(polygonArea(openRing(bd.p)));
     const h = map.heights?.[i] > 0 ? map.heights[i] : guessHeight(area, i);
     const key = `${Math.floor((bd.minX + bd.maxX) / 2 / TILE)},${Math.floor((bd.minY + bd.maxY) / 2 / TILE)}`;
@@ -634,9 +661,12 @@ function buildWorld(map, textures) {
     addBuilding(tileBuilders.get(key), bd.p, h, [v + tint, v * 1.02, v * 1.08 - tint]);
     heights.push(h);
     tileOf.push(key);
-  });
+  }
+  yield 0.9;
   const tiles = new Map();
+  let ti = 0;
   for (const [key, b] of tileBuilders) {
+    if (++ti % TILES_PER_STEP === 0) yield 0.9 + (0.08 * ti) / tileBuilders.size;
     const material = new THREE.MeshLambertMaterial({
       vertexColors: true,
       side: THREE.DoubleSide,
@@ -673,6 +703,14 @@ function buildWorld(map, textures) {
   group.add(beam);
 
   return group;
+}
+
+// 一度に作る（テスト用）
+function buildWorld(map, textures) {
+  const steps = buildWorldSteps(map, textures);
+  let r;
+  while (!(r = steps.next()).done);
+  return r.value;
 }
 
 // 自転車（黄色の車体、前に赤い印）と、乗っている人。車輪は回り、足はこぎ、曲がるときは傾く（animateBike）
@@ -842,25 +880,132 @@ export function createRenderer3D(canvas) {
   const toGoal = new THREE.Vector3();
   const camDir = new THREE.Vector3();
 
-  // 区間が変わったら作り直す
-  function setMap(map) {
-    if (world) {
-      scene.remove(world);
-      world.traverse((m) => {
-        m.geometry?.dispose();
-        m.material?.dispose();
-      });
+  // 今の区間の道路の高さ（作っている途中なら空。みな地面の高さになる）
+  const NO_HEIGHTS = new Map();
+  const roadH = () => world?.userData.roadHeights ?? NO_HEIGHTS;
+
+  // ---- 区間の立体の準備 ----
+  // 区間の立体は少しずつ作り（build）、できたら少しずつ見せる（reveal。初めて描くときに GPU へ送るのが重いので、
+  // 何回かに分けて送る）。作った立体は最近の WORLD_CACHE 区間ぶん覚えておき、次の区間は結果画面のうちに作っておく
+  const WORLD_CACHE = 3;
+  const BUILD_BUDGET_MS = 10; // 1 回の描画で作るのに使う時間（今の区間）
+  const BACKGROUND_BUDGET_MS = 6; // 先に作っておく区間に使う時間（レース中は使わない）
+  const REVEAL_PER_FRAME = 12; // 1 回の描画で見せる部品の数
+  const worlds = new Map(); // 地図 → { steps, group, progress, revealed, used }
+
+  function worldFor(map) {
+    let w = worlds.get(map);
+    if (!w) {
+      w = { steps: buildWorldSteps(map, textures), group: null, progress: 0, revealed: 0, used: 0 };
+      worlds.set(map, w);
+      // 古いものから捨てる（今の区間は捨てない）
+      while (worlds.size > WORLD_CACHE) {
+        const [oldMap, old] = [...worlds.entries()].filter(([m]) => m !== map && m !== worldMap).sort((a, b) => a[1].used - b[1].used)[0] ?? [];
+        if (!oldMap) break;
+        worlds.delete(oldMap);
+        old.group?.traverse((m) => {
+          m.geometry?.dispose();
+          m.material?.dispose();
+        });
+      }
     }
-    world = buildWorld(map, textures);
+    w.used = performance.now();
+    return w;
+  }
+
+  // 決めた時間だけ作り進める
+  function build(w, budgetMs) {
+    const t0 = performance.now();
+    while (!w.group && performance.now() - t0 < budgetMs) {
+      const r = w.steps.next();
+      if (r.done) {
+        w.group = r.value;
+        w.group.children.forEach((m) => (m.visible = false)); // reveal で少しずつ見せる
+      } else {
+        w.progress = r.value * 0.85;
+      }
+    }
+  }
+
+  // 準備ができていなければ 0〜1 の進み具合、できていれば null
+  function progressOf(map) {
+    const w = worlds.get(map);
+    if (!w) return 0;
+    if (!w.group) return w.progress;
+    const n = w.group.children.length;
+    return w.revealed >= n ? null : 0.85 + (0.15 * w.revealed) / n;
+  }
+
+  // 今の区間を切り替える（できていれば、すぐに見せる）
+  function setMap(map) {
+    if (world) scene.remove(world);
+    const w = worldFor(map);
+    world = w.group; // まだ作っている途中なら null
     worldMap = map;
-    scene.add(world);
+    if (world) scene.add(world);
+    signalMeshes.obs = null; // 信号は新しい区間の高さで置き直す
     camAngle = null;
     cam.back = null;
   }
 
+  // GPU へ送る：区画は画面に映ったときに初めて GPU へ送られる（そのときに引っかかる）。
+  // そこで準備のうちに、少しずつ全部を一度描いて送っておく。
+  //   今の区間：画面の外の区画も、その回だけ描かせる（frustumCulled を外す）
+  //   先に作っておく区間：見えない 1 × 1 の描画先に描く
+  const warmTarget = new THREE.WebGLRenderTarget(1, 1);
+  const warmScene = new THREE.Scene();
+  let unculled = []; // 今回だけ画面の外でも描く区画（描いたら元に戻す）
+
+  function reveal(w, count, current) {
+    const kids = w.group.children;
+    const from = w.revealed;
+    const to = Math.min(kids.length, from + count);
+    if (current) {
+      for (let k = from; k < to; k++) {
+        kids[k].visible = true;
+        kids[k].frustumCulled = false;
+        unculled.push(kids[k]);
+      }
+    } else {
+      // この回の分だけを見えない描画先に描く
+      kids.forEach((m, k) => (m.visible = k >= from && k < to));
+      kids.forEach((m, k) => k >= from && k < to && (m.frustumCulled = false));
+      warmScene.add(w.group);
+      renderer.setRenderTarget(warmTarget);
+      renderer.render(warmScene, camera);
+      renderer.setRenderTarget(null);
+      warmScene.remove(w.group);
+      kids.forEach((m, k) => {
+        m.frustumCulled = true;
+        m.visible = k < to;
+      });
+    }
+    w.revealed = to;
+  }
+
+  // 毎回の描画で：今の区間を作り進め、できたら少しずつ見せる。手が空いていれば先の区間も作る
+  function advanceWorlds(game) {
+    const w = worldFor(worldMap);
+    if (!w.group) {
+      build(w, BUILD_BUDGET_MS);
+      if (w.group) {
+        world = w.group;
+        scene.add(world);
+        signalMeshes.obs = null;
+      }
+    }
+    if (w.group && w.revealed < w.group.children.length) reveal(w, REVEAL_PER_FRAME, true);
+    // 手が空いていれば（今の区間ができていて、レース中でなければ）先の区間を作り、GPU へ送っておく
+    if (progressOf(worldMap) === null && game.state !== 'racing' && game.state !== 'countdown') {
+      const next = [...worlds.values()].find((o) => o !== w && (!o.group || o.revealed < o.group.children.length));
+      if (next && !next.group) build(next, BACKGROUND_BUDGET_MS);
+      else if (next) reveal(next, REVEAL_PER_FRAME, false);
+    }
+  }
+
   // 信号：交差点の地面の円（2D版の丸と同じ範囲）と、柱の上の灯り
   function syncSignals(obs) {
-    if (signalMeshes.obs === obs) return;
+    if (signalMeshes.obs === obs || !world) return;
     signalGroup.clear();
     signalMeshes = [];
     signalMeshes.obs = obs;
@@ -868,7 +1013,7 @@ export function createRenderer3D(canvas) {
       for (const [x, z] of g.nodes) {
         // 橋や坂の上の交差点なら、その高さに置く（重なる道路のうち一番高いもの）
         const segs = surfaceAt(worldMap, x, z).segs ?? [];
-        const h = Math.max(0, ...segs.map((sg) => segHeight(world.userData.roadHeights, sg, x, z)));
+        const h = Math.max(0, ...segs.map((sg) => segHeight(roadH(), sg, x, z)));
         const pad = new THREE.Mesh(new THREE.CircleGeometry(2.2, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }));
         pad.rotation.x = -Math.PI / 2;
         pad.position.set(x, h + Y.signal + (h > 0 ? 0.35 : 0), z); // 坂の上では少し浮かせる（平らな円が坂に埋もれないように）
@@ -906,7 +1051,7 @@ export function createRenderer3D(canvas) {
       // 乗っている道路の高さ（橋の上の車・歩行者）
       const segLen = Math.hypot(a.road.p[2 * (a.v + a.dir)] - a.road.p[2 * a.v], a.road.p[2 * (a.v + a.dir) + 1] - a.road.p[2 * a.v + 1]) || 1;
       const t = Math.max(0, Math.min(1, a.s / segLen));
-      const h = a.dir > 0 ? roadHeightAt(world.userData.roadHeights, a.road, a.v, t) : roadHeightAt(world.userData.roadHeights, a.road, a.v - 1, 1 - t);
+      const h = a.dir > 0 ? roadHeightAt(roadH(), a.road, a.v, t) : roadHeightAt(roadH(), a.road, a.v - 1, 1 - t);
       m.position.set(a.x, Number.isFinite(h) ? h : 0, a.y);
       m.rotation.y = -(a.angle ?? 0);
     }
@@ -941,6 +1086,7 @@ export function createRenderer3D(canvas) {
 
   // カメラから自転車（の頭の高さ）までの線をさえぎる建物のまとまりを透かす
   function fadeOccluders(game, dt) {
+    if (!world) return;
     const { tiles, heights, tileOf } = world.userData;
     const p = game.player;
     const ax = camera.position.x, ay = camera.position.y, az = camera.position.z;
@@ -1066,6 +1212,27 @@ export function createRenderer3D(canvas) {
     // （ゴールは光の柱とミニマップで分かる）
     hud: { ppm: 1, landmarks: false, goalPointer: false, goal3d: null, landmarks3d: null },
 
+    // 区間の立体の準備（game.js から）：進み具合（できていれば null）と、先に作っておく
+    progress(map) {
+      return map ? progressOf(map) : null;
+    },
+    prepare(map) {
+      worldFor(map);
+    },
+    // テスト用：区間 map（省略すると今の区間）の立体をすぐに作り終える
+    finishNow(map = worldMap) {
+      if (map !== worldMap) setMap(map);
+      const w = worldFor(worldMap);
+      build(w, Infinity);
+      w.group.children.forEach((m) => (m.visible = true));
+      w.revealed = w.group.children.length;
+      if (world !== w.group) {
+        world = w.group;
+        scene.add(world);
+        signalMeshes.obs = null;
+      }
+    },
+
     // 視点の名前と切り替え（game.js の C キー・右上のボタンから）
     get cameraName() {
       return CAMERAS[cameraMode].name;
@@ -1093,10 +1260,11 @@ export function createRenderer3D(canvas) {
       lastTime = now;
       if (!game.map) return;
       if (game.map !== worldMap) setMap(game.map);
+      advanceWorlds(game);
 
       const p = game.player;
       // 自転車の高さ：今いる道路（橋の上なら橋の高さ）。急に変わらないよう少しなめらかにする
-      const rh = world.userData.roadHeights;
+      const rh = roadH();
       const targetH = groundHeight(rh, game.surface.segs, p.x, p.y, bikeH);
       bikeH = game.state === 'racing' ? bikeH + (targetH - bikeH) * Math.min(1, 12 * dt) : targetH;
       animateBike(player, p, game.state === 'racing' ? p.speed : 0, dt, bikeH);
@@ -1104,7 +1272,7 @@ export function createRenderer3D(canvas) {
       if (game.ghostPose) {
         const gp = game.ghostPose;
         const gs = ghostPrev && dt > 0 ? Math.hypot(gp.x - ghostPrev.x, gp.y - ghostPrev.y) / dt : 0;
-        ghostH = groundHeight(world.userData.roadHeights, surfaceAt(worldMap, gp.x, gp.y).segs, gp.x, gp.y, ghostH);
+        ghostH = groundHeight(roadH(), surfaceAt(worldMap, gp.x, gp.y).segs, gp.x, gp.y, ghostH);
         animateBike(ghost, gp, Math.min(gs, 20), dt, ghostH);
         ghostPrev = { x: gp.x, y: gp.y };
       } else {
@@ -1136,6 +1304,9 @@ export function createRenderer3D(canvas) {
       locateLandmarks(game);
       fadeOccluders(game, dt);
       renderer.render(scene, camera);
+      // 今回だけ画面の外でも描いた区画を元に戻す
+      for (const m of unculled) m.frustumCulled = true;
+      unculled = [];
     },
   };
   window.render3d = { renderer, scene, camera, r3d }; // デバッグ・自動テスト用

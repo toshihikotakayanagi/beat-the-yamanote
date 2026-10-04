@@ -211,8 +211,21 @@ async function selectSection(i) {
 }
 game.selectSection = selectSection;
 
-// 選んでいる区間がまだ準備できていない（未解放・読み込み中）ときは始められない
-const sectionReady = () => isUnlocked(game.sectionIndex) && !game.loadingMap && game.section === game.sections[game.sectionIndex];
+// 選んでいる区間がまだ準備できていない（未解放・読み込み中・3D の街を作っている途中）ときは始められない
+const worldReady = () => (renderer.progress?.(game.map) ?? null) === null;
+const sectionReady = () =>
+  isUnlocked(game.sectionIndex) && !game.loadingMap && game.section === game.sections[game.sectionIndex] && worldReady();
+
+// 次の区間の地図を読み込み、3D の街を先に作っておく（結果画面のうちに。2D版では読み込むだけ）
+function prefetchSection(i) {
+  const section = game.sections[i];
+  if (!section) return;
+  if (!mapCache.has(section.id)) mapCache.set(section.id, loadMap(`data/${section.id}.json`));
+  mapCache
+    .get(section.id)
+    .then((map) => renderer.prepare?.(map))
+    .catch(() => mapCache.delete(section.id));
+}
 
 // スタート位置に戻してスタート前の画面にする
 function reset() {
@@ -274,6 +287,7 @@ function finish(win) {
   r.lapComplete = win && last && game.sections.every((s) => game.cleared.has(s.id));
   game.result = r;
   game.state = 'result';
+  if (r.next) prefetchSection(game.sections.indexOf(r.next));
   if (win) audio.win();
   else audio.lose();
 }
@@ -402,6 +416,7 @@ function draw() {
   game.trainProgress = game.train ? trainProgress(game.train, game.time) : 0;
   game.ghostPose = game.showGhost && game.ghost && game.inRace ? ghostPose(game.ghost, game.time) : null;
   renderer.drawWorld(game, ctx);
+  game.preparing = renderer.progress?.(game.map) ?? null; // 3D の街を作っている途中なら 0〜1
   if (!game.map) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawHud(ctx, game, { w: canvas.width / dpr, h: canvas.height / dpr, ...renderer.hud });
@@ -409,9 +424,12 @@ function draw() {
 }
 
 
-// 次の区間を読み込んで、そのままカウントダウンに入る
+// 次の区間を読み込んで、そのままカウントダウンに入る（3D の街ができていなければ、できてから）
 async function startNextSection() {
-  if (await selectSection((game.sectionIndex + 1) % game.sections.length)) startCountdown();
+  if (await selectSection((game.sectionIndex + 1) % game.sections.length)) {
+    if (sectionReady()) startCountdown();
+    else game.startWhenReady = true;
+  }
 }
 
 function goTitle() {
@@ -434,6 +452,7 @@ function setMuted(muted) {
 // 画面の動作（キー・タップ共通）
 function act(action, x = null) {
   const s = game.state;
+  game.startWhenReady = false; // ほかの操作をしたら、自動で始めるのはやめる
   if (action === 'start') {
     if (s === 'title' || s === 'howto') game.state = 'ready';
     else if (s === 'ready' && sectionReady()) startCountdown();
@@ -556,6 +575,11 @@ function syncDom() {
 let last = performance.now();
 let acc = 0;
 function frame(now) {
+  // 次の区間の街ができるのを待っていたら、できしだいカウントダウン
+  if (game.startWhenReady && game.state === 'ready' && sectionReady()) {
+    game.startWhenReady = false;
+    startCountdown();
+  }
   // タブ切り替え後などの大きな飛びは 0.25 秒で打ち切る
   acc += Math.min(0.25, (now - last) / 1000);
   last = now;
