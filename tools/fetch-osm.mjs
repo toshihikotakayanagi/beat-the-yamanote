@@ -100,8 +100,15 @@ const areasQuery = (bbox) => `[out:json][timeout:120];
 );
 out geom;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路' };
+// 自転車で入れない場所（OSM の way の番号）。この中に完全に入っている道は取り込まない。
+// 明治神宮の境内は自転車の乗り入れが禁止されている（森の中の参道を抜ける近道ができていた）
+const NO_BIKE_AREAS = [{ id: 469908925, name: '明治神宮' }];
+const noBikeQuery = () => `[out:json][timeout:60];
+way(id:${NO_BIKE_AREAS.map((a) => a.id).join(',')});
+out geom;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -535,8 +542,23 @@ function buildingHeight(tags) {
   return 0;
 }
 
-function convert(id, osm, frame) {
+// noBike：自転車で入れない場所の多角形（区間の座標、[x0, y0, ...]）の配列
+function convert(id, osm, frame, noBike = []) {
   const { from, to, toXY } = frame;
+  const inside = (x, y, p) => {
+    let c = false;
+    for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+      const xi = p[i], yi = p[i + 1], xj = p[j], yj = p[j + 1];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  // 道の点がすべて、どれか 1 つの自転車で入れない場所の中にあるか
+  const inNoBike = (pts) => noBike.some((poly) => {
+    for (let i = 0; i < pts.length; i += 2) if (!inside(pts[i], pts[i + 1], poly)) return false;
+    return true;
+  });
+  let noBikeDropped = 0;
   const roads = [];
   const buildings = [];
   const heights = []; // buildings と同じ順の高さ m
@@ -557,7 +579,9 @@ function convert(id, osm, frame) {
           heights.push(buildingHeight(tags));
         }
       } else if (tags.highway && isRideable(tags, polylineLength(pts))) {
-        if (pts.length >= 4) {
+        if (pts.length >= 4 && inNoBike(pts)) {
+          noBikeDropped++;
+        } else if (pts.length >= 4) {
           const road = { t: tags.highway, w: ROAD_WIDTH[tags.highway], p: pts };
           const ow = oneway(tags);
           if (ow) road.o = ow;
@@ -670,6 +694,7 @@ function convert(id, osm, frame) {
     heights,
   };
   const info = {
+    noBikeDropped,
     startOffset: start.d,
     goalOffset: goal.d,
     route: legalRouteLength(roads, start, goal),
@@ -681,7 +706,9 @@ async function processSection(id, refresh) {
   const section = SECTIONS[id];
   const frame = sectionFrame(section);
   const osm = await loadOsm(id, 'roads', frame.bbox, refresh);
-  const { data, info } = convert(id, osm, frame);
+  const noBikeOsm = await loadOsm('all', 'nobike', '', refresh);
+  const noBike = noBikeOsm.elements.filter((e) => e.geometry).map((e) => e.geometry.flatMap((g) => frame.toXY(g.lat, g.lon)));
+  const { data, info } = convert(id, osm, frame, noBike);
   data.landmarks = selectLandmarks(await loadOsm(id, 'landmarks', frame.bbox, refresh), frame);
   Object.assign(data, convertAreas(await loadOsm(id, 'areas', frame.bbox, refresh), frame, data.bounds));
 
@@ -695,7 +722,8 @@ async function processSection(id, refresh) {
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +
-      (info.route == null ? '一方通行を守るとゴールに行けません（要確認）' : `一方通行を守った最短ルート ${info.route.toFixed(0)} m`),
+      (info.route == null ? '一方通行を守るとゴールに行けません（要確認）' : `一方通行を守った最短ルート ${info.route.toFixed(0)} m`) +
+      (info.noBikeDropped ? `、自転車で入れない場所の道 ${info.noBikeDropped} 本を除外` : ''),
   );
 }
 

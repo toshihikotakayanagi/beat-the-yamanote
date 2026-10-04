@@ -33,7 +33,7 @@
   },
   "sections": [
     { "id": "shibuya-harajuku", "from": "shibuya", "to": "harajuku", "page": 0, "trainSeconds": 120, "parSeconds": 130 },
-    { "id": "harajuku-yoyogi", "from": "harajuku", "to": "yoyogi", "page": 0, "trainSeconds": 120, "parSeconds": 167 },
+    { "id": "harajuku-yoyogi", "from": "harajuku", "to": "yoyogi", "page": 0, "trainSeconds": 120, "parSeconds": 166 },
     { "id": "yoyogi-shinjuku", "from": "yoyogi", "to": "shinjuku", "page": 0, "trainSeconds": 120, "parSeconds": 78 },
     { "id": "shinjuku-shinokubo", "from": "shinjuku", "to": "shinokubo", "page": 0, "trainSeconds": 120, "parSeconds": 137 },
     { "id": "shinokubo-takadanobaba", "from": "shinokubo", "to": "takadanobaba", "page": 0, "trainSeconds": 120, "parSeconds": 123 },
