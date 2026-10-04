@@ -3,7 +3,7 @@
 import { trainProgress, timeLeft, DIFFICULTIES } from './train.js';
 import { drawMinimap, minimapRect, minimapImage, IMAGE_SCALE } from './minimap.js';
 import { fastestRoute } from './route.js';
-import { drawLandmarks } from './landmarks.js';
+import { drawLandmarks, drawLandmarks3D } from './landmarks.js';
 
 const YAMANOTE_GREEN = '#9acd32';
 const PLAYER_YELLOW = '#ffcc33';
@@ -534,7 +534,8 @@ export function drawHud(ctx, game, view) {
     if (game.touch) avoid.push({ x0: 0, y0: view.h - 104, x1: view.w, y1: view.h });
   }
   // メニュー画面では出さない（暗くした地図の上でも文字が読めてしまい、メニューの文字と紛れる）
-  if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);
+  if (!menu && view.landmarks3d) drawLandmarks3D(ctx, game, view, avoid);
+  else if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);
   // メニュー画面ではレース情報を出さない
   if (!menu) {
     if (view.goal3d) drawGoalPointer3D(ctx, game, view);

@@ -10,9 +10,14 @@ import { pointAt, frontDistance, carCount } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, cellKey } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
 
-const SKY = 0x232a36;
+// 夕暮れ：空は上ほど濃い紺、地平線は赤みのある紫。霧は地平線の色に合わせて遠くを溶かす
+const SKY_TOP = 0x10162a;
+const SKY_MID = 0x2e2c4c;
+const SKY_HORIZON = 0x8a5a62;
+const SKY = 0x3a3450; // 霧と、空を描く前の背景の色
 const FOG_NEAR = 120;
 const FOG_FAR = 420;
+const SKY_RADIUS = 440; // 空の球（カメラについて動く。描画範囲 FOG_FAR + 50 より内側に）
 const GROUND = 0x1f2228;
 const ROAD = 0x4a4f5a;
 const PATH = 0x3a3f48;
@@ -33,7 +38,7 @@ const FADE_SPEED = 6; // 透かす・戻すの速さ（1 秒あたり）
 //   high ：高めの斜め上から見下ろす（道を覚えるとき向き）
 //   first：自転車に乗った目線
 const CAMERAS = {
-  chase: { name: '追いかけ', back: [13, 10], up: [11, 6], turnUp: 4, ahead: [8, 16], fov: [58, 72], turn: 4 },
+  chase: { name: '追いかけ', back: [13, 10], up: [10, 6], turnUp: 3, ahead: [18, 18], fov: [58, 72], turn: 4 },
   high: { name: '見下ろし', back: [18, 18], up: [34, 30], turnUp: 0, ahead: [10, 14], fov: [55, 60], turn: 3 },
   first: { name: '自転車目線', back: [0, 0], up: [1.7, 1.7], turnUp: 0, ahead: [20, 28], fov: [70, 82], turn: 9 },
 };
@@ -41,6 +46,32 @@ const CAMERA_ORDER = ['chase', 'high', 'first'];
 const CAMERA_EASE = 2.5; // 高さ・距離・画角の変わる速さ（1 秒あたり）
 const LEAN_INTO_TURN = 0.35; // 曲がっているとき、向きの変わる速さ（rad/s）× この秒数ぶん先を見る
 const STORAGE_KEY = 'yamanote-race:camera3d';
+const LANDMARK_RANGE = 380; // この距離までのランドマークの名前を出す m
+
+// 空：カメラを囲む球の内側に、上ほど濃い色のグラデーションを描く
+function makeSky() {
+  const geo = new THREE.SphereGeometry(SKY_RADIUS, 32, 16);
+  const material = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      top: { value: new THREE.Color(SKY_TOP) },
+      mid: { value: new THREE.Color(SKY_MID) },
+      horizon: { value: new THREE.Color(SKY_HORIZON) },
+    },
+    vertexShader: `varying float h; void main() { h = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 horizon; varying float h;
+      void main() {
+        vec3 c = h < 0.12 ? mix(horizon, mid, smoothstep(-0.05, 0.12, h)) : mix(mid, top, smoothstep(0.12, 0.6, h));
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  });
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.renderOrder = -1;
+  mesh.frustumCulled = false;
+  return mesh;
+}
 
 // 建物の高さが分からないとき：床面積から決め、建物ごとに少しばらつかせる
 function guessHeight(area, i) {
@@ -72,16 +103,19 @@ function openRing(p) {
 
 // 位置・法線・色を貯めて 1 つの BufferGeometry にする
 class GeometryBuilder {
-  constructor(withColor = false) {
+  constructor(withColor = false, withUV = false) {
     this.pos = [];
     this.nor = [];
     this.col = withColor ? [] : null;
+    this.uv = withUV ? [] : null;
   }
-  tri(a, b, c, n, color) {
+  // uvs：3 つの頂点のテクスチャ座標 [[u, v], [u, v], [u, v]]（withUV のとき）
+  tri(a, b, c, n, color, uvs = ROOF_UV) {
     this.pos.push(...a, ...b, ...c);
     for (let k = 0; k < 3; k++) {
       this.nor.push(...n);
       if (this.col) this.col.push(...color);
+      if (this.uv) this.uv.push(...uvs[k]);
     }
   }
   build() {
@@ -89,8 +123,59 @@ class GeometryBuilder {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     if (this.col) g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    if (this.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
     return g;
   }
+}
+
+// ---- 建物の窓 ----
+// 窓のテクスチャ：WINDOW_COLS × WINDOW_ROWS 個の窓。1 個が横 WINDOW_W m・縦 FLOOR_H m（1 階ぶん）に当たる。
+// 色は白地（建物ごとの色がかかる）に暗い窓。灯りのテクスチャは、ところどころの窓だけ明るい
+const WINDOW_COLS = 8, WINDOW_ROWS = 8, WINDOW_PX = 32;
+const WINDOW_W = 3.6, FLOOR_H = 3.2;
+const ROOF_UV = [[0.002, 0.002], [0.002, 0.002], [0.002, 0.002]]; // 窓のない枠の部分（屋上・地面の物に使う）
+const LIT_SHARE = 0.28; // 灯りのついた窓の割合
+
+function windowTextures(maxAnisotropy) {
+  const size = WINDOW_COLS * WINDOW_PX;
+  const make = (draw) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    draw(c.getContext('2d'));
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = maxAnisotropy;
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const lit = [];
+  for (let i = 0; i < WINDOW_COLS * WINDOW_ROWS; i++) lit.push(rand() < LIT_SHARE ? 0.55 + rand() * 0.45 : 0);
+  const cell = (ctx, i, j, inset = 8) => [i * WINDOW_PX + inset, j * WINDOW_PX + inset + 2, WINDOW_PX - inset * 2, WINDOW_PX - inset * 2 - 3];
+  const color = make((ctx) => {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    for (let j = 0; j < WINDOW_ROWS; j++) {
+      for (let i = 0; i < WINDOW_COLS; i++) {
+        ctx.fillStyle = '#4a5466';
+        ctx.fillRect(...cell(ctx, i, j));
+      }
+    }
+  });
+  const glow = make((ctx) => {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, size, size);
+    for (let j = 0; j < WINDOW_ROWS; j++) {
+      for (let i = 0; i < WINDOW_COLS; i++) {
+        const v = lit[j * WINDOW_COLS + i];
+        if (!v) continue;
+        ctx.fillStyle = `rgba(255, ${200 + Math.round(v * 30)}, ${130 + Math.round(v * 60)}, ${v})`;
+        ctx.fillRect(...cell(ctx, i, j));
+      }
+    }
+  });
+  return { color, glow };
 }
 
 const UP = [0, 1, 0];
@@ -150,12 +235,15 @@ function addBuilding(b, p, h, color) {
     if (!ccw) (nx = -nx), (nz = -nz);
     const a = [x1, 0, z1], bb = [x2, 0, z2], c = [x2, h, z2], d = [x1, h, z1];
     const nrm = [nx, 0, nz];
+    // 窓は壁の端から並べる（横は WINDOW_W m ごと、縦は 1 階 FLOOR_H m ごと）
+    const u1 = len / WINDOW_W / WINDOW_COLS, v1 = h / FLOOR_H / WINDOW_ROWS;
+    const ua = [0, 0], ub = [u1, 0], uc = [u1, v1], ud = [0, v1];
     if (ccw) {
-      b.tri(a, c, bb, nrm, color);
-      b.tri(a, d, c, nrm, color);
+      b.tri(a, c, bb, nrm, color, [ua, uc, ub]);
+      b.tri(a, d, c, nrm, color, [ua, ud, uc]);
     } else {
-      b.tri(a, bb, c, nrm, color);
-      b.tri(a, c, d, nrm, color);
+      b.tri(a, bb, c, nrm, color, [ua, ub, uc]);
+      b.tri(a, c, d, nrm, color, [ua, uc, ud]);
     }
   }
   const contour = [];
@@ -173,7 +261,59 @@ const hex = (s) => new THREE.Color(s);
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide, ...opts });
 
 // 区間の地図から、動かない物（地面・道路・建物など）をまとめた立体を作る
-function buildWorld(map) {
+// 街灯：幅 STREETLIGHT_MIN_W m 以上の車道に、STREETLIGHT_SPACING m おきに道の片側に立てる
+const STREETLIGHT_MIN_W = 8;
+const STREETLIGHT_SPACING = 32;
+const STREETLIGHT_H = 6.5;
+const LAMP_COLOR = 0xffd9a0;
+
+function streetLights(map) {
+  const spots = [];
+  for (const r of map.roads) {
+    if (r.path || r.w < STREETLIGHT_MIN_W) continue;
+    let next = STREETLIGHT_SPACING / 2;
+    let walked = 0;
+    for (let i = 0; i + 3 < r.p.length; i += 2) {
+      const x1 = r.p[i], z1 = r.p[i + 1], x2 = r.p[i + 2], z2 = r.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 1e-6) continue;
+      const nx = -(z2 - z1) / len, nz = (x2 - x1) / len; // 道の左側
+      while (next <= walked + len) {
+        const t = (next - walked) / len;
+        const off = r.w / 2 + 0.8;
+        spots.push([x1 + (x2 - x1) * t + nx * off, z1 + (z2 - z1) * t + nz * off]);
+        next += STREETLIGHT_SPACING;
+      }
+      walked += len;
+    }
+  }
+  return spots;
+}
+
+function addStreetLights(group, map) {
+  const spots = streetLights(map);
+  if (!spots.length) return;
+  const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, STREETLIGHT_H, 6), mat(0x4a4f5a), spots.length);
+  const lamp = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 10, 8), new THREE.MeshBasicMaterial({ color: LAMP_COLOR }), spots.length);
+  // 足もとの明るい円（加算で重ねる）
+  const poolGeo = new THREE.CircleGeometry(5.5, 24);
+  poolGeo.rotateX(-Math.PI / 2);
+  const pool = new THREE.InstancedMesh(
+    poolGeo,
+    new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false }),
+    spots.length,
+  );
+  const m = new THREE.Matrix4();
+  spots.forEach(([x, z], i) => {
+    pole.setMatrixAt(i, m.makeTranslation(x, STREETLIGHT_H / 2, z));
+    lamp.setMatrixAt(i, m.makeTranslation(x, STREETLIGHT_H + 0.1, z));
+    pool.setMatrixAt(i, m.makeTranslation(x, Y.signal - 0.01, z));
+  });
+  group.add(pole, lamp, pool);
+}
+
+// textures：窓のテクスチャ（windowTextures）
+function buildWorld(map, textures) {
   const group = new THREE.Group();
   const { minX, minY, maxX, maxY } = map.bounds;
 
@@ -223,21 +363,33 @@ function buildWorld(map) {
     const area = Math.abs(polygonArea(openRing(bd.p)));
     const h = map.heights?.[i] > 0 ? map.heights[i] : guessHeight(area, i);
     const key = `${Math.floor((bd.minX + bd.maxX) / 2 / TILE)},${Math.floor((bd.minY + bd.maxY) / 2 / TILE)}`;
-    if (!tileBuilders.has(key)) tileBuilders.set(key, new GeometryBuilder(true));
+    if (!tileBuilders.has(key)) tileBuilders.set(key, new GeometryBuilder(true, true));
+    // 壁の色：灰色を基本に、建物ごとに少し暖色・寒色に振る。高い建物ほど少し明るく
     const t = Math.min(1, h / 80);
-    const v = 0.2 + 0.12 * t + (((i * 7919) % 100) / 100) * 0.04;
-    addBuilding(tileBuilders.get(key), bd.p, h, [v, v * 1.03, v * 1.12]);
+    const r = ((i * 7919) % 100) / 100, tint = (((i * 104729) % 100) / 100 - 0.5) * 0.06;
+    const v = 0.34 + 0.14 * t + r * 0.08;
+    addBuilding(tileBuilders.get(key), bd.p, h, [v + tint, v * 1.02, v * 1.08 - tint]);
     heights.push(h);
     tileOf.push(key);
   });
   const tiles = new Map();
   for (const [key, b] of tileBuilders) {
-    const mesh = new THREE.Mesh(b.build(), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    const material = new THREE.MeshLambertMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      map: textures.color,
+      emissiveMap: textures.glow,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.9,
+    });
+    const mesh = new THREE.Mesh(b.build(), material);
     mesh.userData.opacity = 1;
     tiles.set(key, mesh);
     group.add(mesh);
   }
   group.userData = { tiles, heights, tileOf };
+
+  addStreetLights(group, map);
 
   // ゴール：地面の輪と、遠くから見える光の柱
   const g = map.goal;
@@ -314,10 +466,14 @@ export function createRenderer3D(canvas) {
   renderer.setClearColor(SKY);
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(SKY, FOG_NEAR, FOG_FAR);
-  scene.add(new THREE.HemisphereLight(0xc8d4ff, 0x2a2420, 1.6));
-  const sun = new THREE.DirectionalLight(0xfff1dd, 1.4);
-  sun.position.set(-0.5, 1, 0.3);
+  // 夕暮れの光：空からの青みのある光と、西の低い位置からの赤みのある光
+  scene.add(new THREE.HemisphereLight(0x9aa6d8, 0x2a2228, 1.5));
+  const sun = new THREE.DirectionalLight(0xffb07a, 1.5);
+  sun.position.set(-1, 0.35, 0.25);
   scene.add(sun);
+  const sky = makeSky();
+  scene.add(sky);
+  const textures = windowTextures(renderer.capabilities.getMaxAnisotropy());
   const camera = new THREE.PerspectiveCamera(60, 1, 0.5, FOG_FAR + 50);
 
   let world = null; // 今の区間の動かない物
@@ -357,7 +513,7 @@ export function createRenderer3D(canvas) {
         m.material?.dispose();
       });
     }
-    world = buildWorld(map);
+    world = buildWorld(map, textures);
     worldMap = map;
     scene.add(world);
     camAngle = null;
@@ -524,6 +680,24 @@ export function createRenderer3D(canvas) {
     r3d.hud.goal3d = { x, y, behind };
   }
 
+  // ランドマークの名前を出す画面上の位置（HUD が描く）。カメラの前の LANDMARK_RANGE m 以内だけ
+  const lmVec = new THREE.Vector3();
+  function locateLandmarks(game) {
+    const list = [];
+    camera.getWorldDirection(camDir);
+    for (const lm of game.map.landmarks ?? []) {
+      const dist = Math.hypot(lm.x - camera.position.x, lm.y - camera.position.z);
+      if (dist > LANDMARK_RANGE || dist < 6) continue;
+      lmVec.set(lm.x, lm.k === 'station' ? 26 : 16, lm.y);
+      toGoal.copy(lmVec).sub(camera.position);
+      if (toGoal.dot(camDir) <= 0) continue;
+      lmVec.project(camera);
+      if (Math.abs(lmVec.x) > 1.1 || Math.abs(lmVec.y) > 1.1) continue;
+      list.push({ lm, x: ((lmVec.x + 1) / 2) * viewW, y: ((1 - lmVec.y) / 2) * viewH, dist });
+    }
+    r3d.hud.landmarks3d = list; // データの並び（重要度の高い順）のまま
+  }
+
   function setCameraMode(mode) {
     cameraMode = mode;
     cam.back = null;
@@ -541,7 +715,7 @@ export function createRenderer3D(canvas) {
     mode: '3d',
     // HUD：3D では地図を真上から見ていないので、ランドマークの名前とゴール方向の矢印は出さない
     // （ゴールは光の柱とミニマップで分かる）
-    hud: { ppm: 1, landmarks: false, goalPointer: false, goal3d: null },
+    hud: { ppm: 1, landmarks: false, goalPointer: false, goal3d: null, landmarks3d: null },
 
     // 視点の名前と切り替え（game.js の C キー・右上のボタンから）
     get cameraName() {
@@ -589,11 +763,13 @@ export function createRenderer3D(canvas) {
       syncAgents(game.obstacles);
       syncTrain(game);
       placeCamera(game, dt);
+      sky.position.copy(camera.position);
       locateGoal(game);
+      locateLandmarks(game);
       fadeOccluders(game, dt);
       renderer.render(scene, camera);
     },
   };
-  window.render3d = { renderer, scene, camera }; // デバッグ・自動テスト用
+  window.render3d = { renderer, scene, camera, r3d }; // デバッグ・自動テスト用
   return r3d;
 }

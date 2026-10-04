@@ -31,6 +31,35 @@ function drawIcon(ctx, x, y, style) {
 
 const overlaps = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 
+// 3D版：view.landmarks3d（render3d.js が求めた画面上の位置。重要度の高い順）に名前を出す。
+// 近いほど濃く、重なるときは重要度の低い方を出さない
+export function drawLandmarks3D(ctx, game, view, avoid = []) {
+  const placed = [...avoid];
+  ctx.textAlign = 'left';
+  ctx.lineJoin = 'round';
+  const top = 100; // レースバーの下（遠くの名前がバーに隠れるときは、バーのすぐ下に出す）
+  for (const { lm, x, y: rawY, dist } of view.landmarks3d) {
+    if (rawY < -40) continue;
+    const y = Math.max(top, rawY);
+    const style = KIND_STYLE[lm.k] ?? KIND_STYLE.sight;
+    const size = style.size + (dist < 120 ? 1 : 0);
+    ctx.font = `${style.weight} ${size}px ${FONT}`;
+    const w = ctx.measureText(lm.n).width;
+    const box = { x0: x - w / 2 - 4, y0: y - size - 14, x1: x + w / 2 + 4, y1: y + 6 };
+    if (box.x0 < 2 || box.x1 > view.w - 2 || placed.some((b) => overlaps(b, box))) continue;
+    placed.push(box);
+    ctx.globalAlpha = Math.max(0.45, Math.min(1, 1.25 - dist / 380));
+    drawIcon(ctx, x, y, style);
+    const tx = x - w / 2, ty = y - 10;
+    ctx.strokeStyle = 'rgba(15, 16, 20, 0.85)';
+    ctx.lineWidth = 3.5;
+    ctx.strokeText(lm.n, tx, ty);
+    ctx.fillStyle = '#f2f4f8';
+    ctx.fillText(lm.n, tx, ty);
+    ctx.globalAlpha = 1;
+  }
+}
+
 // avoid：文字を置かない画面上の四角（レースバー、ミニマップなど）。CSS px
 export function drawLandmarks(ctx, game, view, avoid = []) {
   const list = game.map.landmarks;
