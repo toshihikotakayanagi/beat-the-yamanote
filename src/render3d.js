@@ -537,10 +537,13 @@ function addRoadDeckSides(b, p, w, hs) {
   }
 }
 
-// 街灯：幅 STREETLIGHT_MIN_W m 以上の車道に、STREETLIGHT_SPACING m おきに道の片側に立てる
+// 街灯：幅 STREETLIGHT_MIN_W m 以上の車道に、STREETLIGHT_SPACING m おきに道の片側に立てる。
+// 歩道の端の柱から道路の上へ少し上向きの腕を伸ばし、先の平たい灯具の下面が光る（日本の道路でよく見る形）
 const STREETLIGHT_MIN_W = 8;
 const STREETLIGHT_SPACING = 32;
-const STREETLIGHT_H = 6.5;
+const STREETLIGHT_H = 6.8; // 柱の高さ m
+const STREETLIGHT_ARM = 1.9; // 腕の長さ m（道路の側へ）
+const STREETLIGHT_TILT = 0.12; // 腕の上向きの角度 rad
 
 function streetLights(map, heights) {
   const spots = [];
@@ -556,7 +559,8 @@ function streetLights(map, heights) {
       while (next <= walked + len) {
         const t = (next - walked) / len;
         const off = r.w / 2 + 0.8;
-        spots.push([x1 + (x2 - x1) * t + nx * off, z1 + (z2 - z1) * t + nz * off, roadHeightAt(heights, r, i / 2, t)]);
+        // 位置・高さと、道路の側を向く向き（道の左側に立つので、道路の側は -n）
+        spots.push([x1 + (x2 - x1) * t + nx * off, z1 + (z2 - z1) * t + nz * off, roadHeightAt(heights, r, i / 2, t), Math.atan2(nz, -nx)]);
         next += STREETLIGHT_SPACING;
       }
       walked += len;
@@ -568,19 +572,35 @@ function streetLights(map, heights) {
 function addStreetLights(group, map, heights) {
   const spots = streetLights(map, heights);
   if (!spots.length) return;
-  const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, STREETLIGHT_H, 6), mat(0x4a4f5a), spots.length);
-  const lamp = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 10, 8), LAMP_MAT, spots.length);
-  // 足もとの明るい円（加算で重ねる）
-  const poolGeo = new THREE.CircleGeometry(5.5, 24);
-  poolGeo.rotateX(-Math.PI / 2);
-  const pool = new THREE.InstancedMesh(poolGeo, POOL_MAT, spots.length);
-  const m = new THREE.Matrix4();
-  spots.forEach(([x, z, h], i) => {
-    pole.setMatrixAt(i, m.makeTranslation(x, h + STREETLIGHT_H / 2, z));
-    lamp.setMatrixAt(i, m.makeTranslation(x, h + STREETLIGHT_H + 0.1, z));
-    pool.setMatrixAt(i, m.makeTranslation(x, h + Y.signal - 0.01, z));
+  const n = spots.length;
+  // 部品（ローカルの +x が道路の側）：柱・腕・灯具の箱・光る下面・足もとの明かり
+  const poleGeo = new THREE.CylinderGeometry(0.08, 0.12, STREETLIGHT_H, 8).translate(0, STREETLIGHT_H / 2, 0);
+  const armGeo = new THREE.CylinderGeometry(0.045, 0.05, STREETLIGHT_ARM, 6)
+    .rotateZ(-Math.PI / 2) // 横向き（+x へ伸びる）
+    .translate(STREETLIGHT_ARM / 2, 0, 0)
+    .rotateZ(STREETLIGHT_TILT); // 先を少し上げる
+  const tipX = STREETLIGHT_ARM * Math.cos(STREETLIGHT_TILT), tipY = STREETLIGHT_ARM * Math.sin(STREETLIGHT_TILT);
+  const headGeo = new THREE.BoxGeometry(0.75, 0.13, 0.3).translate(tipX + 0.25, tipY - 0.02, 0);
+  const lensGeo = new THREE.BoxGeometry(0.6, 0.03, 0.22).translate(tipX + 0.25, tipY - 0.1, 0);
+  const poolGeo = new THREE.CircleGeometry(5.5, 24).rotateX(-Math.PI / 2).translate(tipX + 0.25, 0, 0); // 灯具の真下
+  const metal = mat(0x5a606b);
+  const pole = new THREE.InstancedMesh(poleGeo, metal, n);
+  const arm = new THREE.InstancedMesh(armGeo, metal, n);
+  const head = new THREE.InstancedMesh(headGeo, mat(0x2a2e35), n);
+  const lens = new THREE.InstancedMesh(lensGeo, LAMP_MAT, n); // 時間帯で明るさが変わる（setAtmosphere）
+  const pool = new THREE.InstancedMesh(poolGeo, POOL_MAT, n);
+  const m = new THREE.Matrix4(), rot = new THREE.Matrix4();
+  spots.forEach(([x, z, h, angle], i) => {
+    // ローカルの +x を道路の側へ向ける
+    const base = new THREE.Matrix4().makeTranslation(x, h, z).multiply(rot.makeRotationY(angle));
+    pole.setMatrixAt(i, base);
+    arm.setMatrixAt(i, m.copy(base).multiply(rot.makeTranslation(0, STREETLIGHT_H - 0.15, 0)));
+    head.setMatrixAt(i, m.copy(base).multiply(rot.makeTranslation(0, STREETLIGHT_H - 0.15, 0)));
+    lens.setMatrixAt(i, m.copy(base).multiply(rot.makeTranslation(0, STREETLIGHT_H - 0.15, 0)));
+    pool.setMatrixAt(i, m.copy(base).multiply(rot.makeTranslation(0, Y.signal - 0.01, 0)));
   });
-  group.add(pole, lamp, pool);
+  for (const part of [pole, arm, head]) part.castShadow = true;
+  group.add(pole, arm, head, lens, pool);
 }
 
 // 道路 r の線分のうち、地点 (x, z) にいちばん近いもの（segHeight に渡す形）
