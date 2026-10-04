@@ -307,7 +307,7 @@ function drawTitle(ctx, game, view) {
 function drawHowto(ctx, game, view) {
   const controls = game.touch
     ? '画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）'
-    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響${game.mode === '3d' ? '　C：視点' : ''}`;
+    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響　B：ベル${game.mode === '3d' ? '　C：視点' : ''}`;
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
     ['電車（上のバーの黄緑）より先に、緑の円のゴールへ', { size: 16 }],

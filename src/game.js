@@ -12,7 +12,7 @@ import { createPlayer, updatePlayer, PLAYER_CONFIG } from './player.js';
 import { createRecorder, record, finishRecording, parseGhost, ghostPose, trackLength } from './ghost.js';
 import { loadMap, surfaceAt } from './map.js';
 import { loadSections, createTrain, trainProgress, DIFFICULTIES } from './train.js';
-import { createObstacles, updateObstacles, markInsideSignals } from './obstacles.js';
+import { createObstacles, updateObstacles, markInsideSignals, signalState } from './obstacles.js';
 import { drawHud, sectionPages } from './hud.js';
 import { trainPath, trainDistance, frontDistance } from './trainpath.js';
 
@@ -406,6 +406,7 @@ function update(dt) {
   }
 
   updateTrainSound();
+  updateAmbience(dt);
 
   const racing = game.state === 'racing';
   const events = updateObstacles(game.obstacles, game.map, game.player, dt, racing);
@@ -436,6 +437,41 @@ function updateTrainSound() {
   const speed = (frontDistance(route, trainProgress(game.train, game.time + 0.1)) - frontDistance(route, progress)) / 0.1;
   game.trainNear = near; // デバッグ・自動テスト用
   audio.trainSound(near * (under ? 0.4 : 1), speed);
+}
+
+// 街の音：歩行者が多いほどざわめき、近くの車の走る音、こがずに進むときの空転の音、強いブレーキのきしみ、
+// 赤信号の交差点の近くでは音響式の信号の音（交差点ごとに「ピヨピヨ」か「カッコー」）
+const CHIRP_RANGE = 45; // 信号の音が聞こえる距離 m
+let chirpTimer = 0;
+function updateAmbience(dt) {
+  if (game.state !== 'racing') {
+    audio.stopAmbience();
+    return;
+  }
+  const p = game.player;
+  let peds = 0, cars = 0;
+  for (const a of game.obstacles.agents) {
+    const d = Math.hypot(a.x - p.x, a.y - p.y);
+    if (a.kind === 'ped') peds += d < 60 ? 1 : 0;
+    else cars += Math.max(0, 1 - d / 45) ** 2;
+  }
+  const braking = input.down && p.speed > 5 ? Math.min(1, (p.speed - 5) / 6) : 0;
+  audio.cityAmbience({ city: Math.min(1, peds / 10), cars: Math.min(1, cars), speed: p.speed, coasting: !input.up && !input.down, braking });
+  chirpTimer -= dt;
+  if (chirpTimer > 0) return;
+  chirpTimer = 0.3;
+  let best = null, bestD = CHIRP_RANGE;
+  for (const g of game.obstacles.signals) {
+    for (const [x, y] of g.nodes) {
+      const d = Math.hypot(x - p.x, y - p.y);
+      if (d < bestD) (bestD = d), (best = g);
+    }
+  }
+  if (best && signalState(best, game.obstacles.clock) === 'red') {
+    const kind = best.id % 2;
+    audio.crossingChirp(kind, (1 - bestD / CHIRP_RANGE) ** 1.5);
+    chirpTimer = kind === 0 ? 0.9 : 1.4;
+  }
 }
 
 // 自動テスト用：描画ループを待たずに指定秒数だけ時間を進める
@@ -586,6 +622,8 @@ window.addEventListener('keydown', (e) => {
     act('weather');
   } else if (e.code === 'KeyE') {
     act('weatherEffects');
+  } else if (e.code === 'KeyB') {
+    audio.ringBell(); // 自転車のベル（鳴らすだけ）
   } else if (e.code === 'KeyC' && renderer.nextCamera) {
     switchCamera();
   } else if (e.code === 'KeyH' && s === 'title') {

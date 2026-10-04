@@ -801,6 +801,7 @@ const RAIL_GAUGE = 1.067;
 const RAIL_TOP = 0.2; // レールの高さ（道床の上）m
 const RAIL_STEEL = [0.62, 0.63, 0.66];
 const WIRE = [0.16, 0.17, 0.19];
+const YAMANOTE_MARK = [0.55, 0.8, 0.2]; // 山手線の目印の黄緑
 const CATENARY_SPACING = 60; // 架線柱の間隔 m
 const CATENARY_H = 6.2; // 架線柱の高さ m
 const WIRE_H = 5.4; // 架線の高さ（レールの上）m
@@ -1260,9 +1261,11 @@ function* buildWorldSteps(map, textures) {
     // 線路：道床・レール・架線（高架なら高架橋の上）
     const base = l.e ? ELEVATED_H + 0.05 : Y.rail;
     addTrackBed(trackBed, l.p, TRACK_W, base);
+    // 山手線の目印：道床の両端の細い黄緑の帯（遠くからも黄緑の線に見える）
+    if (l.k === 'yamanote') for (const side of [-1, 1]) addOffsetStrip(rails, l.p, (side * TRACK_W) / 2, 0.4, base + 0.02, YAMANOTE_MARK);
     for (const side of [-1, 1]) addOffsetStrip(rails, l.p, (side * RAIL_GAUGE) / 2, 0.08, base + RAIL_TOP, RAIL_STEEL);
     addOffsetStrip(rails, l.p, 0, 0.035, base + WIRE_H, WIRE);
-    for (const [x, z, ang] of catenarySpots(l.p)) catenary.push([x, z, ang, base]);
+    for (const [x, z, ang] of catenarySpots(l.p)) catenary.push([x, z, ang, base, l.k === 'yamanote']);
     if (l.e) {
       addDeck(deck, l.p, l.w + DECK_EXTRA, ELEVATED_H);
       pillars.push(...pillarSpots(l.p));
@@ -1290,6 +1293,16 @@ function* buildWorldSteps(map, textures) {
     });
     poles.castShadow = arms.castShadow = true;
     group.add(poles, arms);
+    // 山手線の架線柱には黄緑の帯（高さ 2〜3m）
+    const yp = catenary.filter((c) => c[4]);
+    if (yp.length) {
+      const bands = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.17, 0.17, 0.9, 8).translate(0, 2.5, 0), mat(0x8cc63f), yp.length);
+      yp.forEach(([x, z, ang, y], i) => {
+        const nx = -Math.sin(ang), nz = Math.cos(ang);
+        bands.setMatrixAt(i, m.makeTranslation(x + nx * 2.4, y, z + nz * 2.4));
+      });
+      group.add(bands);
+    }
   }
   const deckMesh = new THREE.Mesh(deck.build(), mat(DECK_COLOR));
   deckMesh.castShadow = deckMesh.receiveShadow = true;

@@ -35,7 +35,14 @@ export function setMuted(value) {
 }
 export const isMuted = () => muted;
 // デバッグ・自動テスト用：'none'（未作成）| 'suspended' | 'running'、音楽が流れているか
-export const debugState = () => ({ context: ctx?.state ?? 'none', bgm: !!bgm, tense: !!bgm?.tense, trainVolume: rumble?.gain.gain.value ?? 0 });
+export const debugState = () => ({
+  context: ctx?.state ?? 'none',
+  bgm: !!bgm,
+  tense: !!bgm?.tense,
+  trainVolume: rumble?.gain.gain.value ?? 0,
+  cityVolume: city?.gain.gain.value ?? 0,
+  engineVolume: engines?.gain.gain.value ?? 0,
+});
 
 const ready = () => ctx && ctx.state === 'running';
 
@@ -271,5 +278,100 @@ function scheduleBgm() {
     if (LEAD[i]) tone(note(N[LEAD[i]]), t, stepDur * 1.6, { type: 'square', vol: 0.035 });
     bgm.nextTime += stepDur;
     bgm.step++;
+  }
+}
+
+// ---- 街の音（走っているあいだ、まわりの様子に合わせて鳴らす） ----
+
+// ずっと鳴らすノイズの音（大きさと高さだけを変える）。type：'lowpass' などのフィルター、freq：その周波数
+function makeLoop(type, freq, q = 0.7, color = 'brown') {
+  const len = ctx.sampleRate * 2;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < len; i++) {
+    const white = Math.random() * 2 - 1;
+    last = color === 'brown' ? (last + 0.02 * white) / 1.02 : white;
+    data[i] = color === 'brown' ? last * 3.5 : white;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.loop = true;
+  const filter = ctx.createBiquadFilter();
+  filter.type = type;
+  filter.frequency.value = freq;
+  filter.Q.value = q;
+  const gain = ctx.createGain();
+  gain.gain.value = 0;
+  src.connect(filter).connect(gain).connect(master);
+  src.start();
+  return { gain, filter };
+}
+
+let city = null, engines = null, squeal = null;
+let nextTick = 0;
+
+// city：街のざわめき（0〜1）、cars：近くの車の多さ（0〜1）、speed：自転車の速さ m/s、
+// coasting：こがずに進んでいるか（空転の「チチチ」）、braking：強いブレーキ（0〜1、きしみ）
+export function cityAmbience({ city: cityLevel = 0, cars = 0, speed = 0, coasting = false, braking = 0 }) {
+  if (!ready()) return;
+  if (!city) {
+    city = makeLoop('bandpass', 500, 0.4); // 遠くのざわめき（中くらいの高さのこもった音）
+    engines = makeLoop('lowpass', 160, 1.2); // 車の走る低い音
+    const osc = ctx.createOscillator(); // ブレーキのきしみ（高い音）
+    osc.type = 'sine';
+    osc.frequency.value = 3300;
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    osc.connect(g).connect(master);
+    osc.start();
+    squeal = { gain: g, osc };
+  }
+  const now = ctx.currentTime;
+  city.gain.gain.setTargetAtTime(0.05 + 0.1 * cityLevel, now, 0.5);
+  engines.gain.gain.setTargetAtTime(0.35 * cars, now, 0.3);
+  engines.filter.frequency.setTargetAtTime(120 + 120 * cars, now, 0.3);
+  squeal.gain.gain.setTargetAtTime(0.025 * braking, now, 0.05);
+  squeal.osc.frequency.setTargetAtTime(3200 + Math.sin(now * 23) * 120, now, 0.02);
+  // 空転の音：車輪 1 回転に 4 回ほど「チ」
+  if (coasting && speed > 1.5) {
+    const interval = Math.max(0.035, (2 * Math.PI * 0.34) / speed / 4);
+    if (nextTick < now) nextTick = now + 0.01;
+    while (nextTick < now + 0.1) {
+      noise(nextTick, 0.012, { vol: 0.05, freq: 5000, q: 3 });
+      nextTick += interval;
+    }
+  } else {
+    nextTick = now;
+  }
+}
+
+// 街の音を止める（レースの外）
+export function stopAmbience() {
+  if (!city) return;
+  const now = ctx.currentTime;
+  for (const l of [city, engines, squeal]) l.gain.gain.setTargetAtTime(0, now, 0.2);
+}
+
+// 音響式の信号の音：「ピヨピヨ」（kind 0）か「カッコー」（kind 1）。vol は近さ（0〜1）
+export function crossingChirp(kind, vol) {
+  if (!ready() || vol < 0.02) return;
+  const t = ctx.currentTime;
+  if (kind === 0) {
+    tone(2600, t, 0.07, { type: 'sine', vol: 0.09 * vol, slideTo: 3300 });
+    tone(2600, t + 0.13, 0.07, { type: 'sine', vol: 0.09 * vol, slideTo: 3300 });
+  } else {
+    tone(1250, t, 0.16, { type: 'sine', vol: 0.1 * vol });
+    tone(1000, t + 0.22, 0.22, { type: 'sine', vol: 0.1 * vol });
+  }
+}
+
+// 自転車のベル「チリンチリン」
+export function ringBell() {
+  if (!ready()) return;
+  const t = ctx.currentTime;
+  for (const dt of [0, 0.16]) {
+    tone(2900, t + dt, 0.5, { type: 'sine', vol: 0.12, attack: 0.002 });
+    tone(4350, t + dt, 0.3, { type: 'sine', vol: 0.05, attack: 0.002 });
   }
 }
