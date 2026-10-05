@@ -5,6 +5,10 @@
 
 > JR東日本とは関係のない非公式のファンゲームです。
 
+| 2D版 | 3D版（試作） |
+| --- | --- |
+| ![2D版のレース画面。渋谷→原宿の神宮通りを走る自転車と、横の線路を走る山手線](docs/screenshots/race-2d.png) | ![3D版のレース画面。夕方の渋谷の交差点を走る自転車と、高架を走る山手線](docs/screenshots/race-3d.jpg) |
+
 ## 遊び方
 
 山手線の隣り合う2駅の間を自転車で走り、電車が着く前（制限時間内）にゴール駅の緑の円に入れば勝ちです。前の区間に勝つと次の区間が開き、最後の恵比寿→渋谷に勝つと「山手線1周達成！」です。
@@ -108,8 +112,9 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
 │  └─ serve.py         開発用のサーバー
-└─ vendor/
-   └─ three.module.js  Three.js
+├─ vendor/
+│  └─ three.module.js  Three.js
+└─ docs/screenshots/   README のスクリーンショット
 ```
 
 ## 区間データの作り直し・追加
