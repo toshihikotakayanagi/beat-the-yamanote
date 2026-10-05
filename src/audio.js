@@ -5,6 +5,7 @@ let ctx = null;
 let master = null;
 let muted = false;
 let bgm = null; // { timer, nextTime, step, tense }
+let paused = false; // 一時停止中は音を止める（タブを戻しても鳴らさない）
 
 const MASTER_VOLUME = 0.5;
 const note = (semitonesFromA4) => 440 * 2 ** (semitonesFromA4 / 12);
@@ -22,10 +23,10 @@ export function unlock() {
     // タブを隠したら止め、戻ったら再開
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) ctx.suspend();
-      else ctx.resume();
+      else if (!paused) ctx.resume();
     });
   }
-  if (ctx.state === 'suspended') ctx.resume();
+  if (ctx.state === 'suspended' && !paused) ctx.resume();
   if (rainWanted && !rain) setTimeout(() => setRain(true), 50); // 雨を選んでいたら鳴らし始める
 }
 
@@ -34,6 +35,14 @@ export function setMuted(value) {
   if (master) master.gain.setTargetAtTime(muted ? 0 : MASTER_VOLUME, ctx.currentTime, 0.02);
 }
 export const isMuted = () => muted;
+
+// 一時停止：音楽・発車メロディ・街の音をその場で止め、再開したら続きから鳴らす
+export function setPaused(value) {
+  paused = value;
+  if (!ctx) return;
+  if (paused) ctx.suspend();
+  else if (!document.hidden) ctx.resume();
+}
 // デバッグ・自動テスト用：'none'（未作成）| 'suspended' | 'running'、音楽が流れているか
 export const debugState = () => ({
   context: ctx?.state ?? 'none',

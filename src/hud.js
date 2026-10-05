@@ -305,9 +305,13 @@ function drawTitle(ctx, game, view) {
 }
 
 function drawHowto(ctx, game, view) {
+  // キーの説明は 1 行だと板の幅に収まらないので 2 行に分ける
   const controls = game.touch
-    ? '画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）'
-    : `矢印キー / WASD で操作　R：やり直し　Esc：戻る　M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響　B：ベル${game.mode === '3d' ? '　C：視点' : ''}`;
+    ? ['画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）　右上の ❚❚ で一時停止']
+    : [
+        '矢印キー / WASD で操作　P：一時停止　R：やり直し　Esc：戻る',
+        `M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響　B：ベル${game.mode === '3d' ? '　C：視点' : ''}`,
+      ];
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
     ['電車（上のバーの黄緑）より先に、緑の円のゴールへ', { size: 16 }],
@@ -319,7 +323,7 @@ function drawHowto(ctx, game, view) {
     ['勝つと次の区間が遊べるようになります', { size: 15, color: PLAYER_YELLOW }],
     ['半透明の白い自転車は、あなたのベストの走り（ゴースト）', { size: 15, color: QUIET }],
     ['右上のミニマップで周り700mの道が見えます。駅や名所の名前が目印', { size: 15, color: QUIET }],
-    [controls, { size: 14, color: QUIET }],
+    ...controls.map((line) => [line, { size: 14, color: QUIET }]),
     [`${tapOrSpace(game)}で戻る`, { size: 18, weight: 'bold' }, 'title'],
   ]);
 }
@@ -435,6 +439,18 @@ function drawReady(ctx, game, view) {
 function drawCountdown(ctx, game, view) {
   const n = Math.ceil(game.countdown);
   text(ctx, String(n), view.w / 2, view.h / 2 - 40, { size: 96, weight: 'bold', align: 'center' });
+}
+
+// 一時停止中：止めたレースの上に、再開・やり直し・区間選択へを出す
+function drawPause(ctx, game, view) {
+  drawOverlay(ctx, game, view, [
+    ['一時停止', { size: 36, weight: 'bold', color: YAMANOTE_GREEN }],
+    [`${game.map.from} → ${game.map.to}　電車到着まで ${formatTime(timeLeft(game.train, game.time))}`, { size: 15, color: QUIET }],
+    ['', { size: 4 }],
+    [game.touch ? 'タップで再開' : 'スペース / P / クリックで再開', { size: 22, weight: 'bold' }, 'resume'],
+    [game.touch ? 'やり直す' : 'R やり直す', { size: 16, color: QUIET }, 'retry'],
+    [game.touch ? '区間選択へ' : 'Esc 区間選択へ', { size: 16, color: QUIET }, 'menu'],
+  ]);
 }
 
 function drawGo(ctx, game, view) {
@@ -657,9 +673,10 @@ export function drawHud(ctx, game, view) {
     drawStatus(ctx, game);
     drawMinimap(ctx, game, view);
   }
-  if (game.state === 'racing') drawAlerts(ctx, game, view);
+  if (game.state === 'racing' && !game.paused) drawAlerts(ctx, game, view);
 
-  if (game.state === 'title') drawTitle(ctx, game, view);
+  if (game.paused) drawPause(ctx, game, view);
+  else if (game.state === 'title') drawTitle(ctx, game, view);
   else if (game.state === 'howto') drawHowto(ctx, game, view);
   else if (game.state === 'ready') drawReady(ctx, game, view);
   else if (game.state === 'countdown') drawCountdown(ctx, game, view);

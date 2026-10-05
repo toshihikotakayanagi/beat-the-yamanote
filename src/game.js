@@ -51,6 +51,7 @@ const input = createInput();
 const touchPanel = document.getElementById('touch');
 const soundButton = document.getElementById('sound');
 const quitButton = document.getElementById('quit');
+const pauseButton = document.getElementById('pause');
 bindTouchButtons(input, touchPanel);
 
 const game = {
@@ -87,7 +88,7 @@ const game = {
   ghostPose: null, // 今の時点のゴーストの位置（表示しないときは null）
   showGhost: true,
   recorder: null, // 今のレースの走りの記録
-  paused: false,
+  paused: false, // レース中（カウントダウンを含む）の一時停止。P キー・右上のボタン・タブ切り替えで止まる
 };
 window.game = game; // デバッグ・自動テスト用
 
@@ -284,6 +285,7 @@ function reset() {
   game.distance = game.startDistance;
   game.recorder = createRecorder();
   game.state = 'ready';
+  setPaused(false);
   audio.stopBgm();
 }
 
@@ -506,6 +508,16 @@ async function startNextSection() {
   }
 }
 
+// 一時停止・再開。止められるのはカウントダウンとレースの間だけ
+const canPause = () => game.state === 'countdown' || game.state === 'racing';
+function setPaused(paused) {
+  if (paused && !canPause()) return;
+  game.paused = paused;
+  audio.setPaused(paused);
+  // 止めているあいだに離したキーが押しっぱなしにならないように
+  if (paused) for (const k of ['up', 'down', 'left', 'right']) input[k] = false;
+}
+
 function goTitle() {
   reset(); // レースの途中なら片付ける
   game.state = 'title';
@@ -555,7 +567,9 @@ function setMuted(muted) {
 function act(action, x = null) {
   const s = game.state;
   game.startWhenReady = false; // ほかの操作をしたら、自動で始めるのはやめる
-  if (action === 'start') {
+  if (action === 'resume') {
+    setPaused(false);
+  } else if (action === 'start') {
     if (s === 'title' || s === 'howto') game.state = 'ready';
     else if (s === 'ready' && sectionReady()) startCountdown();
     // 未解放の区間を選んでいるときは、次に遊ぶべき区間へ移る
@@ -600,7 +614,8 @@ function act(action, x = null) {
 // スペース / Enter / タップ（行以外）：画面ごとの「次へ」
 function onPrimary() {
   const s = game.state;
-  if (s === 'title' || s === 'howto') act('start');
+  if (game.paused) act('resume');
+  else if (s === 'title' || s === 'howto') act('start');
   else if (s === 'ready') act('start');
   else if (s === 'result') act(game.result.next ? 'next' : 'retry');
 }
@@ -609,7 +624,19 @@ window.addEventListener('keydown', (e) => {
   audio.unlock(); // 音はユーザーの操作があってから鳴らせる
   if (game.state === 'loading') return;
   const s = game.state;
-  if (e.code === 'Space' || e.code === 'Enter') {
+  // 一時停止中は、再開・やり直し・区間選択へ・音だけを受け付ける
+  if (game.paused) {
+    if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyP') {
+      e.preventDefault();
+      if (!e.repeat) act('resume');
+    } else if (e.code === 'KeyR') act('retry');
+    else if (e.code === 'Escape') act('menu');
+    else if (e.code === 'KeyM') setMuted(!game.muted);
+    return;
+  }
+  if (e.code === 'KeyP') {
+    if (canPause()) setPaused(true);
+  } else if (e.code === 'Space' || e.code === 'Enter') {
     e.preventDefault();
     if (!e.repeat) onPrimary();
   } else if (e.code === 'KeyM') {
@@ -675,16 +702,27 @@ soundButton.addEventListener('click', () => {
   setMuted(!game.muted);
 });
 quitButton.addEventListener('click', () => act('menu'));
+pauseButton.addEventListener('click', () => {
+  audio.unlock();
+  setPaused(true);
+});
+// タブを切り替えたり、ほかのウィンドウに移ったりしたら自動で止める（戻ったら「再開」を押して続ける）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) setPaused(true);
+});
+window.addEventListener('blur', () => setPaused(true));
 
-// レース中だけ画面ボタンと中止ボタンを出す（タッチ端末のみ）
+// レース中だけ画面ボタンと中止ボタン（タッチ端末のみ）、一時停止ボタンを出す。
+// 一時停止中は、止めた画面の「再開」などを押せるように隠す
 let domState = '';
 function syncDom() {
-  const racing = game.state === 'countdown' || game.state === 'racing';
+  const racing = (game.state === 'countdown' || game.state === 'racing') && !game.paused;
   const key = `${game.touch}:${racing}`;
   if (key === domState) return;
   domState = key;
   touchPanel.hidden = !(game.touch && racing);
   quitButton.hidden = !(game.touch && racing);
+  pauseButton.hidden = !racing;
   if (touchPanel.hidden) for (const k of ['up', 'down', 'left', 'right']) input[k] = false;
 }
 
