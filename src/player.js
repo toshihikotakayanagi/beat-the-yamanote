@@ -42,10 +42,12 @@ export function updatePlayer(p, input, dt, limit = PLAYER_CONFIG.maxSpeed, cfg =
 }
 
 // 実寸だと地図上で小さすぎるので、見た目だけ DRAW_SCALE 倍で描く（当たり判定は中心点のみ）
-const DRAW_SCALE = 2.7;
+const DRAW_SCALE = 3.2;
 
 // body：ジャージとフレームの色、nose：ヘルメットの色、tire：タイヤとハンドルの色
-const PLAYER_STYLE = { body: '#ffcc33', nose: '#e8443a', tire: '#15171b', alpha: 1 };
+// halo：足もとに光る輪を描く（暗い地図や信号の印の中でも自分の位置がすぐ分かるように。ゴーストには付けない）
+const PLAYER_STYLE = { body: '#ffcc33', nose: '#e8443a', tire: '#15171b', alpha: 1, halo: true };
+const HALO_R = 4.2; // 光る輪の半径 m
 export const GHOST_STYLE = { body: '#e8ecf4', nose: '#c9ced8', tire: '#9aa0aa', alpha: 0.6 }; // ゴースト（ベストの走り）
 
 // 自転車を真上から見た形で描く：前後の車輪・フレーム・ハンドル、乗っている人（肩・ハンドルを握る腕・ヘルメット）。前が -y
@@ -53,6 +55,21 @@ export function drawPlayer(ctx, p, style = PLAYER_STYLE) {
   ctx.save();
   ctx.globalAlpha = style.alpha;
   ctx.translate(p.x, p.y);
+  if (style.halo) {
+    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, HALO_R);
+    glow.addColorStop(0, 'rgba(255, 204, 51, 0.38)');
+    glow.addColorStop(0.7, 'rgba(255, 204, 51, 0.14)');
+    glow.addColorStop(1, 'rgba(255, 204, 51, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, HALO_R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)'; // 輪は白（黄色だと黄信号の丸と紛れる）
+    ctx.lineWidth = 0.35;
+    ctx.beginPath();
+    ctx.arc(0, 0, HALO_R * 0.8, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.rotate(p.angle);
   ctx.scale(DRAW_SCALE, DRAW_SCALE);
   ctx.lineCap = 'round';
