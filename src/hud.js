@@ -249,7 +249,10 @@ function drawCellRow(ctx, game, view, cells, y, k) {
   });
 }
 
-// 画面全体を暗くして、文字の行を中央に並べる。
+const PANEL_MAX_W = 640; // 文字の後ろに敷く板の最大幅
+const PANEL_PAD = 14; // 板の上下の余白
+
+// 画面全体を暗くし、中央の板の上に文字の行を並べる（板があると後ろの地図が透けず、小さい文字も読める）。
 // lines の要素は次のどちらか：
 //   [文字列, 書式, タップしたときの動作（省略可）] … 1 行の文字
 //   { cells: [...] } … 2 列の升目 1 段（drawCellRow）
@@ -257,11 +260,20 @@ function drawCellRow(ctx, game, view, cells, y, k) {
 // 動作のある行・升目は game.hits に登録する。
 // 縦に収まらない（横向きのスマホなど）ときは、文字と行間をまとめて縮める。
 function drawOverlay(ctx, game, view, lines) {
-  ctx.fillStyle = 'rgba(15, 16, 20, 0.72)';
+  ctx.fillStyle = 'rgba(15, 16, 20, 0.7)';
   ctx.fillRect(0, 0, view.w, view.h);
   const total = lines.reduce((sum, item) => sum + lineHeight(item), 0);
   const k = Math.min(1, (view.h - 32) / total);
   let y = (view.h - total * k) / 2;
+  const panelW = Math.min(PANEL_MAX_W, view.w - 16);
+  const panelH = Math.min(view.h - 8, total * k + PANEL_PAD * 2);
+  ctx.fillStyle = 'rgba(22, 24, 29, 0.94)';
+  ctx.strokeStyle = '#353a44';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect((view.w - panelW) / 2, (view.h - panelH) / 2, panelW, panelH, 14);
+  ctx.fill();
+  ctx.stroke();
   for (const item of lines) {
     if (item.cells) {
       drawCellRow(ctx, game, view, item.cells, y + (CELL_GAP * k) / 2, k);
@@ -277,7 +289,7 @@ function drawOverlay(ctx, game, view, lines) {
     const size = (opts.size ?? 16) * k;
     const lineH = size + GAP * k;
     const baseline = y + size + (GAP * k) / 2 - size * 0.15;
-    if (str) text(ctx, str, view.w / 2, baseline, { ...opts, size, align: 'center', maxWidth: view.w - 32 });
+    if (str) text(ctx, str, view.w / 2, baseline, { ...opts, size, align: 'center', maxWidth: panelW - 24 });
     if (action) game.hits.push({ y0: y, y1: y + lineH, action });
     y += lineH;
   }
@@ -353,8 +365,8 @@ function drawReady(ctx, game, view) {
     return {
       title: `${s.fromName} → ${s.toName}`,
       note,
-      color: !unlocked ? '#5f6570' : selected ? TEXT : '#c8ccd4',
-      noteColor: best != null ? PLAYER_YELLOW : !unlocked ? (lockedNote === '未解放' ? '#5f6570' : '#b3953a') : QUIET,
+      color: !unlocked ? '#7a808b' : selected ? TEXT : '#c8ccd4',
+      noteColor: best != null ? PLAYER_YELLOW : !unlocked ? (lockedNote === '未解放' ? '#7a808b' : '#c9a845') : QUIET,
       selected,
       action: `section:${i}`,
     };
