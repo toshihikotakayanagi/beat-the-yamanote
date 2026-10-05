@@ -135,6 +135,8 @@ node tools/fetch-osm.mjs all
 
 ## クレジット・ライセンス
 
+- このゲームのプログラム（HTML・CSS・JavaScript・ツール）は [MIT ライセンス](LICENSE) です。ただし、下の地図データと Three.js はそれぞれのライセンスに従います。
+- `data/` の地図データは OpenStreetMap から作ったものなので、MIT ではなく ODbL に従います。
 - 地図データ © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors（ODbL）。ゲーム画面の右下とタイトル画面にも表示しています。
 - [Three.js](https://threejs.org/)（MIT ライセンス）。著作権表示は `vendor/three.module.js` の先頭にあります。
 - 発車メロディ風の曲と効果音はすべてオリジナルで、Web Audio で合成しています。
