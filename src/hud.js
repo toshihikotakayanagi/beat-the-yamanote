@@ -178,7 +178,12 @@ function drawRaceBar(ctx, game, view) {
   ctx.fill();
 
   const left = timeLeft(game.train, game.time);
-  text(ctx, `電車到着まで ${formatTime(left)}`, view.w / 2, 24, {
+  const label = `電車到着まで ${formatTime(left)}`;
+  // ふつうは中央。狭い画面では右上のボタン（game.cornerLeft より右）に重ならないよう左へずらす
+  ctx.font = `bold 16px ${FONT}`;
+  const half = ctx.measureText(label).width / 2;
+  const cx = Math.max(12 + half, Math.min(view.w / 2, (game.cornerLeft ?? view.w) - 10 - half));
+  text(ctx, label, cx, 24, {
     size: 16,
     weight: 'bold',
     color: left < 15 ? '#ff6b5e' : TEXT,

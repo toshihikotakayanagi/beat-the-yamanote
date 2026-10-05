@@ -52,6 +52,7 @@ const touchPanel = document.getElementById('touch');
 const soundButton = document.getElementById('sound');
 const quitButton = document.getElementById('quit');
 const pauseButton = document.getElementById('pause');
+const corner = document.getElementById('corner');
 bindTouchButtons(input, touchPanel);
 
 const game = {
@@ -492,6 +493,7 @@ function draw() {
   game.trainProgress = game.train ? trainProgress(game.train, game.time) : 0;
   game.ghostPose = game.showGhost && game.ghost && game.inRace ? ghostPose(game.ghost, game.time) : null;
   renderer.drawWorld(game, ctx);
+  game.cornerLeft = corner.getBoundingClientRect().left; // 右上のボタンの左端（レースバーの文字を重ねないため）
   game.preparing = renderer.progress?.(game.map) ?? null; // 3D の街を作っている途中なら 0〜1
   if (!game.map) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
