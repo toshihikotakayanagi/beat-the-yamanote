@@ -40,7 +40,7 @@
 
 ## 必要な環境
 
-- **遊ぶ**：import map に対応した新しいブラウザ（Chrome・Edge・Firefox・Safari の最近の版）と、ローカルサーバーを動かす Python 3
+- **遊ぶ**：import map に対応した新しいブラウザ（Chrome・Edge・Firefox・Safari の最近の版）と、ローカルサーバー（同梱の `tools/serve.py` を使うなら Python 3）
 - **区間データを作り直す**：Node.js 18 以上（`tools/fetch-osm.mjs` が組み込みの `fetch` を使うため）
 
 ## 今の状態
@@ -57,6 +57,8 @@
 ```bash
 python tools/serve.py 8173
 ```
+
+ファイルを配るだけのサーバーなら何でも動きます（`npx serve` など）。その場合は、そのサーバーが表示するアドレスを開いてください。
 
 ブラウザで次のページを開きます。
 
@@ -75,7 +77,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 | --- | --- |
 | 2D の描画 | HTML5 Canvas 2D |
 | 3D の描画 | Three.js 0.170.0（`vendor/` に同梱） |
-| 道路・建物・信号データ | OpenStreetMap（Overpass API で事前に取得し JSON に変換） |
+| 地図データ（道路・建物・信号・ランドマーク・公園や水域や線路などの背景） | OpenStreetMap（Overpass API で事前に取得し JSON に変換） |
 | 音楽・効果音 | Web Audio API でその場で合成（素材ファイルなし） |
 | 記録・設定の保存 | localStorage（キーは `yamanote-race:` で始まる） |
 
@@ -108,7 +110,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  └─ pedestrians.js   歩行者の見た目（2D版・3D版で共通）
 ├─ data/
 │  ├─ stations.json    駅の座標、区間の一覧、基準タイム
-│  └─ <区間ID>.json    区間ごとの道路・建物・ランドマークのデータ（30ファイル）
+│  └─ <区間ID>.json    区間ごとの地図データ（30ファイル、計約16MB。遊ぶときは選んだ区間の分だけ読み込む）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
