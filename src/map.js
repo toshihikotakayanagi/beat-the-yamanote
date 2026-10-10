@@ -4,11 +4,12 @@
 export const CELL = 25; // 空間インデックスのマス目 m
 const ARROW_SPACING = 30; // 一方通行の矢印の間隔 m
 
-const ROAD_COLOR = '#4a4f5a';
-const PATH_COLOR = '#3a3f48'; // 歩道・小道
-const ARROW_COLOR = '#6b7280';
-const BUILDING_FILL = '#2a2d34';
-const BUILDING_STROKE = '#363a43';
+// 道路は明るめ、建物は暗めにして、走れる所と壁をひと目で見分けられるようにする
+const ROAD_COLOR = '#5f6572';
+const PATH_COLOR = '#454b57'; // 歩道・小道
+const ARROW_COLOR = '#959caa';
+const BUILDING_FILL = '#25282f';
+const BUILDING_STROKE = '#3a3f49';
 
 // 背景（公園・水域・線路）の色。見た目だけで、走りやすさには関係しない。
 // 描く順：緑の面 → 水の面 → 川 → 建物 → 線路 → 道路

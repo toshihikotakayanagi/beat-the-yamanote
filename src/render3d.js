@@ -1961,9 +1961,15 @@ export function createRenderer3D(canvas) {
   // 区間の立体は少しずつ作り（build）、できたら少しずつ見せる（reveal。初めて描くときに GPU へ送るのが重いので、
   // 何回かに分けて送る）。作った立体は最近の WORLD_CACHE 区間ぶん覚えておき、次の区間は結果画面のうちに作っておく
   const WORLD_CACHE = 3;
-  const BUILD_BUDGET_MS = 10; // 1 回の描画で作るのに使う時間（今の区間）
-  const BACKGROUND_BUDGET_MS = 6; // 先に作っておく区間に使う時間（レース中は使わない）
-  const REVEAL_PER_FRAME = 6; // 1 回の描画で見せる（GPU へ送る）部品の数
+  // レース中はなめらかさを優先し、メニュー（タイトル・区間選択・結果）では待ち時間を短くするのを優先する
+  const BUILD_BUDGET_MS = { race: 10, menu: 30 }; // 1 回の描画で作るのに使う時間（今の区間）
+  const BACKGROUND_BUDGET_MS = { race: 0, menu: 12 }; // 先に作っておく区間に使う時間（レース中は使わない）
+  // 1 回の描画で見せる（GPU へ送る）部品の数。送るのは描くときなので重さは前もって測れない。
+  // メニューでは、前の描画が軽ければ増やし、重ければ減らす（1 回 1/15 秒くらいまで）
+  const REVEAL_PER_FRAME = 6;
+  const REVEAL_MAX = 80;
+  const REVEAL_FRAME_S = 1 / 15;
+  let revealCount = REVEAL_PER_FRAME;
   const worlds = new Map(); // 地図 → { steps, group, progress, revealed, used }
 
   function worldFor(map) {
@@ -2029,6 +2035,18 @@ export function createRenderer3D(canvas) {
   const warmScene = new THREE.Scene();
   let unculled = []; // 今回だけ画面の外でも描く区画（描いたら元に戻す）
 
+  // 見せる前に、区間の材質の描き方（シェーダー）を裏で作っておく。初めて描くときに作ると、
+  // その 1 回の描画で数秒止まる（初めての区間でいちばん重い）。できていれば true
+  function compiled(w) {
+    if (!w.compiling) {
+      w.compiling = renderer
+        .compileAsync(w.group, camera, scene)
+        .catch(() => {}) // 作れなくても、描くときに作られるので先へ進む
+        .then(() => (w.compiled = true));
+    }
+    return Boolean(w.compiled);
+  }
+
   function reveal(w, count, current) {
     const kids = w.group.children;
     const from = w.revealed;
@@ -2056,23 +2074,31 @@ export function createRenderer3D(canvas) {
     w.revealed = to;
   }
 
-  // 毎回の描画で：今の区間を作り進め、できたら少しずつ見せる。手が空いていれば先の区間も作る
-  function advanceWorlds(game) {
+  // 毎回の描画で：今の区間を作り進め、できたら少しずつ見せる。手が空いていれば先の区間も作る。
+  // dt は前の描画からの秒数（見せる部品の数を決める）
+  function advanceWorlds(game, dt) {
+    const mode = game.state === 'racing' || game.state === 'countdown' ? 'race' : 'menu';
+    revealCount =
+      mode === 'race' ? REVEAL_PER_FRAME
+      : dt < REVEAL_FRAME_S ? Math.min(REVEAL_MAX, Math.ceil(revealCount * 1.5))
+      : Math.max(REVEAL_PER_FRAME, Math.floor(revealCount / 2));
     const w = worldFor(worldMap);
     if (!w.group) {
-      build(w, BUILD_BUDGET_MS);
+      build(w, BUILD_BUDGET_MS[mode]);
       if (w.group) {
         world = w.group;
         scene.add(world);
         signalMeshes.obs = null;
       }
     }
-    if (w.group && w.revealed < w.group.children.length) reveal(w, REVEAL_PER_FRAME, true);
+    if (w.group && w.revealed < w.group.children.length) {
+      if (compiled(w)) reveal(w, revealCount, true);
+    }
     // 手が空いていれば（今の区間ができていて、レース中でなければ）先の区間を作り、GPU へ送っておく
-    if (progressOf(worldMap) === null && game.state !== 'racing' && game.state !== 'countdown') {
+    else if (progressOf(worldMap) === null && mode === 'menu') {
       const next = [...worlds.values()].find((o) => o !== w && (!o.group || o.revealed < o.group.children.length));
-      if (next && !next.group) build(next, BACKGROUND_BUDGET_MS);
-      else if (next) reveal(next, REVEAL_PER_FRAME, false);
+      if (next && !next.group) build(next, BACKGROUND_BUDGET_MS[mode]);
+      else if (next && compiled(next)) reveal(next, revealCount, false);
     }
   }
 
@@ -2493,7 +2519,7 @@ export function createRenderer3D(canvas) {
       lastTime = now;
       if (!game.map) return;
       if (game.map !== worldMap) setMap(game.map);
-      advanceWorlds(game);
+      advanceWorlds(game, dt);
 
       const p = game.player;
       // 自転車の高さ：今いる道路（橋の上なら橋の高さ）。急に変わらないよう少しなめらかにする

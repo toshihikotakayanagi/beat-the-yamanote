@@ -156,8 +156,8 @@ function drawRaceBar(ctx, game, view) {
   ctx.lineTo(x1, y);
   ctx.stroke();
 
-  text(ctx, game.map.from, x0 - 10, y + 5, { size: 13, align: 'right' });
-  text(ctx, game.map.to, x1 + 10, y + 5, { size: 13 });
+  text(ctx, game.map.from, x0 - 10, y + 5, { size: 14, weight: 'bold', align: 'right' });
+  text(ctx, game.map.to, x1 + 10, y + 5, { size: 14, weight: 'bold' });
 
   const tx = x0 + (x1 - x0) * trainP;
   ctx.fillStyle = YAMANOTE_GREEN;
@@ -180,22 +180,36 @@ function drawRaceBar(ctx, game, view) {
   const left = timeLeft(game.train, game.time);
   const label = `電車到着まで ${formatTime(left)}`;
   // ふつうは中央。狭い画面では右上のボタン（game.cornerLeft より右）に重ならないよう左へずらす
-  ctx.font = `bold 16px ${FONT}`;
+  ctx.font = `bold 20px ${FONT}`;
   const half = ctx.measureText(label).width / 2;
   const cx = Math.max(12 + half, Math.min(view.w / 2, (game.cornerLeft ?? view.w) - 10 - half));
-  text(ctx, label, cx, 24, {
-    size: 16,
+  text(ctx, label, cx, 27, {
+    size: 20,
     weight: 'bold',
     color: left < 15 ? '#ff6b5e' : TEXT,
     align: 'center',
   });
 }
 
+// 左上（レースバーの下）の板：速度を大きく、その下にゴールまでの残りと、今いる道の名前
+const STATUS = { x: 10, y: 92, w: 146, h: 88 };
 function drawStatus(ctx, game) {
+  const { x, y, w, h } = STATUS;
   const kmh = Math.abs(game.player.speed) * 3.6;
-  const where = game.surface.road?.n ?? { road: '道路', path: '歩道', ground: '道路外' }[game.surface.kind];
-  text(ctx, `速度 ${kmh.toFixed(0)} km/h　残り ${game.distance.toFixed(0)} m`, 16, 112);
-  text(ctx, where, 16, 134, { size: 13, color: QUIET });
+  const kind = game.surface.kind;
+  const where = game.surface.road?.n ?? { road: '道路', path: '歩道', ground: '道路外' }[kind];
+  ctx.fillStyle = 'rgba(20, 22, 26, 0.72)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 10);
+  ctx.fill();
+  const num = kmh.toFixed(0);
+  ctx.font = `bold 34px ${FONT}`;
+  const nw = ctx.measureText(num).width;
+  text(ctx, num, x + 12, y + 38, { size: 34, weight: 'bold' });
+  text(ctx, 'km/h', x + 16 + nw, y + 38, { size: 13, color: QUIET });
+  text(ctx, `残り ${game.distance.toFixed(0)} m`, x + 12, y + 60, { size: 15, weight: 'bold', color: PLAYER_YELLOW, maxWidth: w - 20 });
+  // 歩道・道路外は遅いので色で知らせる
+  text(ctx, where, x + 12, y + 79, { size: 12, color: kind === 'road' ? QUIET : '#ffc93c', maxWidth: w - 20 });
 }
 
 // ペナルティや逆走の知らせ（画面の上寄り中央）
@@ -391,7 +405,7 @@ const CELL_GAP = 8; // 升目どうしのすき間
 
 const lineHeight = (item) => (Array.isArray(item) ? (item[1]?.size ?? 16) + GAP : item.cells ? CELL_H + CELL_GAP : item.height + GAP);
 
-// 2 列の升目を 1 段描く。cells: [{ title, note, color, noteColor, selected, action }]（1〜2 個）
+// 2 列の升目を 1 段描く。cells: [{ title, note, color, noteColor, selected, outlined, action }]（1〜2 個）
 function drawCellRow(ctx, game, view, cells, y, k) {
   const h = CELL_H * k;
   const cw = Math.min(260, (view.w - 32 - CELL_GAP) / 2);
@@ -404,6 +418,15 @@ function drawCellRow(ctx, game, view, cells, y, k) {
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.roundRect(x0, y, cw, h, 8);
+      ctx.fill();
+      ctx.stroke();
+    } else if (c.outlined) {
+      // 押せることが分かるよう、薄い枠を付ける（タイトル画面のボタンなど）
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.strokeStyle = '#454b57';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x0 + 4, y + 2, cw - 8, h - 4, 8);
       ctx.fill();
       ctx.stroke();
     }
@@ -462,21 +485,139 @@ function drawOverlay(ctx, game, view, lines) {
 
 const tapOrSpace = (game) => (game.touch ? 'タップ' : 'スペース / クリック');
 
+// 3D版：区間の街を作っているあいだの進み具合（文字と横長の棒）
+function drawPrepareBar(ctx, game, view, y, h) {
+  const k = h / 34;
+  const w = Math.min(280, view.w - 80);
+  const x = (view.w - w) / 2;
+  const label = `街を準備中… ${Math.floor(game.preparing * 100)}%${game.startWhenReady ? '（できたらスタート）' : ''}`;
+  text(ctx, label, view.w / 2, y + 14 * k, { size: 14 * k, color: QUIET, align: 'center' });
+  ctx.fillStyle = '#353a44';
+  ctx.beginPath();
+  ctx.roundRect(x, y + 22 * k, w, 8 * k, 4 * k);
+  ctx.fill();
+  ctx.fillStyle = YAMANOTE_GREEN;
+  ctx.beginPath();
+  ctx.roundRect(x, y + 22 * k, Math.max(8 * k, w * game.preparing), 8 * k, 4 * k);
+  ctx.fill();
+}
+
+// タイトルの文字と、その下の線路を走る山手線と自転車（追いかけっこを繰り返す）
+const LOGO_H = 112;
+function drawLogo(ctx, view, y, h) {
+  const k = h / LOGO_H;
+  const cx = view.w / 2;
+  const panelW = Math.min(PANEL_MAX_W, view.w - 16);
+  // 「山手線」は路線の黄緑、「に勝て！」は白
+  const size = Math.min(48 * k, (panelW - 40) / 6.6);
+  ctx.font = `bold ${size}px ${FONT}`;
+  const a = '山手線', b = 'に勝て！';
+  const wa = ctx.measureText(a).width, wb = ctx.measureText(b).width;
+  const base = y + 52 * k;
+  text(ctx, a, cx - (wa + wb) / 2, base, { size, weight: 'bold', color: YAMANOTE_GREEN });
+  text(ctx, b, cx - (wa + wb) / 2 + wa, base, { size, weight: 'bold' });
+
+  // 線路（枕木とレール）
+  const tw = Math.min(panelW - 48, 440);
+  const x0 = cx - tw / 2;
+  const ty = y + 94 * k;
+  ctx.strokeStyle = '#4a4f5a';
+  ctx.lineWidth = 1.5 * k;
+  for (let x = x0 + 3 * k; x < x0 + tw; x += 9 * k) {
+    ctx.beginPath();
+    ctx.moveTo(x, ty - 2 * k);
+    ctx.lineTo(x, ty + 5 * k);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#7a808b';
+  ctx.lineWidth = 2 * k;
+  ctx.beginPath();
+  ctx.moveTo(x0, ty + 1 * k);
+  ctx.lineTo(x0 + tw, ty + 1 * k);
+  ctx.stroke();
+
+  // 6 秒で左から右へ。自転車は電車の少し前を、前に出たり追いつかれそうになったりしながら走る
+  const now = performance.now();
+  const carW = 46 * k, carH = 13 * k, cars = 3;
+  const head = x0 - 50 * k + (tw + cars * carW + 100 * k) * ((now / 6000) % 1);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, ty - 30 * k, tw, 40 * k);
+  ctx.clip();
+  for (let c = 0; c < cars; c++) {
+    const left = head - (c + 1) * carW - c * 2 * k;
+    ctx.fillStyle = '#c9ced6';
+    ctx.beginPath();
+    ctx.roundRect(left, ty - carH - 1 * k, carW, carH, c === 0 ? [2 * k, 7 * k, 2 * k, 2 * k] : 2 * k);
+    ctx.fill();
+    ctx.fillStyle = YAMANOTE_GREEN; // 黄緑の帯
+    ctx.fillRect(left, ty - 5 * k, carW, 2.5 * k);
+    ctx.fillStyle = '#2b3038'; // 窓
+    for (let j = 0; j < 4; j++) ctx.fillRect(left + 5 * k + j * 10 * k, ty - carH + 2 * k, 7 * k, 4 * k);
+  }
+  // 自転車：車輪 2 つと車体、乗る人の頭
+  const bx = head + 30 * k + 14 * k * Math.sin(now / 700);
+  ctx.strokeStyle = PLAYER_YELLOW;
+  ctx.lineWidth = 1.6 * k;
+  for (const wx of [-5, 5]) {
+    ctx.beginPath();
+    ctx.arc(bx + wx * k, ty - 4 * k, 3.4 * k, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(bx - 5 * k, ty - 4 * k);
+  ctx.lineTo(bx, ty - 9 * k);
+  ctx.lineTo(bx + 5 * k, ty - 4 * k);
+  ctx.stroke();
+  ctx.fillStyle = PLAYER_YELLOW;
+  ctx.beginPath();
+  ctx.arc(bx + 1 * k, ty - 13.5 * k, 2.6 * k, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// 押せる大きなボタン（枠の中がゆっくり明滅する）。action を game.hits に登録する
+function drawButton(ctx, game, view, y, h, label, action) {
+  const k = h / 54;
+  const w = Math.min(320, view.w - 64);
+  const x = (view.w - w) / 2;
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 400);
+  ctx.fillStyle = `rgba(154, 205, 50, ${0.12 + 0.12 * pulse})`;
+  ctx.strokeStyle = YAMANOTE_GREEN;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y + 4 * k, w, h - 8 * k, 12 * k);
+  ctx.fill();
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  text(ctx, label, view.w / 2, y + h / 2 + 1, { size: 20 * k, weight: 'bold', align: 'center', maxWidth: w - 24 });
+  ctx.textBaseline = 'alphabetic';
+  game.hits.push({ y0: y, y1: y + h, x0: x, x1: x + w, action });
+}
+
 function drawTitle(ctx, game, view) {
+  const n = game.sections.length;
+  const clearedCount = game.sections.filter((s) => game.cleared.has(s.id)).length;
+  const progress =
+    clearedCount >= n ? `山手線1周達成！ 全${n}区間クリア` : clearedCount ? `クリア ${clearedCount} / ${n} 区間` : `全${n}区間で山手線1周に挑戦`;
   drawOverlay(ctx, game, view, [
-    ['山手線に勝て！', { size: 44, weight: 'bold', color: YAMANOTE_GREEN }],
-    ['東京の本物の道を自転車で走り、山手線より先に次の駅へ', { size: 15, color: QUIET }],
-    ['', { size: 8 }],
-    [`${tapOrSpace(game)}ではじめる`, { size: 22, weight: 'bold' }, 'start'],
-    [game.touch ? '遊び方' : '遊び方（H）', { size: 17, color: YAMANOTE_GREEN }, 'howto'],
-    [game.mode === '3d' ? '2D版に切り替える' : '3D版で遊ぶ（試作）', { size: 15, color: QUIET }, 'switch'],
-    ['', { size: 8 }],
+    { height: LOGO_H, draw: (y, h) => drawLogo(ctx, view, y, h) },
+    ['東京の本物の道を自転車で走り、山手線より先に次の駅へ', { size: 15, color: '#c8ccd4' }],
+    [progress, { size: 14, weight: 'bold', color: YAMANOTE_GREEN }],
+    { height: 54, draw: (y, h) => drawButton(ctx, game, view, y, h, `${tapOrSpace(game)}ではじめる`, 'start') },
+    {
+      cells: [
+        { title: '遊び方', note: game.touch ? 'ルールと操作' : 'H キー', color: TEXT, noteColor: QUIET, action: 'howto', outlined: true },
+        game.mode === '3d'
+          ? { title: '2D版に切り替える', note: '真上から見る', color: TEXT, noteColor: QUIET, action: 'switch', outlined: true }
+          : { title: '3D版で遊ぶ', note: '試作・街を立体で走る', color: TEXT, noteColor: QUIET, action: 'switch', outlined: true },
+      ],
+    },
     ...(game.droppedRecords
-      ? [[`コースが変わった ${game.droppedRecords} 区間のベストとゴーストをリセットしました`, { size: 13, color: QUIET }]]
+      ? [[`コースが変わった ${game.droppedRecords} 区間のベストとゴーストをリセットしました`, { size: 13, color: '#ffc93c' }]]
       : []),
-    [`音：${game.muted ? 'オフ' : 'オン'}${game.touch ? '（右上のボタン）' : '（M キーで切り替え）'}`, { size: 13, color: QUIET }],
-    ['地図データ © OpenStreetMap contributors（ODbL）', { size: 12, color: QUIET }],
-    ['音楽・効果音：Web Audio による自作', { size: 12, color: QUIET }],
+    [`音：${game.muted ? 'オフ' : 'オン'}${game.touch ? '（右上のボタン）' : '（M キーで切り替え）'}`, { size: 12, color: QUIET }],
+    ['地図 © OpenStreetMap contributors（ODbL）・音楽と効果音は Web Audio で自作', { size: 12, color: QUIET }],
     ['JR東日本とは関係のない非公式のファンゲームです', { size: 12, color: QUIET }],
   ]);
 }
@@ -520,8 +661,8 @@ function drawReady(ctx, game, view) {
   // 時間帯と天気（見た目と音だけ。タップかキーで切り替え）
   lines.push({
     cells: [
-      { title: `時間帯：${TIME_NAMES[game.timeOfDay]}`, note: game.touch ? 'タップで切り替え' : 'T で切り替え', color: TEXT, noteColor: QUIET, action: 'time' },
-      { title: `天気：${WEATHER_NAMES[game.weather]}`, note: game.touch ? 'タップで切り替え' : 'Y で切り替え', color: TEXT, noteColor: QUIET, action: 'weather' },
+      { title: `時間帯：${TIME_NAMES[game.timeOfDay]}`, note: game.touch ? 'タップで切り替え' : 'T で切り替え', color: TEXT, noteColor: QUIET, action: 'time', outlined: true },
+      { title: `天気：${WEATHER_NAMES[game.weather]}`, note: game.touch ? 'タップで切り替え' : 'Y で切り替え', color: TEXT, noteColor: QUIET, action: 'weather', outlined: true },
     ],
   });
   // 天気の影響：あり／なし（雨・雪で走りやすさが変わる。記録は別）
@@ -547,7 +688,7 @@ function drawReady(ctx, game, view) {
     lines.push(['地図を読み込み中…', { size: 16, color: QUIET }]);
   } else if (game.preparing != null) {
     // 3D版：区間の街を少しずつ作っているあいだ
-    lines.push([`街を準備中… ${Math.floor(game.preparing * 100)}%${game.startWhenReady ? '（できたらスタート）' : ''}`, { size: 16, color: QUIET }]);
+    lines.push({ height: 34, draw: (y, h) => drawPrepareBar(ctx, game, view, y, h) });
   } else {
     lines.push([`電車より先に${section.toName}駅へ！ 制限時間 ${formatTime(game.train.limit)}`, { size: 15, color: QUIET }]);
     if (game.ghost) {
@@ -864,7 +1005,7 @@ export function drawHud(ctx, game, view) {
   const mm = minimapRect(view);
   const avoid = [{ x0: view.w - 190, y0: creditY - 14, x1: view.w, y1: creditY + 4 }];
   if (!menu) {
-    avoid.push({ x0: 0, y0: 0, x1: view.w, y1: 84 }, { x0: mm.x - 4, y0: mm.y - 4, x1: mm.x + mm.size + 4, y1: mm.y + mm.size + 4 });
+    avoid.push({ x0: 0, y0: 0, x1: view.w, y1: 84 }, { x0: 0, y0: 84, x1: STATUS.x + STATUS.w + 4, y1: STATUS.y + STATUS.h + 4 }, { x0: mm.x - 4, y0: mm.y - 4, x1: mm.x + mm.size + 4, y1: mm.y + mm.size + 4 });
     // スマホのレース中は画面下の操作ボタン（高さ約 100px）の裏に隠れる
     if (game.touch) avoid.push({ x0: 0, y0: view.h - 104, x1: view.w, y1: view.h });
   }
