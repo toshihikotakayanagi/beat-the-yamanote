@@ -798,6 +798,20 @@ function medalLine(m) {
   ];
 }
 
+// 結果をシェアする行。押したあとは、コピーできたかなどを出す
+const SHARE_STATUS = {
+  busy: ['シェアしています…', QUIET],
+  copied: ['結果をコピーしました。SNS などに貼り付けてください', YAMANOTE_GREEN],
+  shared: ['シェアしました', YAMANOTE_GREEN],
+  cancelled: [null],
+  failed: ['コピーできませんでした', '#ff6b5e'],
+};
+function shareLine(game) {
+  const [msg, color] = SHARE_STATUS[game.result.shareStatus] ?? [null];
+  if (msg) return [msg, { size: 15, color }, 'share'];
+  return [game.touch ? '結果をシェア' : 'S 結果をシェア（コピー）', { size: 15, color: QUIET }, 'share'];
+}
+
 function drawResult(ctx, game, view) {
   const r = game.result;
   const lines = r.win
@@ -834,6 +848,7 @@ function drawResult(ctx, game, view) {
   } else {
     lines.push([`${tapOrSpace(game)}でもう一度`, { size: 18, weight: 'bold' }, 'retry']);
   }
+  lines.push(shareLine(game));
   lines.push([game.touch ? '区間選択へ' : 'Esc 区間選択へ', { size: 15, color: QUIET }, 'menu']);
   drawOverlay(ctx, game, view, lines);
 }

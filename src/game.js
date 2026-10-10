@@ -14,6 +14,7 @@ import { loadMap, surfaceAt } from './map.js';
 import { loadSections, createTrain, trainProgress, medalFor, DIFFICULTIES } from './train.js';
 import { createObstacles, updateObstacles, markInsideSignals, signalState } from './obstacles.js';
 import { drawHud } from './hud.js';
+import { shareText, share } from './share.js';
 import { trainPath, trainDistance, frontDistance } from './trainpath.js';
 
 const STEP = 1 / 60; // 物理更新の間隔（固定）
@@ -598,6 +599,13 @@ function act(action, x = null) {
     startNextSection();
   } else if (action === 'retry') {
     if (sectionReady()) startCountdown();
+  } else if (action === 'share') {
+    // 結果を共有メニューかクリップボードへ。終わったら結果画面の行に「コピーしました」などを出す
+    if (s === 'result') {
+      const r = game.result;
+      r.shareStatus = 'busy';
+      share(shareText(game), { touch: game.touch }).then((status) => (r.shareStatus = status));
+    }
   } else if (action === 'menu') {
     if (sectionReady()) reset();
   } else if (action === 'difficulty') {
@@ -657,6 +665,8 @@ window.addEventListener('keydown', (e) => {
     switchCamera();
   } else if (e.code === 'KeyH' && s === 'title') {
     act('howto');
+  } else if (e.code === 'KeyS' && s === 'result') {
+    if (!e.repeat) act('share'); // ゴールした瞬間にブレーキ（S）を押し続けていても始まらないよう、押し直しだけ
   } else if (e.code === 'KeyR') {
     if (s !== 'title' && s !== 'howto') act('retry');
   } else if (e.code === 'Escape') {
