@@ -214,17 +214,177 @@ function drawAlerts(ctx, game, view) {
   }
 }
 
-// 区間選択のページ分け：stations.json の各区間の page（0 から）。1 ページは 8 区間（2 列 × 4 段）まで。
-// page がない区間は 8 区間ずつ自動で分ける。返り値はページごとの区間番号の配列
-export function sectionPages(sections) {
-  const pages = new Map();
-  sections.forEach((s, i) => {
-    const p = s.page ?? Math.floor(i / 8);
-    if (!pages.has(p)) pages.set(p, []);
-    pages.get(p).push(i);
+// 区間選択の環状マップ：区間の出発駅を、角の丸い四角（超楕円）の上に路線の順に並べる。
+// 区間は隣の駅との弧で、最後の区間の到着駅は最初の区間の出発駅（山手線は環状）とみなす。
+// 駅の方角は実際の位置（路線全体の中心から見た向き。縦長の路線を縦横同じ大きさに均す）と、
+// 等間隔の半々。実際の位置だけだと品川・高輪ゲートウェイなどが重なるため
+const LOOP_POWER = 3; // 超楕円の指数（2 で楕円、大きいほど四角に近い）
+const LOOP_COLORS = { cleared: YAMANOTE_GREEN, open: '#ffc93c', locked: '#3d424c' };
+const loopAngleCache = new WeakMap();
+
+function loopAngles(sections) {
+  if (loopAngleCache.has(sections)) return loopAngleCache.get(sections);
+  const st = sections.map((s) => s.fromStation);
+  const lat0 = st.reduce((sum, p) => sum + p.lat, 0) / st.length;
+  const xs = st.map((p) => p.lon * Math.cos((lat0 * Math.PI) / 180));
+  const ys = st.map((p) => -p.lat); // 画面は下向きが正
+  const mid = (v) => (Math.min(...v) + Math.max(...v)) / 2;
+  const size = (v) => Math.max(...v) - Math.min(...v) || 1;
+  const mx = mid(xs), my = mid(ys), w = size(xs), h = size(ys);
+  // 路線の順に角度をつなげる（隣の駅との差を -π〜π にして足していく）
+  const real = [];
+  st.forEach((_, i) => {
+    const t = Math.atan2((ys[i] - my) / h, (xs[i] - mx) / w);
+    if (i === 0) return real.push(t);
+    const d = t - real[i - 1];
+    real.push(real[i - 1] + d - 2 * Math.PI * Math.round(d / (2 * Math.PI)));
   });
-  return [...pages.keys()].sort((a, b) => a - b).map((p) => pages.get(p));
+  const dir = Math.sign(real.at(-1) - real[0]) || 1; // 回る向き（山手線のデータでは時計回り）
+  const angles = real.map((t, i) => (t + real[0] + (dir * 2 * Math.PI * i) / st.length) / 2);
+  angles.push(angles[0] + dir * 2 * Math.PI); // 最後の区間の到着駅＝最初の駅
+  loopAngleCache.set(sections, angles);
+  return angles;
 }
+
+function loopPoint(cx, cy, a, b, t) {
+  const c = Math.cos(t), s = Math.sin(t);
+  const r = (Math.abs(c / a) ** LOOP_POWER + Math.abs(s / b) ** LOOP_POWER) ** (-1 / LOOP_POWER);
+  return { x: cx + r * c, y: cy + r * s, c, s };
+}
+
+function loopSectionState(game, i) {
+  if (game.cleared.has(game.sections[i].id)) return 'cleared';
+  return game.isUnlocked(i) ? 'open' : 'locked';
+}
+
+// 選んでいる区間の注記（ベスト・クリア状況・解放の条件）と色
+function sectionNote(game, i) {
+  const best = game.bests[game.sections[i].id];
+  if (!game.isUnlocked(i)) {
+    // 未解放の区間のうち、前の区間に勝てばすぐ遊べるものはそう書く
+    return game.isUnlocked(i - 1) ? ['前の区間に勝つと解放', '#c9a845'] : ['未解放', '#7a808b'];
+  }
+  if (best != null) return [`ベスト ${formatTime(best)}`, PLAYER_YELLOW];
+  return [game.cleared.has(game.sections[i].id) ? 'クリア済み' : '未クリア', QUIET];
+}
+
+// 環状マップを (x, y, w, h) の枠に描き、区間を選ぶタップの判定を game.hits に登録する
+function drawLoopMap(ctx, game, x, y, w, h, k) {
+  const sections = game.sections;
+  const n = sections.length;
+  const angles = loopAngles(sections);
+  const sel = game.sectionIndex;
+  const cx = x + w / 2, cy = y + h / 2;
+  const labelSize = 12 * k;
+  const b = h / 2 - labelSize - 8 * k;
+  // 左右は駅名の分を空ける。横向きのスマホで高さが縮んだときも、横に潰れすぎないよう縦の 2 倍までにする
+  const a = Math.min(w / 2 - 58 * k, b * 2);
+  if (!(a > 0 && b > 0)) return; // 画面がごく小さいとき（描くと半径が負になって描画が止まる）
+  const at = (t) => loopPoint(cx, cy, a, b, t);
+  const arc = (i) => {
+    const pts = [];
+    const steps = 12;
+    for (let j = 0; j <= steps; j++) pts.push(at(angles[i] + ((angles[i + 1] - angles[i]) * j) / steps));
+    return pts;
+  };
+  const strokeArc = (pts) => {
+    ctx.beginPath();
+    pts.forEach((p, j) => (j ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.stroke();
+  };
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 選んでいる区間の下に、ゆっくり明滅する白い光
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 300);
+  ctx.strokeStyle = `rgba(255, 255, 255, ${0.25 + 0.35 * pulse})`;
+  ctx.lineWidth = 14 * k;
+  strokeArc(arc(sel));
+
+  for (let i = 0; i < n; i++) {
+    ctx.strokeStyle = LOOP_COLORS[loopSectionState(game, i)];
+    ctx.lineWidth = (i === sel ? 8 : 6) * k;
+    strokeArc(arc(i));
+  }
+
+  // 駅の点（選んでいる区間の両端は大きく）
+  for (let i = 0; i < n; i++) {
+    const p = at(angles[i]);
+    const big = i === sel || i === (sel + 1) % n;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, (big ? 5 : 3.2) * k, 0, Math.PI * 2);
+    ctx.fillStyle = TEXT;
+    ctx.fill();
+    ctx.lineWidth = 1.5 * k;
+    ctx.strokeStyle = '#16181d';
+    ctx.stroke();
+  }
+
+  // 駅名：選んでいる区間の両端を先に、そこから近い順に。重なる・枠からはみ出す駅名は省く
+  const order = [...Array(n).keys()].sort((i, j) => {
+    const d = (m) => Math.min(Math.abs(m - sel - 0.5), n - Math.abs(m - sel - 0.5));
+    return d(i) - d(j);
+  });
+  const placed = [];
+  for (const i of order) {
+    const p = at(angles[i]);
+    const big = i === sel || i === (sel + 1) % n;
+    const size = big ? labelSize * 1.15 : labelSize;
+    ctx.font = `${big ? 'bold' : 'normal'} ${size}px ${FONT}`;
+    const name = sections[i].fromName;
+    const tw = ctx.measureText(name).width;
+    const off = 9 * k;
+    let lx = p.x + p.c * off;
+    const ly = p.y + p.s * off;
+    let align = p.c > 0.35 ? 'left' : p.c < -0.35 ? 'right' : 'center';
+    // 選んでいる区間が横向きのとき、両端の駅名は互いに離れる向きに寄せる（近い駅どうしで重ならないよう）
+    if (big) {
+      const other = at(angles[i === sel ? sel + 1 : sel]);
+      if (Math.abs(other.x - p.x) > Math.abs(other.y - p.y)) {
+        align = other.x > p.x ? 'right' : 'left';
+        lx = p.x + (align === 'left' ? -4 : 4) * k;
+      }
+    }
+    const left = align === 'left' ? lx : align === 'right' ? lx - tw : lx - tw / 2;
+    const midY = ly + p.s * size * 0.45;
+    const box = { x0: left - 2, x1: left + tw + 2, y0: midY - size / 2 - 1, y1: midY + size / 2 + 1 };
+    if (box.x0 < x || box.x1 > x + w) continue;
+    if (!big && placed.some((q) => box.x0 < q.x1 && q.x0 < box.x1 && box.y0 < q.y1 && q.y0 < box.y1)) continue;
+    placed.push(box);
+    ctx.fillStyle = big ? TEXT : loopSectionState(game, i) === 'locked' && loopSectionState(game, (i + n - 1) % n) === 'locked' ? '#7a808b' : '#c8ccd4';
+    ctx.textAlign = align;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(name, lx, midY);
+  }
+  ctx.textBaseline = 'alphabetic';
+
+  // 輪の内側：選んでいる区間と、その記録
+  const s = sections[sel];
+  const [note, noteColor] = sectionNote(game, sel);
+  const inner = a * 1.5;
+  if (game.cleared.size >= n) text(ctx, '山手線1周達成！', cx, cy - 30 * k, { size: 13 * k, color: YAMANOTE_GREEN, weight: 'bold', align: 'center', maxWidth: inner });
+  text(ctx, `${s.fromName} → ${s.toName}`, cx, cy + 2 * k, { size: 22 * k, weight: 'bold', align: 'center', maxWidth: inner });
+  text(ctx, note, cx, cy + 24 * k, { size: 14 * k, color: noteColor, align: 'center', maxWidth: inner });
+
+  // タップした場所にいちばん近い区間（弧の真ん中）を選ぶ
+  const mids = [...Array(n).keys()].map((i) => at((angles[i] + angles[i + 1]) / 2));
+  game.hits.push({
+    y0: y,
+    y1: y + h,
+    x0: x,
+    x1: x + w,
+    pick: (px, py) => {
+      let best = null, bestD = (40 * k) ** 2;
+      mids.forEach((m, i) => {
+        const d = (m.x - px) ** 2 + (m.y - py) ** 2;
+        if (d < bestD) (best = i), (bestD = d);
+      });
+      return best == null ? null : `section:${best}`;
+    },
+  });
+}
+
+const LOOP_MAP_H = 250; // 環状マップの高さ（縮める前）
 const GAP = 22; // 行と行のあいだ
 const CELL_H = 48; // 2 列の升目 1 段の高さ（区間名＋注記）
 const CELL_GAP = 8; // 升目どうしのすき間
@@ -346,61 +506,15 @@ function drawHowto(ctx, game, view) {
 }
 
 function drawReady(ctx, game, view) {
-  const pages = sectionPages(game.sections);
-  const pageNo = pages.findIndex((p) => p.includes(game.sectionIndex));
-  const pageCount = pages.length;
-  const pageFirst = game.sections[pages[pageNo][0]];
-  const pageLast = game.sections[pages[pageNo].at(-1)];
+  const n = game.sections.length;
+  const clearedCount = game.sections.filter((s) => game.cleared.has(s.id)).length;
+  const panelW = Math.min(PANEL_MAX_W, view.w - 16);
   const lines = [
     ['区間を選ぶ', { size: 28, weight: 'bold', color: YAMANOTE_GREEN }],
-    [
-      `${pageFirst.fromName} → ${pageLast.toName}${pageCount > 1 ? `（${pageNo + 1}/${pageCount}）` : ''}　${game.touch ? 'タップで選択' : '↑ ↓ で選択'}`,
-      { size: 13, color: QUIET },
-    ],
+    [`クリア ${clearedCount} / ${n} 区間　${game.touch ? '路線をタップで選択' : '↑ ↓ で選択'}`, { size: 13, color: QUIET }],
+    // 山手線の環状マップ（クリア済みは黄緑、遊べる区間は黄、未解放は灰色）
+    { height: LOOP_MAP_H, draw: (y, h) => drawLoopMap(ctx, game, (view.w - panelW) / 2 + 12, y, panelW - 24, h, h / LOOP_MAP_H) },
   ];
-  // 区間の一覧を 2 列で。路線の順に、左の列を上から下へ、続きを右の列へ。
-  // 選んでいる区間は緑の枠、まだ遊べない区間は暗く
-  const cell = (s, i) => {
-    const selected = i === game.sectionIndex;
-    const unlocked = game.isUnlocked(i);
-    const best = game.bests[s.id];
-    // 未解放の区間のうち、前の区間に勝てばすぐ遊べるものはそう書く
-    const lockedNote = i > 0 && game.isUnlocked(i - 1) ? '前の区間に勝つと解放' : '未解放';
-    const note = !unlocked ? lockedNote : best != null ? `ベスト ${formatTime(best)}` : game.cleared.has(s.id) ? 'クリア済み' : '未クリア';
-    return {
-      title: `${s.fromName} → ${s.toName}`,
-      note,
-      color: !unlocked ? '#7a808b' : selected ? TEXT : '#c8ccd4',
-      noteColor: best != null ? PLAYER_YELLOW : !unlocked ? (lockedNote === '未解放' ? '#7a808b' : '#c9a845') : QUIET,
-      selected,
-      action: `section:${i}`,
-    };
-  };
-  // 選んでいる区間のページだけを出す
-  const onPage = pages[pageNo];
-  const rows = Math.ceil(onPage.length / 2);
-  for (let r = 0; r < rows; r++) {
-    const cells = [cell(game.sections[onPage[r]], onPage[r])];
-    if (onPage[r + rows] != null) cells.push(cell(game.sections[onPage[r + rows]], onPage[r + rows]));
-    lines.push({ cells });
-  }
-  if (pageCount > 1) {
-    const pageCell = (dir, label) => {
-      const target = pageNo + dir;
-      const ok = target >= 0 && target < pageCount;
-      const s = ok ? game.sections[pages[target][0]] : null;
-      const e = ok ? game.sections[pages[target].at(-1)] : null;
-      return {
-        title: ok ? label : '',
-        note: ok ? `${s.fromName} → ${e.toName}` : '',
-        color: YAMANOTE_GREEN,
-        noteColor: QUIET,
-        selected: false,
-        action: ok ? `page:${target}` : null,
-      };
-    };
-    lines.push({ cells: [pageCell(-1, '◀ 前の区間'), pageCell(1, '次の区間 ▶')] });
-  }
 
   const section = game.sections[game.sectionIndex];
   // 時間帯と天気（見た目と音だけ。タップかキーで切り替え）

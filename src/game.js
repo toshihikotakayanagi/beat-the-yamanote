@@ -13,7 +13,7 @@ import { createRecorder, record, finishRecording, parseGhost, ghostPose, trackLe
 import { loadMap, surfaceAt } from './map.js';
 import { loadSections, createTrain, trainProgress, DIFFICULTIES } from './train.js';
 import { createObstacles, updateObstacles, markInsideSignals, signalState } from './obstacles.js';
-import { drawHud, sectionPages } from './hud.js';
+import { drawHud } from './hud.js';
 import { trainPath, trainDistance, frontDistance } from './trainpath.js';
 
 const STEP = 1 / 60; // 物理更新の間隔（固定）
@@ -601,9 +601,6 @@ function act(action, x = null) {
     // 行の左半分をタップで前、右半分で次の難易度
     const w = canvas.clientWidth;
     setDifficulty(game.difficulty + (x != null && x < w / 2 ? -1 : 1));
-  } else if (action.startsWith('page:')) {
-    // ページを切り替えたら、そのページの最初の区間を選ぶ
-    selectSection(sectionPages(game.sections)[Number(action.slice('page:'.length))][0]);
   } else if (action.startsWith('section:')) {
     const i = Number(action.slice('section:'.length));
     // 選んでいる区間をもう一度タップしたらスタート
@@ -678,11 +675,13 @@ canvas.addEventListener('pointerdown', (e) => {
   if (game.state === 'loading') return;
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
-  // 升目（2 列の区間一覧）は横の範囲も見る。1 行の文字は横幅いっぱいが対象
+  // 升目や区間選択の環状マップは横の範囲も見る。1 行の文字は横幅いっぱいが対象
   const hit = game.hits.find((h) => y >= h.y0 && y < h.y1 && (h.x0 == null || (x >= h.x0 && x < h.x1)));
-  if (hit) act(hit.action, x);
-  // 区間選択では、升目のすき間などを押し損ねてレースが始まらないよう、スタートの行でだけ始める
-  else if (game.state !== 'ready') onPrimary();
+  // 環状マップは、押した場所に近い区間を pick で選ぶ（路線から離れた所なら何もしない）
+  const action = hit && (hit.pick ? hit.pick(x, y) : hit.action);
+  if (action) act(action, x);
+  // 区間選択では、升目のすき間や環状マップの内側などを押し損ねてレースが始まらないよう、スタートの行でだけ始める
+  else if (!hit && game.state !== 'ready') onPrimary();
 });
 // タッチ端末で操作ボタンを使ったときも、画面ボタン表示に切り替える
 window.addEventListener('touchstart', () => (game.touch = true), { passive: true });
