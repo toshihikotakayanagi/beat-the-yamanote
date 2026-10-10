@@ -732,12 +732,79 @@ function drawIncidentLegend(ctx, game, view, y, h) {
   });
 }
 
+// メダル：リボンと円盤。中に「金」「銀」「銅」の字。r は円盤の半径
+function drawMedal(ctx, x, y, r, medal) {
+  // リボン（円盤の上に V の字）
+  ctx.fillStyle = '#2f7d3a';
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(x + side * r * 0.15, y - r * 0.6);
+    ctx.lineTo(x + side * r * 0.75, y - r * 1.75);
+    ctx.lineTo(x + side * r * 0.25, y - r * 1.75);
+    ctx.lineTo(x - side * r * 0.3, y - r * 0.6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.fillStyle = YAMANOTE_GREEN;
+  ctx.fillRect(x - r * 0.75, y - r * 1.85, r * 1.5, r * 0.22);
+  // 円盤（左上が明るい）と縁
+  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.1, x, y, r);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(0.35, medal.color);
+  g.addColorStop(1, medal.dark);
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.lineWidth = Math.max(1, r * 0.1);
+  ctx.strokeStyle = medal.dark;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y, r * 0.72, 0, Math.PI * 2);
+  ctx.lineWidth = Math.max(1, r * 0.05);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  text(ctx, medal.name, x, y + r * 0.04, { size: r * 0.95, weight: 'bold', color: medal.dark, align: 'center' });
+  ctx.textBaseline = 'alphabetic';
+}
+
+// 「勝ち！」と、その左のメダル。メダルは結果画面が出たときに少し大きくなってから収まる
+function drawWinTitle(ctx, game, view, y, h) {
+  if (!(h > 0)) return; // 画面がごく小さいとき（描くと半径が負になって描画が止まる）
+  const r = game.result;
+  const size = h * 0.75;
+  ctx.font = `bold ${size}px ${FONT}`;
+  const tw = ctx.measureText('勝ち！').width;
+  const medal = r.medal?.medal;
+  const mr = h * 0.44;
+  const gap = mr * 0.6;
+  const total = tw + (medal ? mr * 2 + gap : 0);
+  const x0 = view.w / 2 - total / 2;
+  if (medal) {
+    const t = Math.min(1, (performance.now() - r.shownAt) / 450);
+    const pop = t < 1 ? 1 + 0.35 * Math.sin(Math.PI * t) : 1; // 0.45 秒で 1 → 1.35 → 1
+    drawMedal(ctx, x0 + mr, y + h * 0.66, mr * pop * Math.min(1, t * 3 + 0.2), medal);
+  }
+  text(ctx, '勝ち！', x0 + total - tw, y + h * 0.88, { size, weight: 'bold', color: YAMANOTE_GREEN });
+}
+
+// メダルの名前と、ひとつ上のメダルまでの秒数
+function medalLine(m) {
+  if (!m.upper) return [`${m.medal.name}メダル！ いちばん上の評価です`, { size: 16, weight: 'bold', color: m.medal.color }];
+  return [
+    `${m.medal.name}メダル　${m.upper.name}メダルまで あと ${(Math.ceil(m.toUpper * 10) / 10).toFixed(1)} 秒`,
+    { size: 16, color: m.medal.color },
+  ];
+}
+
 function drawResult(ctx, game, view) {
   const r = game.result;
   const lines = r.win
     ? [
-        ['勝ち！', { size: 48, weight: 'bold', color: YAMANOTE_GREEN }],
+        { height: 64, draw: (y, h) => drawWinTitle(ctx, game, view, y, h) },
         [`タイム ${formatTime(r.time)}　電車より ${(game.train.limit - r.time).toFixed(1)} 秒早く到着`, { size: 18 }],
+        medalLine(r.medal),
         [
           r.newBest ? 'ベストタイム更新！' : `ベストタイム ${formatTime(game.best)}`,
           { size: 16, color: PLAYER_YELLOW, weight: r.newBest ? 'bold' : 'normal' },

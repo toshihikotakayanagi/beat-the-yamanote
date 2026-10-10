@@ -11,7 +11,7 @@ import * as audio from './audio.js';
 import { createPlayer, updatePlayer, PLAYER_CONFIG } from './player.js';
 import { createRecorder, record, finishRecording, parseGhost, ghostPose, trackLength } from './ghost.js';
 import { loadMap, surfaceAt } from './map.js';
-import { loadSections, createTrain, trainProgress, DIFFICULTIES } from './train.js';
+import { loadSections, createTrain, trainProgress, medalFor, DIFFICULTIES } from './train.js';
 import { createObstacles, updateObstacles, markInsideSignals, signalState } from './obstacles.js';
 import { drawHud } from './hud.js';
 import { trainPath, trainDistance, frontDistance } from './trainpath.js';
@@ -306,6 +306,9 @@ function finish(win) {
   r.trackLength = trackLength(r.track);
   r.incidents = game.incidents;
   // ゴーストとの差（マイナスならゴーストより速い）。負けたときは比べない
+  // メダル（勝ったときだけ）と、ひとつ上のメダルまでの秒数
+  r.medal = win ? medalFor(game.train, time) : null;
+  r.shownAt = performance.now(); // 結果画面でメダルを出す動きの起点
   r.ghostDiff = win && game.ghost ? Math.round((time - game.ghost.time) * 10) / 10 : null;
   if (win && (game.best == null || time < game.best)) {
     game.best = time;

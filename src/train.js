@@ -35,6 +35,22 @@ export function createTrain(section, difficulty) {
   return { realSeconds: section.trainSeconds, limit: Math.round(par * difficulty.scale) };
 }
 
+// 勝ったときのメダル。制限時間に対するタイムの割合で決めるので、どの難易度・天気でも同じ基準になる
+// （ふつうの金は基準タイムの約1.1倍、銀は約1.3倍。電車より速く着けば銅）
+export const MEDALS = [
+  { id: 'gold', name: '金', share: 0.8, color: '#f5c542', dark: '#a87b12' },
+  { id: 'silver', name: '銀', share: 0.9, color: '#d6dbe3', dark: '#7d8590' },
+  { id: 'bronze', name: '銅', share: 1, color: '#d98c4a', dark: '#8a4f22' },
+];
+
+// タイムに対するメダルと、ひとつ上のメダルまでの秒数。負け（制限時間を過ぎた）ときは medal が null
+export function medalFor(train, time) {
+  const i = MEDALS.findIndex((m) => time <= train.limit * m.share);
+  const medal = i >= 0 ? MEDALS[i] : null;
+  const upper = i > 0 ? MEDALS[i - 1] : null;
+  return { medal, upper, toUpper: upper ? time - train.limit * upper.share : null };
+}
+
 // 加速・減速にかける時間の割合（制限時間のうち最初と最後のそれぞれ）。
 // 実物の山手線は駅間約2分のうち、発車後と到着前の各20〜30秒ほどで加速・減速する
 const ACCEL_SHARE = 0.2;
