@@ -113,13 +113,17 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  └─ pedestrians.js   歩行者の見た目（2D版・3D版で共通）
 ├─ data/
 │  ├─ stations.json    駅の座標、区間の一覧、基準タイム
-│  └─ <区間ID>.json    区間ごとの地図データ（30ファイル、計約16MB。遊ぶときは選んだ区間の分だけ読み込む）
+│  ├─ <区間ID>.json    区間ごとの地図データ（30ファイル、計約16MB。遊ぶときは選んだ区間の分だけ読み込む）
+│  └─ models/
+│     └─ tokyo_station.glb  東京駅丸の内駅舎の 3D モデル（Blender で作成。3D版の東京駅に置く）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
+│  ├─ export-tokyo-station.py  Blender の東京駅モデルを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
-│  └─ three.module.js  Three.js
+│  ├─ three.module.js  Three.js
+│  └─ addons/          Three.js の GLTFLoader（glb の読み込み）と、それが使う BufferGeometryUtils
 └─ docs/screenshots/   README のスクリーンショット
 ```
 
@@ -142,7 +146,7 @@ node tools/fetch-osm.mjs all
 ## クレジット・ライセンス
 
 - このゲームのプログラム（HTML・CSS・JavaScript・ツール）は [MIT ライセンス](LICENSE) です。ただし、下の地図データと Three.js はそれぞれのライセンスに従います。
-- `data/` の地図データは OpenStreetMap から作ったものなので、MIT ではなく ODbL に従います。© [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors（ゲーム画面の右下とタイトル画面にも表示しています）。
-- [Three.js](https://threejs.org/)（MIT ライセンス）。著作権表示は `vendor/three.module.js` の先頭にあります。
+- `data/` の地図データは OpenStreetMap から作ったものなので、MIT ではなく ODbL に従います（`data/models/` の 3D モデルは Blender で自作したもので、OpenStreetMap のデータではありません）。© [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors（ゲーム画面の右下とタイトル画面にも表示しています）。
+- [Three.js](https://threejs.org/)（MIT ライセンス）。著作権表示は `vendor/three.module.js` の先頭にあります（`vendor/addons/` も同じ Three.js 0.170.0 のファイルです）。
 - 発車メロディ風の曲と効果音はすべてオリジナルで、Web Audio で合成しています。
 - JR のロゴや駅名標のデザインは使っていません（駅名の文字だけ）。

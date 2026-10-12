@@ -5,6 +5,7 @@
 // 座標：地図の (x, y)（m。x は東、y は南が正）を Three.js の (x, 高さ, y) に置く（y が上）。
 // 向き：自転車などの angle（北が 0、時計回り）は rotation.y = -angle（前が -z 方向のモデル）。
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { signalState } from './obstacles.js';
 import { pointAt, frontDistance, carCount, ELEVATED_H } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, cellKey, nodeKey, surfaceAt } from './map.js';
@@ -1022,6 +1023,84 @@ function addStations(group, map, textures) {
   }
 }
 
+// ---- Blender で作った建物のモデル（glb） ----
+// lat / lon は建物の中心、heading はモデルの正面（Blender の -Y、glb の +z）が向く方角（北が 0、時計回りの度）。
+// 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
+// glb は tools/export-tokyo-station.py で書き出す
+const MODELS = [{ url: 'data/models/tokyo_station.glb', lat: 35.681216, lon: 139.765949, heading: 284.1 }];
+const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
+const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
+const modelGlows = []; // { material, base }：時間帯で明るさを変える材質
+// url → { model（読めなければ null）, box（モデルの範囲）, materials, fade（透かす割合。材質と同じく区間をまたいで共有）, done }
+const loadedModels = new Map();
+
+// 読み込みは 1 回だけ。材質はほかの建物に合わせて MeshLambertMaterial にし、どの区間でも同じものを使う
+function loadModel(url) {
+  let entry = loadedModels.get(url);
+  if (entry) return entry;
+  entry = { model: null, box: null, materials: [], fade: { opacity: 1 }, done: false };
+  loadedModels.set(url, entry);
+  const mats = new Map();
+  const lambert = (src) => {
+    if (!mats.has(src)) {
+      const m = new THREE.MeshLambertMaterial({ color: src.color, map: src.map, flatShading: true, side: THREE.DoubleSide });
+      if (src.emissiveIntensity > 0 && src.emissive.getHex() !== 0) {
+        const base = Math.min(src.emissiveIntensity, MODEL_GLOW_MAX);
+        m.emissive.copy(src.emissive);
+        m.emissiveIntensity = base * windowGlow;
+        modelGlows.push({ material: m, base });
+      }
+      mats.set(src, m);
+    }
+    return mats.get(src);
+  };
+  new GLTFLoader()
+    .loadAsync(url)
+    .then((gltf) => {
+      gltf.scene.traverse((m) => {
+        if (!m.isMesh) return;
+        m.material = Array.isArray(m.material) ? m.material.map(lambert) : lambert(m.material);
+        m.castShadow = m.receiveShadow = true;
+        m.userData.shared = true; // 区間の立体を捨てるときも、形と材質は捨てない
+      });
+      entry.model = gltf.scene;
+      entry.box = new THREE.Box3().setFromObject(gltf.scene);
+      entry.materials = [...mats.values()];
+    })
+    .catch((e) => console.warn(`モデルを読み込めませんでした: ${url}`, e))
+    .finally(() => (entry.done = true));
+  return entry;
+}
+
+// 区間の範囲（と少しの余白）に入るモデルを読み込み始める
+function modelsFor(map) {
+  const o = map.origin, b = map.bounds;
+  if (!o) return [];
+  const mPerDegLon = 111320 * Math.cos((o.lat * Math.PI) / 180);
+  const out = [];
+  for (const md of MODELS) {
+    const x = (md.lon - o.lon) * mPerDegLon, y = -(md.lat - o.lat) * M_PER_DEG_LAT;
+    if (x < b.minX - 300 || x > b.maxX + 300 || y < b.minY - 300 || y > b.maxY + 300) continue;
+    out.push({ x, y, angle: md.heading * (Math.PI / 180), entry: loadModel(md.url) });
+  }
+  return out;
+}
+
+// 置いたモデルは group.userData.models に入れる（カメラとのあいだに入ったら透かすため）
+function addModels(group, models) {
+  group.userData.models = [];
+  for (const { x, y, angle, entry } of models) {
+    if (!entry.model) continue;
+    const m = entry.model.clone(); // 形と材質は共有する
+    m.position.set(x, 0, y);
+    m.rotation.y = Math.PI - angle; // 正面が +z のモデル
+    m.updateMatrixWorld();
+    m.userData = { box: entry.box, materials: entry.materials, fade: entry.fade };
+    group.add(m);
+    group.userData.models.push(m);
+  }
+}
+
 // ---- 道路の区画線・横断歩道・歩道 ----
 const WHITE_LINE = [0.86, 0.87, 0.85];
 const YELLOW_LINE = [0.9, 0.72, 0.2];
@@ -1222,6 +1301,7 @@ function* buildWorldSteps(map, textures) {
   const patterns = textures.ground;
   const group = new THREE.Group();
   const { minX, minY, maxX, maxY } = map.bounds;
+  const models = modelsFor(map); // glb は作っているあいだに読み込む
 
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(maxX - minX + 2000, maxY - minY + 2000), mat(GROUND));
   ground.receiveShadow = true;
@@ -1431,6 +1511,8 @@ function* buildWorldSteps(map, textures) {
   addStreetLights(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
+  while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
+  addModels(group, models);
 
   // ゴール：地面の輪と、遠くから見える光の柱
   const g = map.goal;
@@ -1983,6 +2065,7 @@ export function createRenderer3D(canvas) {
         if (!oldMap) break;
         worlds.delete(oldMap);
         old.group?.traverse((m) => {
+          if (m.userData.shared) return;
           m.geometry?.dispose();
           m.material?.dispose();
         });
@@ -2325,21 +2408,39 @@ export function createRenderer3D(canvas) {
         if (x >= b.minX && x <= b.maxX && z >= b.minY && z <= b.maxY && insidePolygon(x, z, b.p)) fade.add(tileOf[b.id]);
       }
     }
-    for (const [key, mesh] of tiles) {
-      const target = fade.has(key) ? SEE_THROUGH : 1;
-      const o = mesh.userData.opacity;
-      if (o === target) continue;
-      const next = target < o ? Math.max(target, o - FADE_SPEED * dt) : Math.min(target, o + FADE_SPEED * dt);
-      mesh.userData.opacity = next;
-      const transparent = next < 1;
-      if (mesh.material.transparent !== transparent) {
-        mesh.material.transparent = transparent;
-        mesh.material.depthWrite = !transparent; // 透かした建物の向こうも描く
-        mesh.material.needsUpdate = true;
-      }
-      mesh.material.opacity = next;
-      mesh.renderOrder = transparent ? 1 : 0;
+    for (const [key, mesh] of tiles) mesh.renderOrder = fadeTo(mesh.userData, [mesh.material], fade.has(key) ? SEE_THROUGH : 1, dt) ? 1 : 0;
+    // Blender のモデル：カメラ → 自転車の線が、モデルの範囲の箱を通れば透かす
+    for (const m of world.userData.models ?? []) {
+      occA.set(ax, ay, az);
+      occB.set(bx, by, bz);
+      m.worldToLocal(occA);
+      m.worldToLocal(occB);
+      occRay.origin.copy(occA);
+      occRay.direction.copy(occB).sub(occA);
+      const d = occRay.direction.length();
+      occRay.direction.divideScalar(d || 1);
+      const hit = occRay.intersectBox(m.userData.box, occHit);
+      m.renderOrder = fadeTo(m.userData.fade, m.userData.materials, hit && occA.distanceTo(hit) < d ? SEE_THROUGH : 1, dt) ? 1 : 0;
     }
+  }
+  const occA = new THREE.Vector3(), occB = new THREE.Vector3(), occHit = new THREE.Vector3(), occRay = new THREE.Ray();
+
+  // 透かす割合（state.opacity）を target へ少しずつ近づける。透けていれば true
+  function fadeTo(state, materials, target, dt) {
+    const o = state.opacity;
+    if (o === target) return o < 1;
+    const next = target < o ? Math.max(target, o - FADE_SPEED * dt) : Math.min(target, o + FADE_SPEED * dt);
+    state.opacity = next;
+    const transparent = next < 1;
+    for (const mat of materials) {
+      if (mat.transparent !== transparent) {
+        mat.transparent = transparent;
+        mat.depthWrite = !transparent; // 透かした建物の向こうも描く
+        mat.needsUpdate = true;
+      }
+      mat.opacity = next;
+    }
+    return transparent;
   }
 
   const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -2464,6 +2565,7 @@ export function createRenderer3D(canvas) {
       // 窓の灯り（今ある区間の立体すべてと、これから作る区間）
       windowGlow = t.glow;
       for (const wd of worlds.values()) for (const m of wd.group?.userData.tiles?.values() ?? []) m.material.emissiveIntensity = t.glow;
+      for (const { material, base } of modelGlows) material.emissiveIntensity = base * t.glow; // Blender のモデルの窓・灯り
       for (const car of train) car.traverse((m) => m.userData?.trainGlass && (m.material.emissiveIntensity = t.glow * 0.7)); // 電車の窓
       // 街灯：昼は消す。夜は足もとをより明るく
       LAMP_MAT.color.set(t.lamps ? 0xffd9a0 : 0x6b6e75);
