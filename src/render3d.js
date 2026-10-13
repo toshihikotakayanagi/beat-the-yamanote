@@ -1029,7 +1029,7 @@ function addStations(group, map, textures) {
 //   いくつかあるときは、その配列）。中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
 // 作り方：tools/build-<駅>-station.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅・秋葉原駅・神田駅・有楽町駅・
-// 新橋駅・浜松町駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 新橋駅・浜松町駅・田町駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1051,6 +1051,8 @@ const MODELS = [
   // 浜松町駅：東京モノレールの駅舎と車両、JR の北口・南口のコンコースの橋。線路を覆っていた JR の駅の高い箱と、モノレールの駅の箱は描かない
   { url: 'data/models/hamamatsucho_station.glb', lat: 35.655527, lon: 139.757173, heading: 101.7,
     clear: [[-6, -3, 33, 36], [-42, -39, 0, 3], [45, 48, 0, 3]] },
+  // 田町駅：三田口と芝浦口を結ぶ、線路の上のコンコース。ホームと線路を覆う箱になっていた駅は描かない
+  { url: 'data/models/tamachi_station.glb', lat: 35.645662, lon: 139.747553, heading: 238.82, clear: [1, 5, 1.5, 5.5] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
