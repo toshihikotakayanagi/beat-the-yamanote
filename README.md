@@ -127,7 +127,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ yurakucho_station.glb 有楽町駅（高架の下の赤レンガのアーチと改札口）の 3D モデル（tools/build-yurakucho-station.py で作成）
 │     ├─ shimbashi_station.glb 新橋駅（高架の下の赤レンガのアーチと SL 広場の C11 292）の 3D モデル（tools/build-shimbashi-station.py で作成）
 │     ├─ hamamatsucho_station.glb 浜松町駅（東京モノレールの駅と車両、JR のコンコース）の 3D モデル（tools/build-hamamatsucho-station.py で作成）
-│     └─ tamachi_station.glb   田町駅（三田口と芝浦口を結ぶ線路の上のコンコース）の 3D モデル（tools/build-tamachi-station.py で作成）
+│     ├─ tamachi_station.glb   田町駅（三田口と芝浦口を結ぶ線路の上のコンコース）の 3D モデル（tools/build-tamachi-station.py で作成）
+│     └─ osaki_station.glb     大崎駅（線路の上の橋上駅舎）の 3D モデル（tools/build-osaki-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -144,6 +145,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-shimbashi-station.py  新橋駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-hamamatsucho-station.py  浜松町駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-tamachi-station.py  田町駅のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-osaki-station.py  大崎駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
