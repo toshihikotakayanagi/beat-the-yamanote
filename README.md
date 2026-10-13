@@ -129,7 +129,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ hamamatsucho_station.glb 浜松町駅（東京モノレールの駅と車両、JR のコンコース）の 3D モデル（tools/build-hamamatsucho-station.py で作成）
 │     ├─ tamachi_station.glb   田町駅（三田口と芝浦口を結ぶ線路の上のコンコース）の 3D モデル（tools/build-tamachi-station.py で作成）
 │     ├─ osaki_station.glb     大崎駅（線路の上の橋上駅舎）の 3D モデル（tools/build-osaki-station.py で作成）
-│     └─ gotanda_station.glb   五反田駅（JR の東口・西口と東急池上線のホームと車両）の 3D モデル（tools/build-gotanda-station.py で作成）
+│     ├─ gotanda_station.glb   五反田駅（JR の東口・西口と東急池上線のホームと車両）の 3D モデル（tools/build-gotanda-station.py で作成）
+│     └─ meguro_station.glb    目黒駅（掘割の線路の上のアトレ目黒 1 と JR東急目黒ビル）の 3D モデル（tools/build-meguro-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -148,6 +149,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-tamachi-station.py  田町駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-osaki-station.py  大崎駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-gotanda-station.py  五反田駅のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-meguro-station.py  目黒駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/

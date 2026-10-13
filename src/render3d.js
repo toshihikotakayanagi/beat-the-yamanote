@@ -1029,7 +1029,7 @@ function addStations(group, map, textures) {
 //   いくつかあるときは、その配列）。中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
 // 作り方：tools/build-<駅>-station.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅・秋葉原駅・神田駅・有楽町駅・
-// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1057,6 +1057,9 @@ const MODELS = [
   { url: 'data/models/osaki_station.glb', lat: 35.620257, lon: 139.728063, heading: 147.06, clear: [-52, -48, -16, -12] },
   // 五反田駅：JR の東口の駅舎・西口と、東急池上線のホームと車両。山手線の高架を覆う箱になっていた JR の駅は描かない
   { url: 'data/models/gotanda_station.glb', lat: 35.626646, lon: 139.723245, heading: 53.38, clear: [-74, -70, -2, 2] },
+  // 目黒駅：掘割の山手線の上のアトレ目黒 1 と JR東急目黒ビル（線路の帯だけ地上 6m まであける）。線路にかぶさる箱は描かない
+  { url: 'data/models/meguro_station.glb', lat: 35.633929, lon: 139.715756, heading: 77.87,
+    clear: [[-214, -212, 10.8, 12.8], [15, 17, -6.6, -4.6], [52, 54, -26.4, -24.4], [-142, -140, 14.8, 16.8], [-88, -86, 20.7, 22.7]] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
