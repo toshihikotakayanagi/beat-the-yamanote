@@ -1029,7 +1029,7 @@ function addStations(group, map, textures) {
 //   いくつかあるときは、その配列）。中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
 // 作り方：tools/build-<駅>-station.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅・秋葉原駅・神田駅・有楽町駅・
-// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅・代々木駅・新大久保駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅・代々木駅・新大久保駅・高田馬場駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1070,6 +1070,10 @@ const MODELS = [
   { url: 'data/models/yoyogi_station.glb', lat: 35.68395, lon: 139.70208, heading: 75.7, clear: [-97, -93, 25, 29] },
   // 新大久保駅：高架の下と西側に建つ 4 階建ての駅舎と、高架の上の島式ホーム・屋根。高架の線路にかぶさる駅の箱は描かない
   { url: 'data/models/shinokubo_station.glb', lat: 35.7013, lon: 139.70024, heading: 93.0, clear: [-3, 1, 8, 12] },
+  // 高田馬場駅：高架の上の JR・西武のホームと屋根、高架の下の改札口と西武の駅の建物。線路をまるごと覆っていた駅全体の箱
+  // （高さがわからず推定で 20〜30m になっていた）と、西武の駅の箱、西武のホームの細い箱は描かない
+  { url: 'data/models/takadanobaba_station.glb', lat: 35.71268, lon: 139.70364, heading: 106.0,
+    clear: [[6.7, 10.7, -11.4, -7.4], [87.5, 91.5, -33.7, -29.7], [-169, -165, -22.3, -18.3]] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
