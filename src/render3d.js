@@ -1025,10 +1025,11 @@ function addStations(group, map, textures) {
 
 // ---- Blender で作った建物のモデル（glb） ----
 // lat / lon は建物の中心、heading はモデルの正面（Blender の -Y、glb の +z）が向く方角（北が 0、時計回りの度）。
-// clear：地図データに同じ建物が箱で入っているときに、描かないようにする範囲（Blender の座標で [X0, X1, Y0, Y1]）。
-//   中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
+// clear：地図データに同じ建物が箱で入っているときに、描かないようにする範囲（Blender の座標で [X0, X1, Y0, Y1]。
+//   いくつかあるときは、その配列）。中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
-// 作り方：tools/build-*.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 作り方：tools/build-*.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅・秋葉原駅）で .blend を作り、
+// tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1038,6 +1039,9 @@ const MODELS = [
   { url: 'data/models/shibuya_station.glb', lat: 35.659003, lon: 139.70242, heading: 160.5, clear: [-60, 40, -12, 12] }, // 渋谷駅（銀座線）
   { url: 'data/models/ikebukuro_station.glb', lat: 35.728955, lon: 139.711663, heading: 94, clear: [-20, 20, -10, 10] }, // 池袋駅東口の駅ビル
   { url: 'data/models/shinagawa_station.glb', lat: 35.628864, lon: 139.739046, heading: 176.27, clear: [45, 58, -24, 3] }, // 品川駅（線路の上のコンコース）
+  // 秋葉原駅：アトレ 1・総武線の階の駅・2 階の駅（山手線の高架をふさいでいた箱）と、屋根の東端の下の箱
+  { url: 'data/models/akihabara_station.glb', lat: 35.698339, lon: 139.773213, heading: 185.63,
+    clear: [[-81, -77, -2, 2], [30.5, 32.5, 27, 28.8], [26, 29, -10, -7], [106, 110, -2, 1]] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
@@ -1105,8 +1109,9 @@ function replacedByModel(models, bd) {
     if (!clear) return false;
     // 地図の座標 → モデルの座標（rotation.y = π - angle の逆。Blender の Y は glb の -z）
     const dx = cx - x, dz = cy - y, r = Math.PI - angle;
-    const lx = dx * Math.cos(r) - dz * Math.sin(r), lz = dx * Math.sin(r) + dz * Math.cos(r);
-    return lx >= clear[0] && lx <= clear[1] && -lz >= clear[2] && -lz <= clear[3];
+    const lx = dx * Math.cos(r) - dz * Math.sin(r), ly = -(dx * Math.sin(r) + dz * Math.cos(r));
+    const rects = Array.isArray(clear[0]) ? clear : [clear];
+    return rects.some((c) => lx >= c[0] && lx <= c[1] && ly >= c[2] && ly <= c[3]);
   });
 }
 
