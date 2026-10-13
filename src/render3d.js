@@ -1028,9 +1028,10 @@ function addStations(group, map, textures) {
 // clear：地図データに同じ建物が箱で入っているときに、描かないようにする範囲（Blender の座標で [X0, X1, Y0, Y1]）。
 //   中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
-// 書き出し：東京駅は tools/export-tokyo-station.py、高輪ゲートウェイ駅は tools/build-takanawa-gateway.py と tools/export-glb.py
+// 作り方：tools/build-tokyo-station.py・tools/build-takanawa-gateway.py で .blend を作り、tools/export-glb.py で書き出す。
+// 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
-  { url: 'data/models/tokyo_station.glb', lat: 35.681216, lon: 139.765949, heading: 284.1 },
+  { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
   { url: 'data/models/takanawa_gateway.glb', lat: 35.635739, lon: 139.740657, heading: 289.2, clear: [-52, 110, -15, 32] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
@@ -1048,7 +1049,7 @@ function loadModel(url) {
   const mats = new Map();
   const lambert = (src) => {
     if (!mats.has(src)) {
-      const m = new THREE.MeshLambertMaterial({ color: src.color, map: src.map, flatShading: true, side: THREE.DoubleSide });
+      const m = new THREE.MeshLambertMaterial({ color: src.color, map: src.map, emissiveMap: src.emissiveMap, flatShading: true, side: THREE.DoubleSide });
       if (src.emissiveIntensity > 0 && src.emissive.getHex() !== 0) {
         const base = Math.min(src.emissiveIntensity, MODEL_GLOW_MAX);
         m.emissive.copy(src.emissive);
@@ -2432,21 +2433,28 @@ export function createRenderer3D(canvas) {
       }
     }
     for (const [key, mesh] of tiles) mesh.renderOrder = fadeTo(mesh.userData, [mesh.material], fade.has(key) ? SEE_THROUGH : 1, dt) ? 1 : 0;
-    // Blender のモデル：カメラ → 自転車の線が、モデルの範囲の箱を通れば透かす
+    // Blender のモデル：カメラ → 自転車の線が、モデルの面に当たれば透かす
+    // （まずモデルの範囲の箱で絞り、当たりそうなときだけ面を調べる。正面の歩道を走っているだけでは透かさない）
     for (const m of world.userData.models ?? []) {
       occA.set(ax, ay, az);
       occB.set(bx, by, bz);
+      const d = occA.distanceTo(occB);
       m.worldToLocal(occA);
       m.worldToLocal(occB);
       occRay.origin.copy(occA);
-      occRay.direction.copy(occB).sub(occA);
-      const d = occRay.direction.length();
-      occRay.direction.divideScalar(d || 1);
-      const hit = occRay.intersectBox(m.userData.box, occHit);
-      m.renderOrder = fadeTo(m.userData.fade, m.userData.materials, hit && occA.distanceTo(hit) < d ? SEE_THROUGH : 1, dt) ? 1 : 0;
+      occRay.direction.copy(occB).sub(occA).normalize();
+      const hit = occRay.intersectBox(m.userData.box, occHit) !== null && occA.distanceTo(occHit) < d;
+      let blocked = false;
+      if (hit) {
+        occCaster.set(camera.position, occB.set(bx - ax, by - ay, bz - az).normalize());
+        occCaster.far = d;
+        blocked = occCaster.intersectObject(m, true).length > 0;
+      }
+      m.renderOrder = fadeTo(m.userData.fade, m.userData.materials, blocked ? SEE_THROUGH : 1, dt) ? 1 : 0;
     }
   }
   const occA = new THREE.Vector3(), occB = new THREE.Vector3(), occHit = new THREE.Vector3(), occRay = new THREE.Ray();
+  const occCaster = new THREE.Raycaster();
 
   // 透かす割合（state.opacity）を target へ少しずつ近づける。透けていれば true
   function fadeTo(state, materials, target, dt) {
