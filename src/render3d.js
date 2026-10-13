@@ -1025,9 +1025,14 @@ function addStations(group, map, textures) {
 
 // ---- Blender で作った建物のモデル（glb） ----
 // lat / lon は建物の中心、heading はモデルの正面（Blender の -Y、glb の +z）が向く方角（北が 0、時計回りの度）。
+// clear：地図データに同じ建物が箱で入っているときに、描かないようにする範囲（Blender の座標で [X0, X1, Y0, Y1]）。
+//   中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
-// glb は tools/export-tokyo-station.py で書き出す
-const MODELS = [{ url: 'data/models/tokyo_station.glb', lat: 35.681216, lon: 139.765949, heading: 284.1 }];
+// 書き出し：東京駅は tools/export-tokyo-station.py、高輪ゲートウェイ駅は tools/build-takanawa-gateway.py と tools/export-glb.py
+const MODELS = [
+  { url: 'data/models/tokyo_station.glb', lat: 35.681216, lon: 139.765949, heading: 284.1 },
+  { url: 'data/models/takanawa_gateway.glb', lat: 35.635739, lon: 139.740657, heading: 289.2, clear: [-52, 110, -15, 32] },
+];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
 const modelGlows = []; // { material, base }：時間帯で明るさを変える材質
@@ -1081,9 +1086,22 @@ function modelsFor(map) {
   for (const md of MODELS) {
     const x = (md.lon - o.lon) * mPerDegLon, y = -(md.lat - o.lat) * M_PER_DEG_LAT;
     if (x < b.minX - 300 || x > b.maxX + 300 || y < b.minY - 300 || y > b.maxY + 300) continue;
-    out.push({ x, y, angle: md.heading * (Math.PI / 180), entry: loadModel(md.url) });
+    const angle = md.heading * (Math.PI / 180);
+    out.push({ x, y, angle, clear: md.clear, entry: loadModel(md.url) });
   }
   return out;
+}
+
+// 地図データの建物 bd が、モデルに置きかわる（描かない）か
+function replacedByModel(models, bd) {
+  const cx = (bd.minX + bd.maxX) / 2, cy = (bd.minY + bd.maxY) / 2;
+  return models.some(({ x, y, angle, clear }) => {
+    if (!clear) return false;
+    // 地図の座標 → モデルの座標（rotation.y = π - angle の逆。Blender の Y は glb の -z）
+    const dx = cx - x, dz = cy - y, r = Math.PI - angle;
+    const lx = dx * Math.cos(r) - dz * Math.sin(r), lz = dx * Math.sin(r) + dz * Math.cos(r);
+    return lx >= clear[0] && lx <= clear[1] && -lz >= clear[2] && -lz <= clear[3];
+  });
 }
 
 // 置いたモデルは group.userData.models に入れる（カメラとのあいだに入ったら透かすため）
@@ -1476,6 +1494,11 @@ function* buildWorldSteps(map, textures) {
   for (let i = 0; i < map.buildings.length; i++) {
     const bd = map.buildings[i];
     if (i > 0 && i % BUILDINGS_PER_STEP === 0) yield 0.3 + (0.6 * i) / map.buildings.length;
+    if (replacedByModel(models, bd)) {
+      heights.push(0); // 透かす判定にもかからない
+      tileOf.push(null);
+      continue;
+    }
     const area = Math.abs(polygonArea(openRing(bd.p)));
     const h = map.heights?.[i] > 0 ? map.heights[i] : guessHeight(area, i);
     const key = `${Math.floor((bd.minX + bd.maxX) / 2 / TILE)},${Math.floor((bd.minY + bd.maxY) / 2 / TILE)}`;
