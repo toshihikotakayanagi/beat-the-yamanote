@@ -1028,7 +1028,7 @@ function addStations(group, map, textures) {
 // clear：地図データに同じ建物が箱で入っているときに、描かないようにする範囲（Blender の座標で [X0, X1, Y0, Y1]）。
 //   中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
-// 作り方：tools/build-*.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 作り方：tools/build-*.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1036,6 +1036,7 @@ const MODELS = [
   { url: 'data/models/ueno_station.glb', lat: 35.712253, lon: 139.776149, heading: 137.4, clear: [-56, 56, -30, 30] },
   { url: 'data/models/shinjuku_station.glb', lat: 35.691258, lon: 139.701096, heading: 83.4 }, // 新宿駅東口の駅ビル（地図データにない）
   { url: 'data/models/shibuya_station.glb', lat: 35.659003, lon: 139.70242, heading: 160.5, clear: [-60, 40, -12, 12] }, // 渋谷駅（銀座線）
+  { url: 'data/models/ikebukuro_station.glb', lat: 35.728955, lon: 139.711663, heading: 94, clear: [-20, 20, -10, 10] }, // 池袋駅東口の駅ビル
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）

@@ -119,7 +119,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ takanawa_gateway.glb  高輪ゲートウェイ駅の 3D モデル（tools/build-takanawa-gateway.py で作成）
 │     ├─ ueno_station.glb      上野駅（1932 年の駅舎）の 3D モデル（tools/build-ueno-station.py で作成）
 │     ├─ shinjuku_station.glb  新宿駅東口の駅ビルの 3D モデル（tools/build-shinjuku-station.py で作成）
-│     └─ shibuya_station.glb   渋谷駅（銀座線）の 3D モデル（tools/build-shibuya-station.py で作成）
+│     ├─ shibuya_station.glb   渋谷駅（銀座線）の 3D モデル（tools/build-shibuya-station.py で作成）
+│     └─ ikebukuro_station.glb 池袋駅東口の駅ビルの 3D モデル（tools/build-ikebukuro-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -128,6 +129,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-ueno-station.py  上野駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-shinjuku-station.py  新宿駅東口の駅ビルのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-shibuya-station.py  渋谷駅（銀座線）のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-ikebukuro-station.py  池袋駅東口の駅ビルのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
