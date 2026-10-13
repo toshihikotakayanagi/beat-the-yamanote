@@ -122,7 +122,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ shibuya_station.glb   渋谷駅（銀座線）の 3D モデル（tools/build-shibuya-station.py で作成）
 │     ├─ ikebukuro_station.glb 池袋駅東口の駅ビルの 3D モデル（tools/build-ikebukuro-station.py で作成）
 │     ├─ shinagawa_station.glb 品川駅の線路の上のコンコースの 3D モデル（tools/build-shinagawa-station.py で作成）
-│     └─ akihabara_station.glb 秋葉原駅（総武線のホームの屋根と駅の建物）の 3D モデル（tools/build-akihabara-station.py で作成）
+│     ├─ akihabara_station.glb 秋葉原駅（総武線のホームの屋根と駅の建物）の 3D モデル（tools/build-akihabara-station.py で作成）
+│     └─ kanda_station.glb     神田駅（高架の下の赤レンガのアーチと改札口）の 3D モデル（tools/build-kanda-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -134,6 +135,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-ikebukuro-station.py  池袋駅東口の駅ビルのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-shinagawa-station.py  品川駅のコンコースのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-akihabara-station.py  秋葉原駅のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-kanda-station.py  神田駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
