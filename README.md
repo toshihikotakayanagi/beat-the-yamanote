@@ -132,7 +132,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ gotanda_station.glb   五反田駅（JR の東口・西口と東急池上線のホームと車両）の 3D モデル（tools/build-gotanda-station.py で作成）
 │     ├─ meguro_station.glb    目黒駅（掘割の線路の上のアトレ目黒 1 と JR東急目黒ビル）の 3D モデル（tools/build-meguro-station.py で作成）
 │     ├─ ebisu_station.glb     恵比寿駅（線路の上の JR恵比寿ビルと駅舎、アトレ恵比寿西館）の 3D モデル（tools/build-ebisu-station.py で作成）
-│     └─ harajuku_station.glb  原宿駅（線路の上をまたぐ駅舎とホーム、竹下口）の 3D モデル（tools/build-harajuku-station.py で作成）
+│     ├─ harajuku_station.glb  原宿駅（線路の上をまたぐ駅舎とホーム、竹下口）の 3D モデル（tools/build-harajuku-station.py で作成）
+│     └─ yoyogi_station.glb    代々木駅（山手線・総武線のホームと屋根、西口の駅舎）の 3D モデル（tools/build-yoyogi-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -154,6 +155,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-meguro-station.py  目黒駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-ebisu-station.py  恵比寿駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-harajuku-station.py  原宿駅のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-yoyogi-station.py  代々木駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/

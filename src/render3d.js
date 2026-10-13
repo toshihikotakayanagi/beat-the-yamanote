@@ -1029,7 +1029,7 @@ function addStations(group, map, textures) {
 //   いくつかあるときは、その配列）。中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
 // 作り方：tools/build-<駅>-station.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅・秋葉原駅・神田駅・有楽町駅・
-// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅・代々木駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1066,6 +1066,8 @@ const MODELS = [
     clear: [[30, 34, -4, 0], [-12.6, -8.6, -6.8, -2.8], [28, 32, 42, 46], [-229, -224, -6, -1]] },
   // 原宿駅：線路の上をまたぐ 2020 年の駅舎（線路の帯を地上 6.5m まであける）とホーム、竹下口・臨時口。線路をふさぐ駅の箱と竹下口・臨時口の箱は描かない
   { url: 'data/models/harajuku_station.glb', lat: 35.6702, lon: 139.7027, heading: 98.0, clear: [[28, 32, 21, 25], [96, 100, 36, 40], [160, 164, 0, 4]] },
+  // 代々木駅：山手線（高架）・総武線（地面）の高さに合わせたホームと屋根、西口の駅舎、東口の屋根。西口の駅舎の箱は描かない
+  { url: 'data/models/yoyogi_station.glb', lat: 35.68395, lon: 139.70208, heading: 75.7, clear: [-97, -93, 25, 29] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
