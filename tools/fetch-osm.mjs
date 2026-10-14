@@ -254,6 +254,14 @@ const FORCED_LINE_LEVELS = new Map([
   [834998687, false], // 京浜東北線（日暮里駅）
   [834998684, false], // 京浜東北線（日暮里〜上野）
   [211148511, false], // 京浜東北線（日暮里〜上野）
+  // 大塚駅：山手線の内回りは駅の西 約 160m から東の都電をまたぐ橋まで高い所だが、外回りは駅の西半分が地面で、
+  // 外回りと貨物線は東の 2 つの橋のあいだ（約 45m）も地面だった。4 本とも、駅の西 約 190m から東の橋まで高い所にそろえる
+  [366845924, { level: true, from: 38 }], // 山手線の外回り（点 38〜。池袋から続く長い線の駅の側）
+  [144131737, { level: true, upTo: 1 }], // 山手線の内回り（点 0〜1。駅の西 約 160〜190m）
+  [184543323, { level: true, upTo: 3 }], // 山手貨物線（点 0〜3）
+  [184543314, true], // 山手線の外回り（東の 2 つの橋のあいだ）
+  [184543317, true], // 山手貨物線（東の 2 つの橋のあいだ）
+  [184543320, true], // 山手貨物線（東の 2 つの橋のあいだ）
 ]);
 
 // 線の種類と幅 m。地下（トンネル・暗渠）は描かない。lengthM：その線の長さ
@@ -413,13 +421,25 @@ function convertAreas(osm, frame, bounds) {
       }
       const pts = flat(geom);
       const line = lineKind(tags, polylineLength(pts));
-      if (line && FORCED_LINE_LEVELS.has(el.id)) {
-        if (FORCED_LINE_LEVELS.get(el.id)) line.e = 1;
-        else delete line.e;
-      }
       if (line) {
-        const p = simplify(pts, SIMPLIFY_M);
-        if (p.length >= 4 && inBox(p)) lines.push({ ...line, p });
+        // 高さを変える線路は、変える点の範囲（from〜upTo）だけを分けて高さを変える
+        const pieces = [[line, pts]];
+        const forced = FORCED_LINE_LEVELS.get(el.id);
+        if (forced != null) {
+          const f = typeof forced === 'boolean' ? { level: forced } : forced;
+          const n = pts.length / 2, a = f.from ?? 0, b = f.upTo ?? n - 1;
+          const leveled = { ...line };
+          if (f.level) leveled.e = 1;
+          else delete leveled.e;
+          pieces.length = 0;
+          if (a > 0) pieces.push([line, pts.slice(0, (a + 1) * 2)]);
+          pieces.push([leveled, pts.slice(a * 2, (b + 1) * 2)]);
+          if (b < n - 1) pieces.push([line, pts.slice(b * 2)]);
+        }
+        for (const [l, lp] of pieces) {
+          const p = simplify(lp, SIMPLIFY_M);
+          if (p.length >= 4 && inBox(p)) lines.push({ ...l, p });
+        }
       }
     } else if (el.type === 'relation' && el.members && (tags.type === 'multipolygon' || !tags.type)) {
       const area = areaKind(tags);
