@@ -1693,15 +1693,85 @@ function placeTube(mesh, a, b, r) {
   mesh.scale.set(r, len, r);
 }
 
+// Blender で作った自転車と乗っている人（tools/build-bicycle.py）。読み込めるまでは下のプログラムで組み立てた形を出し、
+// 読み込めたら作った自転車の中身を入れ替える。材質の名前で色を決める（ゴーストは白くする）
+const BIKE_MODEL_URL = 'data/models/bicycle.glb';
+const BIKE_MODEL_NAMES = { frame: 'BK_Frame', rider: 'BK_Rider', wheel: 'BK_Wheel', crank: 'BK_Crank', thigh: 'BK_Thigh', shin: 'BK_Shin', shoe: 'BK_Shoe' };
+const BIKE_MAT_COLORS = { BK_Frame: 'frame', BK_Metal: 'metal', BK_Saddle: 'saddle', BK_Tire: 'tire', BK_Jersey: 'jersey', BK_Shorts: 'shorts', BK_Skin: 'skin', BK_Helmet: 'helmet' };
+let bikeModel = null;
+const bikes = []; // 作った自転車（モデルが読み込めたら中身を入れ替える）
+
+function loadBikeModel() {
+  new GLTFLoader()
+    .loadAsync(BIKE_MODEL_URL)
+    .then((gltf) => {
+      const parts = {};
+      for (const [key, name] of Object.entries(BIKE_MODEL_NAMES)) {
+        const ob = gltf.scene.getObjectByName(name);
+        if (!ob) throw new Error(`${name} がありません`);
+        ob.position.set(0, 0, 0);
+        parts[key] = ob;
+      }
+      bikeModel = parts;
+      for (const bike of bikes) fillBike(bike);
+    })
+    .catch((e) => console.warn(`自転車のモデルを読み込めませんでした: ${BIKE_MODEL_URL}`, e));
+}
+loadBikeModel();
+
 function makeBike(colors = {}, opacity = 1) {
-  const c = { frame: 0xffcc33, jersey: 0xffcc33, shorts: 0x22324f, helmet: 0xe8443a, skin: 0xf2d0a9, tire: 0x1b1d22, metal: 0x9aa0aa, saddle: 0x15171b, ...colors };
-  const transparent = opacity < 1;
-  const o = { transparent, opacity, depthWrite: !transparent };
-  const m = (color) => mat(color, o);
   const bike = new THREE.Group();
   bike.rotation.order = 'YXZ'; // 向き（y）のあとに傾き（z）
   const body = new THREE.Group(); // 傾く部分
   bike.add(body);
+  bike.userData = { colors, opacity, body, phase: 0, lean: 0, prevAngle: null };
+  fillBike(bike);
+  bikes.push(bike);
+  return bike;
+}
+
+// 自転車の中身（傾く部分 body の下）を、Blender のモデルか、プログラムで組み立てた形で作り直す
+function fillBike(bike) {
+  const s = bike.userData;
+  const c = { frame: 0xffcc33, jersey: 0xffcc33, shorts: 0x22324f, helmet: 0xe8443a, skin: 0xf2d0a9, tire: 0x1b1d22, metal: 0x9aa0aa, saddle: 0x15171b, ...s.colors };
+  const transparent = s.opacity < 1;
+  const o = { transparent, opacity: s.opacity, depthWrite: !transparent };
+  s.body.clear();
+  Object.assign(s, bikeModel ? fillBikeFromModel(s.body, c, o) : fillBikeProcedural(s.body, c, o));
+  if (!transparent) bike.traverse((m) => m.isMesh && (m.castShadow = true)); // ゴーストは影を落とさない
+}
+
+function fillBikeFromModel(body, c, o) {
+  const mats = new Map();
+  const convert = (src) => {
+    if (!mats.has(src)) {
+      const key = BIKE_MAT_COLORS[src.name];
+      mats.set(src, new THREE.MeshLambertMaterial({ color: key ? c[key] : src.color, flatShading: true, side: THREE.DoubleSide, ...o }));
+    }
+    return mats.get(src);
+  };
+  const part = (key) => {
+    const ob = bikeModel[key].clone();
+    ob.traverse((m) => m.isMesh && (m.material = convert(m.material)));
+    body.add(ob);
+    return ob;
+  };
+  const B = BIKE;
+  part('frame');
+  part('rider');
+  const wheels = [B.rearAxle, B.frontAxle].map((axle) => {
+    const w = part('wheel');
+    w.position.set(...axle);
+    return w;
+  });
+  const crank = part('crank');
+  crank.position.set(...B.bb);
+  const legs = [-1, 1].map((side) => ({ side, thigh: part('thigh'), shin: part('shin'), shoe: part('shoe') }));
+  return { wheels, crank, legs };
+}
+
+function fillBikeProcedural(body, c, o) {
+  const m = (color) => mat(color, o);
   const tube = (a, b, r, material) => {
     const mesh = new THREE.Mesh(UNIT_TUBE, material);
     placeTube(mesh, a, b, r);
@@ -1782,8 +1852,7 @@ function makeBike(colors = {}, opacity = 1) {
     thigh: tube([0, 0, 0], [0, -1, 0], 0.06, shorts),
     shin: tube([0, 0, 0], [0, -1, 0], 0.045, skin),
   }));
-  bike.userData = { body, wheels, crank, legs, phase: 0, lean: 0, prevAngle: null };
-  return bike;
+  return { wheels, crank, legs };
 }
 
 // 腰 hip からペダル foot まで、太もも・すねの 2 本で届くひざの位置（横から見た y-z の面で、ひざは前に出る）
@@ -1823,6 +1892,7 @@ function animateBike(bike, pose, speed, dt, h = 0) {
     knee[0] = leg.side * 0.12;
     placeTube(leg.thigh, hip, knee, 0.06);
     placeTube(leg.shin, knee, foot, 0.045);
+    if (leg.shoe) leg.shoe.position.set(...foot);
   }
 }
 
@@ -2174,7 +2244,6 @@ export function createRenderer3D(canvas) {
   const player = makeBike();
   // ゴースト：同じ形の半透明の白
   const ghost = makeBike({ frame: 0xe8ecf4, jersey: 0xe8ecf4, shorts: 0xc9ced8, helmet: 0xffffff, skin: 0xe8ecf4, tire: 0x9aa0aa, metal: 0xd0d4dc, saddle: 0xb0b5bf }, 0.45);
-  player.traverse((m) => m.isMesh && (m.castShadow = true));
   scene.add(player, ghost);
   let ghostPrev = null; // ゴーストの速さを求めるための前回の位置
   let bikeH = 0, ghostH = 0; // 自転車・ゴーストの高さ m（橋の上で上がる）
