@@ -1914,8 +1914,66 @@ function trainCarGeometry(kind, pantograph) {
   return { body: body.build(), glass: glass.build(), lights: lights.build() };
 }
 
+// Blender で作った電車（tools/build-yamanote-train.py で作り、data/models/yamanote_train.glb に書き出す）。
+// 先頭車・中間車・パンタグラフ付きの中間車・最後尾車の 4 種類で、寸法と向きは上の組み立てと同じ。
+// 読み込めるまで（と、読み込めなかったとき）は、上のプログラムで組み立てた電車を使う
+const TRAIN_MODEL_URL = 'data/models/yamanote_train.glb';
+const TRAIN_MODEL_NAMES = { lead: 'TR_Lead', middle: 'TR_Middle', panto: 'TR_Panto', tail: 'TR_Tail' };
+let trainModel = null; // 種類 → 車両のひな形
+function loadTrainModel() {
+  const mats = new Map();
+  const convert = (src) => {
+    if (!mats.has(src)) {
+      let m;
+      if (src.name.startsWith('Light')) {
+        m = new THREE.MeshBasicMaterial({ color: src.color, side: THREE.DoubleSide }); // 前照灯・尾灯・行き先表示は光って見える
+      } else {
+        m = new THREE.MeshLambertMaterial({ color: src.color, map: src.map, flatShading: true, side: THREE.DoubleSide });
+        if (src.emissiveMap) {
+          // 側面の窓：夜に灯る（時間帯で明るさを変える。上の組み立ての窓と同じ色と強さ）
+          m.emissiveMap = src.emissiveMap;
+          m.emissive.set(0xfff1d0);
+        }
+      }
+      mats.set(src, m);
+    }
+    return mats.get(src);
+  };
+  new GLTFLoader()
+    .loadAsync(TRAIN_MODEL_URL)
+    .then((gltf) => {
+      const cars = {};
+      for (const [kind, name] of Object.entries(TRAIN_MODEL_NAMES)) {
+        const ob = gltf.scene.getObjectByName(name);
+        if (!ob) throw new Error(`${name} がありません`);
+        ob.position.set(0, 0, 0);
+        ob.traverse((m) => m.isMesh && (m.material = convert(m.material)));
+        cars[kind] = ob;
+      }
+      trainModel = cars;
+    })
+    .catch((e) => console.warn(`電車のモデルを読み込めませんでした: ${TRAIN_MODEL_URL}`, e));
+}
+loadTrainModel();
+
 const trainGeometries = new Map(); // 種類 → 形（使い回す）
 function makeTrainCar(kind, pantograph) {
+  if (trainModel) {
+    // Blender のモデル：形は共有し、材質は車両ごとに分ける（トンネルの中の車両だけ薄くするため）
+    const car = trainModel[kind === 'middle' && pantograph ? 'panto' : kind].clone();
+    car.traverse((m) => {
+      if (!m.isMesh) return;
+      m.material = m.material.clone();
+      m.material.transparent = true;
+      m.castShadow = true;
+      if (m.material.emissiveMap) {
+        m.userData.trainGlass = true; // 時間帯で灯りの強さを変える
+        m.material.emissiveIntensity = windowGlow * 0.7;
+      }
+    });
+    car.userData.fromModel = true;
+    return car;
+  }
   const key = `${kind}:${pantograph}`;
   if (!trainGeometries.has(key)) trainGeometries.set(key, trainCarGeometry(kind, pantograph));
   const g = trainGeometries.get(key);
@@ -2471,8 +2529,8 @@ export function createRenderer3D(canvas) {
     trainGroup.visible = Boolean(show);
     if (!show) return;
     const n = carCount(route);
-    // 両数が変わったら作り直す（先頭・最後尾・パンタグラフの位置が変わるため）
-    if (train.length !== n) {
+    // 両数が変わったら作り直す（先頭・最後尾・パンタグラフの位置が変わるため）。Blender の電車を読み込み終えたときも
+    if (train.length !== n || (trainModel && !train[0]?.userData.fromModel)) {
       for (const car of train) {
         trainGroup.remove(car);
         car.traverse((m) => m.material?.dispose());
