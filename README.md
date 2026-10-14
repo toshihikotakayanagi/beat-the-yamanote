@@ -146,7 +146,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ uguisudani_station.glb 鶯谷駅（小さな北口駅舎、南口、2 つのホーム）の 3D モデル（tools/build-uguisudani-station.py で作成）
 │     ├─ okachimachi_station.glb 御徒町駅（高架の上のホームと、高架下の改札口と店）の 3D モデル（tools/build-okachimachi-station.py で作成）
 │     ├─ yamanote_train.glb     ライバルの山手線の電車（E235 系の先頭車・中間車・パンタグラフ付き中間車・最後尾の車両）の 3D モデル（tools/build-yamanote-train.py で作成）
-│     └─ bicycle.glb            プレイヤーの自転車と乗っている人（フレーム・車輪・クランク・胴体・脚・靴を別々に動かす）の 3D モデル（tools/build-bicycle.py で作成）
+│     ├─ bicycle.glb            プレイヤーの自転車と乗っている人（フレーム・車輪・クランク・胴体・脚・靴を別々に動かす）の 3D モデル（tools/build-bicycle.py で作成）
+│     └─ cars.glb               道路を走る車 4 種類（セダン・軽自動車・ミニバン・タクシー）の 3D モデル（tools/build-cars.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -182,6 +183,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-okachimachi-station.py  御徒町駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-yamanote-train.py  ライバルの山手線の電車（E235 系）のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-bicycle.py  プレイヤーの自転車と乗っている人のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-cars.py    道路を走る車 4 種類のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/

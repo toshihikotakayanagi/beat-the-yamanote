@@ -2146,12 +2146,63 @@ function addWheel(b, x, y, z, r, w, color, sides = 10) {
   }
 }
 
+// Blender で作った車 4 種類（tools/build-cars.py）。読み込めたら、車種と色ごとの形をモデルから作り直す
+// （読み込めるまでは下のプログラムで組み立てた形）。1 台を 2 つの立体（車体・ライト）にまとめ、
+// 材質の色は頂点の色にする（車が多いので、部品ごとに分けると描く回数が増える）。車体の色の材質は「CV_Paint」
+const CAR_MODEL_URL = 'data/models/cars.glb';
+const CAR_MODEL_NAMES = { sedan: 'CV_Sedan', kei: 'CV_Kei', minivan: 'CV_Minivan', taxi: 'CV_Taxi' };
+let carModel = null; // 車種 → [{ pos（3 頂点ずつの座標）, color, paint, light }]
+let carModelGen = 0; // 形を作り直した回数（作り直す前の形の車を入れ替える）
+
+function loadCarModel() {
+  new GLTFLoader()
+    .loadAsync(CAR_MODEL_URL)
+    .then((gltf) => {
+      gltf.scene.updateMatrixWorld(true);
+      const parts = {};
+      for (const [type, name] of Object.entries(CAR_MODEL_NAMES)) {
+        const ob = gltf.scene.getObjectByName(name);
+        if (!ob) throw new Error(`${name} がありません`);
+        const list = [];
+        ob.traverse((m) => {
+          if (!m.isMesh) return;
+          let geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().copy(ob.matrixWorld).invert().multiply(m.matrixWorld));
+          if (geo.index) geo = geo.toNonIndexed();
+          const { name: matName, color } = m.material;
+          list.push({ pos: geo.attributes.position.array, color: [color.r, color.g, color.b], paint: matName === 'CV_Paint', light: matName.startsWith('Light') });
+        });
+        parts[type] = list;
+      }
+      carModel = parts;
+      carGeometries.clear();
+      carModelGen++;
+    })
+    .catch((e) => console.warn(`車のモデルを読み込めませんでした: ${CAR_MODEL_URL}`, e));
+}
+loadCarModel();
+
 const carGeometries = new Map(); // 車種と色 → { body, lights }
 function carGeometry(look) {
   const key = `${look.type}:${look.color}`;
   let g = carGeometries.get(key);
   if (g) return g;
   const body = new GeometryBuilder(true), lights = new GeometryBuilder(true);
+  if (carModel) {
+    const paint = rgb(look.color), va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
+    for (const part of carModel[look.type]) {
+      const b = part.light ? lights : body, color = part.paint ? paint : part.color, P = part.pos;
+      for (let i = 0; i < P.length; i += 9) {
+        va.fromArray(P, i);
+        vb.fromArray(P, i + 3);
+        vc.fromArray(P, i + 6);
+        n.subVectors(vb, va).cross(e.subVectors(vc, va)).normalize(); // 面の向き（頂点の回る向きから）
+        b.tri(va.toArray(), vb.toArray(), vc.toArray(), n.toArray(), color);
+      }
+    }
+    g = { body: body.build(), lights: lights.build(), gen: carModelGen };
+    carGeometries.set(key, g);
+    return g;
+  }
   const hl = look.L / 2, hw = look.W / 2;
   const paint = rgb(look.color), glass = rgb('#1c222b'), dark = rgb('#25282e'), tire = rgb('#141518');
   const [y0, y1] = look.body, [c0, c1] = look.cabin;
@@ -2184,7 +2235,7 @@ function carGeometry(look) {
     addBox(lights, sx * (hw - 0.36) - 0.16, sx * (hw - 0.36) + 0.16, lightY + 0.04, lightY + 0.16, hl - 0.02, hl + 0.04, rgb('#ff3b3b'));
   }
   if (look.sign) addBox(lights, -0.26, 0.26, c1, c1 + 0.2, (ft + bt) / 2 - 0.12, (ft + bt) / 2 + 0.12, rgb('#ffd34d'));
-  g = { body: body.build(), lights: lights.build() };
+  g = { body: body.build(), lights: lights.build(), gen: carModelGen };
   carGeometries.set(key, g);
   return g;
 }
@@ -2197,6 +2248,7 @@ function makeCar(a) {
   const body = new THREE.Mesh(g.body, CAR_BODY_MAT);
   body.castShadow = body.receiveShadow = true;
   car.add(body, new THREE.Mesh(g.lights, CAR_LIGHT_MAT));
+  car.userData.gen = g.gen;
   return car;
 }
 
@@ -2524,6 +2576,11 @@ export function createRenderer3D(canvas) {
         continue;
       }
       let m = agentMeshes.get(a);
+      if (m && m.userData.gen !== carModelGen) {
+        // 車のモデルが読み込めたら、それまでの形の車を入れ替える
+        agentGroup.remove(m);
+        m = null;
+      }
       if (!m) {
         m = makeCar(a);
         agentMeshes.set(a, m);
