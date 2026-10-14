@@ -13,9 +13,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+// Overpass のサーバー。混雑で失敗したら次のサーバーで取り直す（どれも overpass-api.de の同じデータ）
+const OVERPASS_URLS = ['https://overpass-api.de/api/interpreter', 'https://lz4.overpass-api.de/api/interpreter', 'https://z.overpass-api.de/api/interpreter'];
 const FETCH_INTERVAL_MS = 10000; // 続けて取得するときの間隔（サーバーへの配慮）
-const RETRY_LIMIT = 6; // 混雑で失敗したときに試す回数
+const FETCH_TIMEOUT_MS = 180000; // 返事がないときにあきらめるまで
+const RETRY_LIMIT = 12; // 混雑で失敗したときに試す回数
 const RETRY_WAIT_MS = 60000;
 
 // 駅の代表点（駅舎の中心付近）と区間の一覧は data/stations.json で管理する
@@ -137,21 +139,29 @@ async function loadOsm(id, kind, bbox, refresh) {
     const wait = lastFetchAt + FETCH_INTERVAL_MS - Date.now();
     if (wait > 0) await sleep(wait);
     lastFetchAt = Date.now();
-    console.log(`Overpass から${KIND_NAMES[kind]}を取得中 (bbox ${bbox}) ...`);
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'yamanote-race-game/0.1 (hobby project)',
-      },
-      body: new URLSearchParams({ data: query }),
-    });
-    // 混雑（429：回数制限、504：タイムアウト）のときは待って取り直す
-    if ((res.status === 429 || res.status === 504) && attempt < RETRY_LIMIT) {
+    const url = OVERPASS_URLS[(attempt - 1) % OVERPASS_URLS.length];
+    console.log(`Overpass から${KIND_NAMES[kind]}を取得中 (${new URL(url).host}, bbox ${bbox}) ...`);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'yamanote-race-game/0.1 (hobby project)',
+        },
+        body: new URLSearchParams({ data: query }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (e) {
+      res = { ok: false, status: `つながらない: ${e.name}`, busy: true };
+    }
+    // 混雑（429：回数制限、504：タイムアウト）やつながらないときは、待って次のサーバーで取り直す
+    if ((res.busy || res.status === 429 || res.status === 504) && attempt < RETRY_LIMIT) {
       console.log(`  混雑しています（${res.status}）。${RETRY_WAIT_MS / 1000} 秒後に取り直します（${attempt}/${RETRY_LIMIT}）`);
       await sleep(RETRY_WAIT_MS);
       continue;
     }
+    if (res.busy) throw new Error(`Overpass エラー: ${res.status}`);
     if (!res.ok) throw new Error(`Overpass エラー: ${res.status} ${(await res.text()).slice(0, 300)}`);
     osm = await res.json();
   }
