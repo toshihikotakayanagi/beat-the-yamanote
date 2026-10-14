@@ -138,7 +138,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ takadanobaba_station.glb 高田馬場駅（高架の上の JR・西武のホームと、高架の下の改札口）の 3D モデル（tools/build-takadanobaba-station.py で作成）
 │     ├─ mejiro_station.glb    目白駅（線路の上の駅舎とホテルメッツ目白、ホーム）の 3D モデル（tools/build-mejiro-station.py で作成）
 │     ├─ otsuka_station.glb    大塚駅（高架の上のホーム、アトレヴィ大塚、都電荒川線の停留場と車両）の 3D モデル（tools/build-otsuka-station.py で作成）
-│     └─ sugamo_station.glb    巣鴨駅（線路の上の駅舎とアトレヴィ巣鴨、ホーム）の 3D モデル（tools/build-sugamo-station.py で作成）
+│     ├─ sugamo_station.glb    巣鴨駅（線路の上の駅舎とアトレヴィ巣鴨、ホーム）の 3D モデル（tools/build-sugamo-station.py で作成）
+│     └─ komagome_station.glb  駒込駅（北口の駅舎、ホーム、線路わきのつつじ）の 3D モデル（tools/build-komagome-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -166,6 +167,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-mejiro-station.py  目白駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-otsuka-station.py  大塚駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-sugamo-station.py  巣鴨駅のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-komagome-station.py  駒込駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
