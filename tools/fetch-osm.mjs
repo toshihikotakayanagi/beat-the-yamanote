@@ -572,6 +572,7 @@ function convert(id, osm, frame, noBike = []) {
   const elevated = new WeakSet();
   const bridges = new Set();
   const lowRoads = new Set();
+  const forcedBridges = new Map(); // FORCED_BRIDGES で橋にした道 → 高さ m
 
   for (const el of osm.elements) {
     const tags = el.tags ?? {};
@@ -588,11 +589,26 @@ function convert(id, osm, frame, noBike = []) {
         if (pts.length >= 4 && inNoBike(pts)) {
           noBikeDropped++;
         } else if (pts.length >= 4) {
-          const road = { t: tags.highway, w: ROAD_WIDTH[tags.highway], p: pts };
-          const ow = oneway(tags);
-          if (ow) road.o = ow;
-          if (tags.name) road.n = tags.name;
-          roads.push(road);
+          const make = (p) => {
+            const road = { t: tags.highway, w: ROAD_WIDTH[tags.highway], p };
+            const ow = oneway(tags);
+            if (ow) road.o = ow;
+            if (tags.name) road.n = tags.name;
+            roads.push(road);
+            return road;
+          };
+          const forced = FORCED_BRIDGES.get(el.id);
+          if (forced) {
+            // OSM では橋でないが、ゲームでは橋にする道。upTo の点までを橋にし、残りは普通の道として分ける
+            const cut = forced.upTo != null ? (forced.upTo + 1) * 2 : pts.length;
+            const road = make(pts.slice(0, cut));
+            if (cut < pts.length) make(pts.slice(cut - 2));
+            elevated.add(road);
+            bridges.add(road);
+            forcedBridges.set(road, forced.height);
+            continue;
+          }
+          const road = make(pts);
           if ((tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.covered === 'yes') elevated.add(road);
           // 橋・高架（3D版で持ち上げる。高さは processSection で、下に何を越えるかで決める）
           if ((tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0) bridges.add(road);
@@ -709,8 +725,25 @@ function convert(id, osm, frame, noBike = []) {
     goalOffset: goal.d,
     route: legalRouteLength(roads, start, goal),
   };
-  return { data, info, bridges, lowRoads };
+  return { data, info, bridges, lowRoads, forcedBridges };
 }
+
+// OSM では橋になっていないが、ゲームでは橋にする道（OSM の way の番号 → 橋の高さ m と、橋にする点の範囲）。
+// upTo があれば、その番号の点までを橋にして、そこから先は普通の道として分ける（坂は 3D 版が付ける）。
+// 西日暮里駅の道灌山通り：実物は掘割の山手線の上を渡り、すぐ北の宇都宮線・常磐線などの高架の下をくぐるが、
+// ゲームは山手線も地面の高さなので、地面の線路と高架の線路をまとめてまたぐ高い橋にする
+// （高架の電車の屋根 ≒ 10m の上を、橋げたの厚さぶんあけて通る）。両側の歩道と、橋の上の横断歩道・脇道へのつなぎも
+// 別の道として描かれているので、同じ高さにする（坂の途中の高さだと線路の上でたわみ、高架の電車にぶつかる）
+const FORCED_BRIDGES = new Map([
+  [1217374166, { height: 12 }],
+  [1217374168, { height: 12 }],
+  [1217374167, { height: 12, upTo: 1 }], // 点 0〜1 が線路の上。点 1（諏訪台通りとの交差点）から南は普通の道
+  [535587406, { height: 12 }], // 西側の歩道（南の部分）
+  [333944228, { height: 12, upTo: 1 }], // 西側の歩道（北の部分）。点 0〜1 が高架の線路の上
+  [333944230, { height: 12 }], // 東側の歩道
+  [1082255705, { height: 12 }], // 橋の上の横断歩道
+  [1292591748, { height: 12 }], // 橋から西の脇道へのつなぎ
+]);
 
 // 3D版で持ち上げる道路（橋・高架）の高さ m を e に入れる。地面の高さを走る線路や道路の上を越えるなら高い橋、
 // それ以外（川、切り通しの線路、地下の道、高架の線路の下をくぐる所）は低い橋とする。
@@ -762,10 +795,11 @@ async function processSection(id, refresh) {
   const osm = await loadOsm(id, 'roads', frame.bbox, refresh);
   const noBikeOsm = await loadOsm('all', 'nobike', '', refresh);
   const noBike = noBikeOsm.elements.filter((e) => e.geometry).map((e) => e.geometry.flatMap((g) => frame.toXY(g.lat, g.lon)));
-  const { data, info, bridges, lowRoads } = convert(id, osm, frame, noBike);
+  const { data, info, bridges, lowRoads, forcedBridges } = convert(id, osm, frame, noBike);
   data.landmarks = selectLandmarks(await loadOsm(id, 'landmarks', frame.bbox, refresh), frame);
   Object.assign(data, convertAreas(await loadOsm(id, 'areas', frame.bbox, refresh), frame, data.bounds));
   setBridgeHeights(data.roads, bridges, lowRoads, data.lines);
+  for (const [road, height] of forcedBridges) road.e = height;
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });

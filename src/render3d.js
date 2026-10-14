@@ -422,6 +422,22 @@ function pillarSpots(p, spacing = PILLAR_SPACING) {
   return spots;
 }
 
+// 地点 (x, z) が線路（と高架の橋げた）の上か。線路をまたぐ道路の橋の柱を、線路の上に立てないために使う
+const TRACK_CLEAR = 3; // 線路の中心からこの距離 m までは柱を立てない（電車の幅・高架の橋げたの幅の半分より少し広く）
+function onTrack(map, x, z) {
+  for (const l of map.lines) {
+    if (l.k === 'river' || l.u) continue;
+    const p = l.p;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = p[i], az = p[i + 1], dx = p[i + 2] - ax, dz = p[i + 3] - az;
+      const len2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / len2));
+      if (Math.hypot(x - ax - t * dx, z - az - t * dz) < TRACK_CLEAR) return true;
+    }
+  }
+  return false;
+}
+
 // 多角形（[x0, y0, ...]）を高さ y の平面として塗る
 function addPolygon(b, p, y) {
   const ring = openRing(p);
@@ -1518,7 +1534,7 @@ function* buildWorldSteps(map, textures) {
     addRoadDeckSides(roadDeck, r.p, r.w, hs);
     for (const [x, z, v, t] of pillarSpots(r.p, ROAD_PILLAR_SPACING)) {
       const h = roadHeightAt(roadHeights, r, v, t);
-      if (h > 2.5) roadPillars.push([x, z, h - ROAD_DECK_T]);
+      if (h > 2.5 && !onTrack(map, x, z)) roadPillars.push([x, z, h - ROAD_DECK_T]);
     }
   }
   const roadDeckMesh = new THREE.Mesh(roadDeck.build(), mat(DECK_COLOR));
