@@ -143,7 +143,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ tabata_station.glb    田端駅（線路の上の北口の駅舎、南口、2 つのホーム）の 3D モデル（tools/build-tabata-station.py で作成）
 │     ├─ nishinippori_station.glb 西日暮里駅（線路の上の駅舎と 2 つのホーム）の 3D モデル（tools/build-nishinippori-station.py で作成）
 │     ├─ nippori_station.glb   日暮里駅（JR の橋上駅舎とホーム、京成線のホーム）の 3D モデル（tools/build-nippori-station.py で作成）
-│     └─ uguisudani_station.glb 鶯谷駅（小さな北口駅舎、南口、2 つのホーム）の 3D モデル（tools/build-uguisudani-station.py で作成）
+│     ├─ uguisudani_station.glb 鶯谷駅（小さな北口駅舎、南口、2 つのホーム）の 3D モデル（tools/build-uguisudani-station.py で作成）
+│     └─ okachimachi_station.glb 御徒町駅（高架の上のホームと、高架下の改札口と店）の 3D モデル（tools/build-okachimachi-station.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -176,6 +177,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-nishinippori-station.py  西日暮里駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-nippori-station.py  日暮里駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-uguisudani-station.py  鶯谷駅のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-okachimachi-station.py  御徒町駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
