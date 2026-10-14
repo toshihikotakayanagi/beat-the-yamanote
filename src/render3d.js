@@ -1029,7 +1029,7 @@ function addStations(group, map, textures) {
 //   いくつかあるときは、その配列）。中心がこの範囲に入る建物を描かない（走るときの「建物」の判定には残す）
 // 東京駅丸の内駅舎は地図データ（OSM の multipolygon）に入っていないので、箱の建物と重ならない。
 // 作り方：tools/build-<駅>-station.py（東京駅・高輪ゲートウェイ駅・上野駅・新宿駅・渋谷駅・池袋駅・品川駅・秋葉原駅・神田駅・有楽町駅・
-// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅・代々木駅・新大久保駅・高田馬場駅・目白駅・大塚駅）で .blend を作り、tools/export-glb.py で書き出す。
+// 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅・代々木駅・新大久保駅・高田馬場駅・目白駅・大塚駅・巣鴨駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
@@ -1081,6 +1081,8 @@ const MODELS = [
   // 大塚駅：高架の上の島式ホームと屋根、アトレヴィ大塚、北口、高架の下をくぐる都電荒川線の大塚駅前停留場と車両。
   // アトレヴィの箱は描かない
   { url: 'data/models/otsuka_station.glb', lat: 35.73169, lon: 139.72859, heading: 197.6, clear: [-10.3, -6.3, -36.2, -32.2] },
+  // 巣鴨駅：線路の上に建つ駅舎とアトレヴィ巣鴨（線路の帯を地上 6m まであける）、島式ホームと屋根。線路をふさいでいた駅の箱は描かない
+  { url: 'data/models/sugamo_station.glb', lat: 35.73341, lon: 139.73943, heading: 153.1, clear: [-2.3, 1.7, 5.6, 9.6] },
 ];
 const M_PER_DEG_LAT = 110540; // tools/fetch-osm.mjs と同じ座標の換算
 const MODEL_GLOW_MAX = 1.5; // 光る材質の明るさの上限（Blender の放射の強さは 30 などもある）
