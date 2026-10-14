@@ -424,7 +424,7 @@ function pillarSpots(p, spacing = PILLAR_SPACING) {
 
 // 地点 (x, z) が線路（と高架の橋げた）の上か。線路をまたぐ道路の橋の柱を、線路の上に立てないために使う
 const TRACK_CLEAR = 3; // 線路の中心からこの距離 m までは柱を立てない（電車の幅・高架の橋げたの幅の半分より少し広く）
-function onTrack(map, x, z) {
+function onTrack(map, x, z, clear = TRACK_CLEAR) {
   for (const l of map.lines) {
     if (l.k === 'river' || l.u) continue;
     const p = l.p;
@@ -432,7 +432,7 @@ function onTrack(map, x, z) {
       const ax = p[i], az = p[i + 1], dx = p[i + 2] - ax, dz = p[i + 3] - az;
       const len2 = dx * dx + dz * dz || 1;
       const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / len2));
-      if (Math.hypot(x - ax - t * dx, z - az - t * dz) < TRACK_CLEAR) return true;
+      if (Math.hypot(x - ax - t * dx, z - az - t * dz) < clear) return true;
     }
   }
   return false;
@@ -794,6 +794,53 @@ function addStreetLights(group, map, heights) {
   });
   for (const part of [pole, arm, head]) part.castShadow = true;
   group.add(pole, arm, head, lens, pool);
+}
+
+// ---- 木 ----
+// Blender で作った木 4 種類（tools/build-trees.py）を、地図データの木の位置（map.trees：[x, y, 種類, ...]。OpenStreetMap の
+// 街路樹・公園の木）に、種類ごとに 1 つの InstancedMesh で立てる。1 本ずつ向き・大きさ・色の明るさを位置から決めて変える。
+// 建物・車道の中、橋や高架の道の下、線路の近く（枝が電車にかからないように）の木は立てない
+const TREE_MODEL_URL = 'data/models/trees.glb';
+const TREE_MODEL_NAMES = { 0: 'TREE_Round', 1: 'TREE_Ginkgo', 2: 'TREE_Sakura', 3: 'TREE_Conifer' };
+const TREE_TRACK_CLEAR = 5; // 線路の中心からこの距離 m までは木を立てない
+const treeModel = { geos: null, done: false };
+loadModelParts(TREE_MODEL_URL, TREE_MODEL_NAMES)
+  .then((parts) => (treeModel.geos = Object.keys(TREE_MODEL_NAMES).map((k) => addModelParts(new GeometryBuilder(true), parts[k]).build())))
+  .catch((e) => console.warn(`木のモデルを読み込めませんでした: ${TREE_MODEL_URL}`, e))
+  .finally(() => (treeModel.done = true));
+const TREE_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+
+function addTrees(group, map, heights) {
+  const t = map.trees;
+  if (!t?.length || !treeModel.geos) return;
+  const byKind = treeModel.geos.map(() => []);
+  for (let i = 0; i < t.length; i += 3) {
+    const x = t[i], z = t[i + 1];
+    const s = surfaceAt(map, x, z);
+    if (s.kind === 'building' || s.kind === 'road') continue;
+    if ((s.segs ?? []).some((sg) => segHeight(heights, sg, x, z) > 0.5)) continue;
+    if (onTrack(map, x, z, TREE_TRACK_CLEAR)) continue;
+    byKind[t[i + 2]]?.push([x, z]);
+  }
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scale = new THREE.Vector3(), color = new THREE.Color();
+  const Y_UP = new THREE.Vector3(0, 1, 0);
+  // 位置から決まる 0〜1 の値（同じ木は毎回同じ見た目）
+  const hash = (x, z, k) => {
+    const v = Math.sin(x * 12.9898 + z * 78.233 + k * 37.719) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  byKind.forEach((spots, k) => {
+    if (!spots.length) return;
+    const mesh = new THREE.InstancedMesh(treeModel.geos[k], TREE_MAT, spots.length);
+    spots.forEach(([x, z], i) => {
+      const s = 0.8 + 0.4 * hash(x, z, 1);
+      q.setFromAxisAngle(Y_UP, hash(x, z, 2) * Math.PI * 2);
+      mesh.setMatrixAt(i, m.compose(pos.set(x, 0, z), q, scale.set(s, s * (0.9 + 0.2 * hash(x, z, 3)), s)));
+      mesh.setColorAt(i, color.setScalar(0.85 + 0.25 * hash(x, z, 4)));
+    });
+    mesh.castShadow = mesh.receiveShadow = true;
+    group.add(mesh);
+  });
 }
 
 // 道路 r の線分のうち、地点 (x, z) にいちばん近いもの（segHeight に渡す形）
@@ -1623,6 +1670,8 @@ function* buildWorldSteps(map, textures) {
   group.userData = { tiles, heights, tileOf, roadHeights };
 
   addStreetLights(group, map, roadHeights);
+  while (!treeModel.done) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
+  addTrees(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -2146,40 +2195,61 @@ function addWheel(b, x, y, z, r, w, color, sides = 10) {
   }
 }
 
+// ---- Blender で作った小物のモデル（車・信号機） ----
+// glb の物 names（キー → 物の名前）を読み、物ごとに部品（材質ごとの三角形の座標と材質の色）の並びにする。座標は物の原点から
+function loadModelParts(url, names) {
+  return new GLTFLoader().loadAsync(url).then((gltf) => {
+    gltf.scene.updateMatrixWorld(true);
+    const parts = {};
+    for (const [key, name] of Object.entries(names)) {
+      const ob = gltf.scene.getObjectByName(name);
+      if (!ob) throw new Error(`${name} がありません`);
+      const inv = new THREE.Matrix4().copy(ob.matrixWorld).invert();
+      const list = [];
+      ob.traverse((m) => {
+        if (!m.isMesh) return;
+        let geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld));
+        if (geo.index) geo = geo.toNonIndexed();
+        const { name: material, color } = m.material;
+        list.push({ pos: geo.attributes.position.array, color: [color.r, color.g, color.b], material });
+      });
+      parts[key] = list;
+    }
+    return parts;
+  });
+}
+
+// 部品の並び list の三角形を、頂点の色付きで b に足す。colorOf(部品) が部品の色（null ならその部品は足さない）
+function addModelParts(b, list, colorOf = (part) => part.color) {
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
+  for (const part of list) {
+    const color = colorOf(part), P = part.pos;
+    if (!color) continue;
+    for (let i = 0; i < P.length; i += 9) {
+      va.fromArray(P, i);
+      vb.fromArray(P, i + 3);
+      vc.fromArray(P, i + 6);
+      n.subVectors(vb, va).cross(e.subVectors(vc, va)).normalize(); // 面の向き（頂点の回る向きから）
+      b.tri(va.toArray(), vb.toArray(), vc.toArray(), n.toArray(), color);
+    }
+  }
+  return b;
+}
+
 // Blender で作った車 4 種類（tools/build-cars.py）。読み込めたら、車種と色ごとの形をモデルから作り直す
 // （読み込めるまでは下のプログラムで組み立てた形）。1 台を 2 つの立体（車体・ライト）にまとめ、
 // 材質の色は頂点の色にする（車が多いので、部品ごとに分けると描く回数が増える）。車体の色の材質は「CV_Paint」
 const CAR_MODEL_URL = 'data/models/cars.glb';
 const CAR_MODEL_NAMES = { sedan: 'CV_Sedan', kei: 'CV_Kei', minivan: 'CV_Minivan', taxi: 'CV_Taxi' };
-let carModel = null; // 車種 → [{ pos（3 頂点ずつの座標）, color, paint, light }]
+let carModel = null; // 車種 → 部品の並び
 let carModelGen = 0; // 形を作り直した回数（作り直す前の形の車を入れ替える）
-
-function loadCarModel() {
-  new GLTFLoader()
-    .loadAsync(CAR_MODEL_URL)
-    .then((gltf) => {
-      gltf.scene.updateMatrixWorld(true);
-      const parts = {};
-      for (const [type, name] of Object.entries(CAR_MODEL_NAMES)) {
-        const ob = gltf.scene.getObjectByName(name);
-        if (!ob) throw new Error(`${name} がありません`);
-        const list = [];
-        ob.traverse((m) => {
-          if (!m.isMesh) return;
-          let geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().copy(ob.matrixWorld).invert().multiply(m.matrixWorld));
-          if (geo.index) geo = geo.toNonIndexed();
-          const { name: matName, color } = m.material;
-          list.push({ pos: geo.attributes.position.array, color: [color.r, color.g, color.b], paint: matName === 'CV_Paint', light: matName.startsWith('Light') });
-        });
-        parts[type] = list;
-      }
-      carModel = parts;
-      carGeometries.clear();
-      carModelGen++;
-    })
-    .catch((e) => console.warn(`車のモデルを読み込めませんでした: ${CAR_MODEL_URL}`, e));
-}
-loadCarModel();
+loadModelParts(CAR_MODEL_URL, CAR_MODEL_NAMES)
+  .then((parts) => {
+    carModel = parts;
+    carGeometries.clear();
+    carModelGen++;
+  })
+  .catch((e) => console.warn(`車のモデルを読み込めませんでした: ${CAR_MODEL_URL}`, e));
 
 const carGeometries = new Map(); // 車種と色 → { body, lights }
 function carGeometry(look) {
@@ -2188,17 +2258,10 @@ function carGeometry(look) {
   if (g) return g;
   const body = new GeometryBuilder(true), lights = new GeometryBuilder(true);
   if (carModel) {
-    const paint = rgb(look.color), va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
-    for (const part of carModel[look.type]) {
-      const b = part.light ? lights : body, color = part.paint ? paint : part.color, P = part.pos;
-      for (let i = 0; i < P.length; i += 9) {
-        va.fromArray(P, i);
-        vb.fromArray(P, i + 3);
-        vc.fromArray(P, i + 6);
-        n.subVectors(vb, va).cross(e.subVectors(vc, va)).normalize(); // 面の向き（頂点の回る向きから）
-        b.tri(va.toArray(), vb.toArray(), vc.toArray(), n.toArray(), color);
-      }
-    }
+    const paint = rgb(look.color), list = carModel[look.type];
+    const isLight = (part) => part.material.startsWith('Light');
+    addModelParts(body, list, (part) => (isLight(part) ? null : part.material === 'CV_Paint' ? paint : part.color));
+    addModelParts(lights, list, (part) => (isLight(part) ? part.color : null));
     g = { body: body.build(), lights: lights.build(), gen: carModelGen };
     carGeometries.set(key, g);
     return g;
@@ -2252,6 +2315,42 @@ function makeCar(a) {
   return car;
 }
 
+// Blender で作った信号機（tools/build-signal.py）。部品ごとの形（頂点の色付き）にして、syncSignals で部品ごとの InstancedMesh にする
+// （読み込めるまでは下の syncSignals のプログラムで組み立てた形）。歩行者用の灯は、車用の信号が赤のとき青
+const SIGNAL_MODEL_URL = 'data/models/signal.glb';
+const SIGNAL_MODEL_NAMES = { pole: 'SG_Pole', arm: 'SG_Arm', head: 'SG_Head', lamp: 'SG_Lamp', pedStop: 'SG_PedStop', pedGo: 'SG_PedGo' };
+let signalModel = null; // 部品 → 形
+loadModelParts(SIGNAL_MODEL_URL, SIGNAL_MODEL_NAMES)
+  .then((parts) => {
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) geos[key] = addModelParts(new GeometryBuilder(true), list).build();
+    signalModel = geos;
+  })
+  .catch((e) => console.warn(`信号機のモデルを読み込めませんでした: ${SIGNAL_MODEL_URL}`, e));
+
+// ---- 遠くの目印の高い建物（Blender で作った東京スカイツリーなど。tools/build-landmarks.py） ----
+// 実物の位置（緯度・経度）を区間の地図の座標にし、カメラから実物への向きに、霧の外側・空の球の内側（FAR_TOWER_RADIUS m）まで
+// 縮めて置く（カメラを中心に縮めるので、見える向きと大きさの比は実物と同じ。目印として見つけやすいよう FAR_TOWER_SCALE 倍）。
+// 遠いほど霧の色にかすませ、夕方・夜はライトアップの色で光らせる。近い（区間の中の）ときは区間の建物があるので出さない
+const FAR_TOWER_URL = 'data/models/landmarks.glb';
+const FAR_TOWERS = [
+  { name: 'LM_Skytree', lat: 35.71006, lon: 139.8107, light: 0x8fd0ff }, // 東京スカイツリー（「粋」の水色）
+  { name: 'LM_TokyoTower', lat: 35.65858, lon: 139.74543, light: 0xff8a3c }, // 東京タワー（オレンジのライトアップ）
+  { name: 'LM_Sunshine60', lat: 35.72935, lon: 139.71795, light: 0x6a5a40 }, // サンシャイン60
+  { name: 'LM_Tocho', lat: 35.68963, lon: 139.69172, light: 0x6a5a40 }, // 東京都庁第一本庁舎
+  { name: 'LM_Docomo', lat: 35.68383, lon: 139.70236, light: 0x6a5a40 }, // NTTドコモ代々木ビル
+];
+const FAR_TOWER_RADIUS = 432; // FOG_FAR より遠く、SKY_RADIUS より近く
+const FAR_TOWER_NEAR = 700; // これより近いときは出さない m
+const FAR_TOWER_SCALE = 1.5;
+let farTowerGeos = null; // 名前 → 形
+loadModelParts(FAR_TOWER_URL, Object.fromEntries(FAR_TOWERS.map((t) => [t.name, t.name])))
+  .then((parts) => {
+    farTowerGeos = {};
+    for (const [name, list] of Object.entries(parts)) farTowerGeos[name] = addModelParts(new GeometryBuilder(true), list).build();
+  })
+  .catch((e) => console.warn(`目印の建物のモデルを読み込めませんでした: ${FAR_TOWER_URL}`, e));
+
 const SIGNAL_COLORS = { green: 0x3ccf6e, yellow: 0xffc93c, red: 0xff4d4d };
 
 export function createRenderer3D(canvas) {
@@ -2286,6 +2385,8 @@ export function createRenderer3D(canvas) {
   const SUN_DIR = new THREE.Vector3(-1, 0.35, 0.25).normalize(); // 時間帯で変わる（setAtmosphere）
   const sky = makeSky();
   scene.add(sky);
+  const farTowers = new THREE.Group(); // 遠くの目印の高い建物（placeFarTowers で毎回置き直す）
+  scene.add(farTowers);
   const textures = windowTextures(renderer.capabilities.getMaxAnisotropy());
   textures.ground = groundPatterns(); // 路面の模様
   textures.trackBed = trackBedTexture(renderer.capabilities.getMaxAnisotropy()); // 線路の道床
@@ -2494,17 +2595,54 @@ export function createRenderer3D(canvas) {
     pole: new THREE.MeshLambertMaterial({ color: 0x7a808b }),
     box: new THREE.MeshLambertMaterial({ color: 0x23262c }),
     lamp: new THREE.MeshBasicMaterial({ color: 0xffffff }), // 光って見える（色は 1 個ずつ）
+    model: new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), // Blender の信号機（色は頂点の色）
   };
   const sigTmp = { base: new THREE.Matrix4(), local: new THREE.Matrix4(), out: new THREE.Matrix4(), color: new THREE.Color() };
 
+  // 遠くの目印の高い建物を、今の区間の地図の座標でカメラから見える向きに置く
+  const farTowerHaze = new THREE.Color();
+  function placeFarTowers() {
+    const origin = worldMap?.origin;
+    if (!farTowerGeos || !origin) {
+      farTowers.visible = false;
+      return;
+    }
+    farTowers.visible = true;
+    if (!farTowers.children.length) {
+      for (const t of FAR_TOWERS) {
+        const mesh = new THREE.Mesh(farTowerGeos[t.name], new THREE.MeshLambertMaterial({ vertexColors: true, fog: false }));
+        mesh.userData.tower = t;
+        farTowers.add(mesh);
+      }
+    }
+    const cam = camera.position, fog = scene.fog;
+    const mPerDegLon = 111320 * Math.cos((origin.lat * Math.PI) / 180); // tools/fetch-osm.mjs の toXY と同じ
+    for (const mesh of farTowers.children) {
+      const t = mesh.userData.tower;
+      const dx = (t.lon - origin.lon) * mPerDegLon - cam.x, dz = -(t.lat - origin.lat) * 110540 - cam.z;
+      const dist = Math.hypot(dx, dz);
+      mesh.visible = dist > FAR_TOWER_NEAR;
+      if (!mesh.visible) continue;
+      const k = FAR_TOWER_RADIUS / dist;
+      mesh.position.set(cam.x + dx * k, cam.y * (1 - k), cam.z + dz * k);
+      mesh.scale.setScalar(k * FAR_TOWER_SCALE);
+      // かすみ：遠いほど、霧が濃い（雨・雪）ほど霧の色に寄せる。夕方・夜はライトアップ
+      const haze = Math.min(0.9, (0.25 + dist / 30000) * (FOG_FAR / fog.far));
+      mesh.material.color.setScalar(1 - haze);
+      mesh.material.emissive.copy(fog.color).multiplyScalar(haze).add(farTowerHaze.set(t.light).multiplyScalar(windowGlow * 0.45));
+    }
+  }
+
   function syncSignals(obs) {
-    if (signalMeshes.obs === obs || !world) return;
+    if ((signalMeshes.obs === obs && signalMeshes.model === signalModel) || !world) return;
     for (const m of Object.values(signalParts)) {
       signalGroup.remove(m);
       m.dispose();
     }
+    for (const key of Object.keys(signalParts)) delete signalParts[key];
     signalMeshes = [];
     signalMeshes.obs = obs;
+    signalMeshes.model = signalModel;
     const places = [];
     for (const g of obs.signals) {
       for (const [x, z] of g.nodes) {
@@ -2523,11 +2661,13 @@ export function createRenderer3D(canvas) {
       signalGroup.add(m);
       return m;
     };
+    const sm = signalModel;
     const pad = make('pad', sigGeo.pad, sigMat.pad);
-    const pole = make('pole', sigGeo.pole, sigMat.pole, true);
-    const arm = make('arm', sigGeo.arm, sigMat.pole, true);
-    const box = make('box', sigGeo.box, sigMat.box, true);
-    const lamps = LAMPS.map((l, i) => make(`lamp${i}`, sigGeo.lamp, sigMat.lamp));
+    const pole = sm ? make('pole', sm.pole, sigMat.model, true) : make('pole', sigGeo.pole, sigMat.pole, true);
+    const arm = sm ? make('arm', sm.arm, sigMat.model, true) : make('arm', sigGeo.arm, sigMat.pole, true);
+    const box = sm ? make('box', sm.head, sigMat.model, true) : make('box', sigGeo.box, sigMat.box, true);
+    const lamps = LAMPS.map((l, i) => make(`lamp${i}`, sm ? sm.lamp : sigGeo.lamp, sigMat.lamp));
+    const peds = sm ? [make('pedStop', sm.pedStop, sigMat.lamp), make('pedGo', sm.pedGo, sigMat.lamp)] : []; // 歩行者用の灯（柱に付く）
     const { base, local, out } = sigTmp;
     places.forEach((p, i) => {
       // 向き：道の向き。腕と箱は道を横切る向き（ローカルの x）、柱は道の左端（ローカルの -x）
@@ -2540,6 +2680,7 @@ export function createRenderer3D(canvas) {
       };
       put(pad, 0, Y.signal + (p.h > 0 ? 0.35 : 0), 0); // 坂の上では少し浮かせる（平らな円が坂に埋もれないように）
       put(pole, -reach, 0, 0);
+      for (const ped of peds) put(ped, -reach, 0, 0);
       put(arm, -reach / 2, SIG.armY, 0, reach);
       put(box, 0, SIG.boxY, 0);
       lamps.forEach((lamp, k) => put(lamp, (k - 1) * SIG.lampGap, SIG.boxY, 0));
@@ -2557,6 +2698,10 @@ export function createRenderer3D(canvas) {
       if (!st) states.set(s.group, (st = signalState(s.group, obs.clock)));
       signalParts.pad.setColorAt(i, color.setHex(SIGNAL_COLORS[st]));
       LAMPS.forEach((l, k) => signalParts[`lamp${k}`].setColorAt(i, color.set(l.state === st ? l.on : l.off)));
+      // 歩行者用：車用が赤のときだけ青（歩く人）、それ以外は赤（立ち止まる人）
+      const [go, , stop] = LAMPS;
+      signalParts.pedStop?.setColorAt(i, color.set(st !== 'red' ? stop.on : stop.off));
+      signalParts.pedGo?.setColorAt(i, color.set(st === 'red' ? go.on : go.off));
     });
     for (const m of Object.values(signalParts)) if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }
@@ -2960,6 +3105,7 @@ export function createRenderer3D(canvas) {
         camera.lookAt(...dc.look);
       }
       sky.position.copy(camera.position);
+      placeFarTowers();
       locateGoal(game);
       locateLandmarks(game);
       fadeOccluders(game, dt);

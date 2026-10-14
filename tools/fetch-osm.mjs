@@ -107,8 +107,16 @@ const noBikeQuery = () => `[out:json][timeout:60];
 way(id:${NO_BIKE_AREAS.map((a) => a.id).join(',')});
 out geom;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所' };
+// 木（見た目だけ）：1 本ずつの木（点）と並木（線）
+const treesQuery = (bbox) => `[out:json][timeout:90];
+(
+  node["natural"="tree"](${bbox});
+  way["natural"="tree_row"](${bbox});
+);
+out geom;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -777,6 +785,79 @@ function convert(id, osm, frame, noBike = []) {
   return { data, info, bridges, lowRoads, forcedBridges };
 }
 
+// 木 trees: [x, y, 種類, ...]。種類は 0：広葉樹（丸い）、1：イチョウ、2：桜（横に広い）、3：針葉樹。
+// 並木は TREE_ROW_SPACING_M おきに 1 本にする。車道の上にかかる木（地図の道の幅の内側）と、ほかの木に近すぎる木は除く
+const TREE_ROW_SPACING_M = 9;
+const TREE_MIN_GAP_M = 2.5;
+const TREE_MAX = 3000; // 1 区間あたりの上限
+function treeKind(tags) {
+  const name = [tags.genus, tags.species, tags.taxon, tags['species:ja'], tags['genus:ja'], tags['taxon:ja']].filter(Boolean).join(' ');
+  if (/ginkgo|イチョウ|銀杏|公孫樹/i.test(name)) return 1;
+  if (/prunus|cerasus|サクラ|桜|ソメイヨシノ/i.test(name)) return 2;
+  if (tags.leaf_type === 'needleleaved' || /pinus|cryptomeria|chamaecyparis|マツ|松|スギ|杉|ヒノキ/i.test(name)) return 3;
+  return 0;
+}
+function convertTrees(osm, frame, bounds, roads) {
+  const { toXY } = frame;
+  const inBox = (x, y) => x >= bounds.minX - 20 && x <= bounds.maxX + 20 && y >= bounds.minY - 20 && y <= bounds.maxY + 20;
+  const cands = [];
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    if (el.type === 'node') cands.push([...toXY(el.lat, el.lon), treeKind(tags)]);
+    else if (el.type === 'way' && el.geometry) {
+      const p = el.geometry.map((g) => toXY(g.lat, g.lon));
+      const kind = treeKind(tags);
+      let carry = 0; // 前の区切りから持ち越した長さ
+      for (let i = 0; i + 1 < p.length; i++) {
+        const [ax, ay] = p[i], [bx, by] = p[i + 1];
+        const len = Math.hypot(bx - ax, by - ay);
+        for (let d = carry; d <= len; d += TREE_ROW_SPACING_M) cands.push([round(ax + ((bx - ax) * d) / len), round(ay + ((by - ay) * d) / len), kind]);
+        carry = (carry - len) % TREE_ROW_SPACING_M;
+        if (carry < 0) carry += TREE_ROW_SPACING_M;
+      }
+    }
+  }
+  // 車道（地面の高さ。橋・地下を除く）の線分。木の点から道の真ん中までが道幅の半分より近ければ車道の上
+  const segs = [];
+  for (const r of roads) {
+    if (PATH_TYPES.has(r.t) || r.e || r.u) continue;
+    for (let i = 0; i + 3 < r.p.length; i += 2) segs.push([r.p[i], r.p[i + 1], r.p[i + 2], r.p[i + 3], r.w / 2 - 0.5]);
+  }
+  const CELL = 50;
+  const grid = new Map(); // 50m 四方ごとの線分
+  for (const sg of segs) {
+    const r = sg[4] + 1;
+    for (let gx = Math.floor((Math.min(sg[0], sg[2]) - r) / CELL); gx <= Math.floor((Math.max(sg[0], sg[2]) + r) / CELL); gx++) {
+      for (let gy = Math.floor((Math.min(sg[1], sg[3]) - r) / CELL); gy <= Math.floor((Math.max(sg[1], sg[3]) + r) / CELL); gy++) {
+        const key = `${gx},${gy}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(sg);
+      }
+    }
+  }
+  const onRoad = (x, y) =>
+    (grid.get(`${Math.floor(x / CELL)},${Math.floor(y / CELL)}`) ?? []).some(([ax, ay, bx, by, hw]) => {
+      const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2));
+      return Math.hypot(x - ax - dx * t, y - ay - dy * t) < hw;
+    });
+  const trees = [];
+  const kept = new Map(); // 5m 四方ごとの残した木
+  for (const [x, y, k] of cands) {
+    if (trees.length / 3 >= TREE_MAX) break;
+    if (!inBox(x, y) || onRoad(x, y)) continue;
+    const cx = Math.floor(x / 5), cy = Math.floor(y / 5);
+    let near = false;
+    for (let i = -1; i <= 1 && !near; i++) for (let j = -1; j <= 1 && !near; j++) near = (kept.get(`${cx + i},${cy + j}`) ?? []).some(([qx, qy]) => Math.hypot(qx - x, qy - y) < TREE_MIN_GAP_M);
+    if (near) continue;
+    const key = `${cx},${cy}`;
+    if (!kept.has(key)) kept.set(key, []);
+    kept.get(key).push([x, y]);
+    trees.push(x, y, k);
+  }
+  return trees;
+}
+
 // OSM では橋になっていないが、ゲームでは橋にする道（OSM の way の番号 → 橋の高さ m と、橋にする点の範囲）。
 // upTo があれば、その番号の点までを橋にして、そこから先は普通の道として分ける（坂は 3D 版が付ける）。
 // 西日暮里駅の道灌山通り：実物は掘割の山手線の上を渡り、すぐ北の宇都宮線・常磐線などの高架の下をくぐるが、
@@ -849,6 +930,7 @@ async function processSection(id, refresh) {
   Object.assign(data, convertAreas(await loadOsm(id, 'areas', frame.bbox, refresh), frame, data.bounds));
   setBridgeHeights(data.roads, bridges, lowRoads, data.lines);
   for (const [road, height] of forcedBridges) road.e = height;
+  data.trees = convertTrees(await loadOsm(id, 'trees', frame.bbox, refresh), frame, data.bounds, data.roads);
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });
@@ -856,7 +938,7 @@ async function processSection(id, refresh) {
   await writeFile(outPath, json);
   console.log(
     `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
-      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length}`,
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3}`,
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +
