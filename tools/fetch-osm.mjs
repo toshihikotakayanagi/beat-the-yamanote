@@ -237,6 +237,17 @@ function areaKind(tags) {
 const SHORT_RAIL_TUNNEL_M = 150;
 const lowLines = new WeakSet(); // 切り通し・地面より低い線路 // 道路橋の下などをくぐる短い線路のトンネル（目白駅・目黒駅の山手線）は描く
 
+// OSM の印（layer・bridge）から決まる線路の高さを、駅の中でそろえるために変える線路（OSM の way の番号 → true：高い所、
+// false：地面）。同じホームの両側の線路が、片方だけ高架になっていると、ホームが段違いになる。
+// 代々木駅：山手線は layer=1（高い所）、並ぶ中央・総武線は印がなく地面になっていた。実物は 2・3 番線で山手線と総武線が
+// 同じホームの両側に止まるので、駅を通る中央・総武線の緩行線も高い所にする（駅の南の端の短い区間と、北で山手線をまたぐ
+// 総武線の橋は、もともと高い所なので、途中で上がり下がりしなくなる）。代々木に止まらない快速線は、新宿の南口の
+// 歩行者デッキ（高さ 5.5m）の下まで続くので地面のままにする
+const FORCED_LINE_LEVELS = new Map([
+  [144655506, true], // 中央緩行線（西行き）
+  [144655497, true], // 中央緩行線（東行き）
+]);
+
 // 線の種類と幅 m。地下（トンネル・暗渠）は描かない。lengthM：その線の長さ
 function lineKind(tags, lengthM) {
   if (tags.railway) {
@@ -394,6 +405,10 @@ function convertAreas(osm, frame, bounds) {
       }
       const pts = flat(geom);
       const line = lineKind(tags, polylineLength(pts));
+      if (line && FORCED_LINE_LEVELS.has(el.id)) {
+        if (FORCED_LINE_LEVELS.get(el.id)) line.e = 1;
+        else delete line.e;
+      }
       if (line) {
         const p = simplify(pts, SIMPLIFY_M);
         if (p.length >= 4 && inBox(p)) lines.push({ ...line, p });
