@@ -150,7 +150,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ cars.glb               道路を走る車 6 種類（セダン・軽自動車・ミニバン・タクシー・路線バス・トラック）の 3D モデル（tools/build-cars.py で作成）
 │     ├─ signal.glb             交差点の信号機（柱・腕・車用と歩行者用の信号の箱・灯）の 3D モデル（tools/build-signal.py で作成）
 │     ├─ trees.glb              木 4 種類（広葉樹・イチョウ・桜・針葉樹）の 3D モデル（tools/build-trees.py で作成）
-│     ├─ landmarks.glb          遠くから見える目印の高い建物（スカイツリー・東京タワー・サンシャイン60・都庁・ドコモ代々木ビル）の 3D モデル（tools/build-landmarks.py で作成）
+│     ├─ landmarks.glb          遠くの目印（スカイツリー・東京タワー・サンシャイン60・都庁・ドコモ代々木ビル・レインボーブリッジ・六本木ヒルズ森タワー・東京ドーム・新宿パークタワー）の 3D モデル（tools/build-landmarks.py で作成）
 │     ├─ street.glb             道ばたの物（街灯・自動販売機・電柱・ガードパイプ・バス停）とスタート・ゴールの門の 3D モデル（tools/build-street.py で作成）
 │     ├─ pedestrian.glb         歩行者の体の部品（頭・髪・胴体・腰・脚・靴・腕・手・傘）の 3D モデル（tools/build-pedestrian.py で作成）
 │     ├─ shops.glb              コンビニの店先と看板（店の種類ごとの色の帯。店の名前やロゴは描かない）の 3D モデル（tools/build-shops.py で作成）
@@ -160,7 +160,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ scenery.glb            線路の柵と信号機・橋の欄干・川の船・飛行機とヘリコプター・鳥の 3D モデル（tools/build-scenery.py で作成）
 │     ├─ laforet.glb・bigbox.glb・kotsu_kaikan.glb  有名な建物（ラフォーレ原宿・高田馬場 BIG BOX・東京交通会館）の 3D モデル（tools/build-city.py で作成）
 │     ├─ city.glb               歌舞伎町一番街のアーチ・ガード下の店・夜のネオン・公園の物・歩行者の持ち物の 3D モデル（tools/build-city.py で作成）
-│     └─ city2.glb              路面電車・モノレール・新交通の車両、緊急車両、駅前の名物 その 2、店の前の物、工事現場の重機の 3D モデル（tools/build-city2.py で作成）
+│     ├─ city2.glb              路面電車・モノレール・新交通の車両、緊急車両、駅前の名物 その 2、店の前の物、工事現場の重機の 3D モデル（tools/build-city2.py で作成）
+│     └─ city3.glb              ホームで待つ人・路面の物（止まれ・自転車の印・マンホール・点字ブロック）・作業する車・駅前の自転車置き場の 3D モデル（tools/build-city3.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -199,7 +200,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-cars.py    道路を走る車 6 種類のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-signal.py  信号機のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-trees.py   木 4 種類のモデルを Blender で組み立てる（Blender で実行）
-│  ├─ build-landmarks.py  目印の高い建物 5 つのモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-landmarks.py  遠くの目印 9 つのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-street.py  道ばたの物と門のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-pedestrian.py  歩行者の部品のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-shops.py   コンビニの店先と看板のモデルを Blender で組み立てる（Blender で実行）
@@ -209,6 +210,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-scenery.py  線路のまわり・川と橋・空を飛ぶ物のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-city.py    有名な建物 3 つと、アーチ・ガード下の店・ネオン・公園の物・歩行者の持ち物のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-city2.py   路面電車などの車両・緊急車両・名物・店の前の物・重機のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-city3.py   ホームで待つ人・路面の物・作業する車・自転車置き場のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/

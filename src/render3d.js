@@ -1989,6 +1989,200 @@ function addCity2Props(group, map, roadHeights) {
   }
 }
 
+// ---- 街の物 その 4（Blender で作ったモデル。tools/build-city3.py） ----
+// ホームで電車を待つ人（出発駅と到着駅）、道路の路面の物（「止まれ」の字・自転車の通る所の印・マンホール・点字ブロック）、
+// 止まって作業するゴミの収集車と宅配の車、駅前の屋根付きの自転車置き場。どれも見た目だけ
+const CITY3_URL = 'data/models/city3.glb';
+const CITY3_NAMES = {
+  stand0: 'C3_Stand0', stand1: 'C3_Stand1', stand2: 'C3_Stand2', stand3: 'C3_Stand3', bench: 'C3_Bench',
+  tomare: 'C3_Tomare', bikeMark: 'C3_BikeMark', manhole: 'C3_Manhole', tactile: 'C3_Tactile',
+  garbage: 'C3_Garbage', delivery: 'C3_Delivery', bikePark: 'C3_BikePark',
+};
+const city3 = { geos: null, done: false };
+loadModelParts(CITY3_URL, CITY3_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city3.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 4）のモデルを読み込めませんでした: ${CITY3_URL}`, e))
+  .finally(() => (city3.done = true));
+const TACTILE_RADIUS = 300; // 駅のまわりこの距離 m の歩道に点字ブロック
+const WORK_SPACING = 280; // 作業する車を置く間隔の目安 m
+
+function addCity3Props(group, map, roadHeights) {
+  const g = city3.geos;
+  if (!g) return;
+  const lists = {};
+  const put = (key, x, h, z, rotY, sz = 1) => {
+    const m = new THREE.Matrix4().makeTranslation(x, h, z).multiply(new THREE.Matrix4().makeRotationY(rotY));
+    if (sz !== 1) m.multiply(new THREE.Matrix4().makeScale(1, 1, sz));
+    (lists[key] ??= []).push(m);
+  };
+  const hashOf = (a, b) => {
+    const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const clearOfStart = (x, z) => ![map.start, map.goal].some((pt) => Math.hypot(pt.x - x, pt.y - z) < FURNITURE_CLEAR_START);
+  // ---- ホームで電車を待つ人（出発駅と到着駅の、ゲームのホームの上） ----
+  const route = map.trainRoute;
+  if (route) {
+    const trainLen = carCount(route) * 20;
+    for (const [s0, s1] of [[0, trainLen], [route.length - trainLen, route.length]]) {
+      const mid = pointAt(route, (s0 + s1) / 2);
+      const { left, right } = nearbyTracks(map, mid);
+      const island = [[right, 1], [left, -1]].filter(([d]) => d >= 6 && d <= 16).sort((a, b) => a[0] - b[0])[0];
+      const side = island ? island[1] : right >= left ? 1 : -1;
+      const width = island ? island[0] - 2 * PLATFORM_EDGE : Math.min(6, Math.max(3, (side > 0 ? right : left) - 2 * PLATFORM_EDGE));
+      if (width < 2.6) continue;
+      for (let s = s0 + 3, k = 0; s < s1 - 3; s += 3.2, k++) {
+        const at = pointAt(route, s);
+        const nx = -Math.cos(at.angle) * side, nz = -Math.sin(at.angle) * side; // 線路から外へ
+        const h = at.h + Y.rail + PLATFORM_TOP;
+        const r = hashOf(s, s0);
+        if (k % 7 === 3) {
+          // ベンチ（ホームの真ん中、線路の方を向く）
+          const lat = PLATFORM_EDGE + width / 2;
+          put('bench', at.x + nx * lat, h, at.y + nz * lat, along(-nx, -nz));
+        } else if (r < 0.6) {
+          const lat = PLATFORM_EDGE + 1.6 + (width - 2.2) * hashOf(s0, s);
+          put(`stand${Math.floor(hashOf(s, 7) * 4)}`, at.x + nx * lat, h, at.y + nz * lat, along(-nx, -nz) + (hashOf(s, 9) - 0.5) * 0.8);
+        }
+      }
+    }
+  }
+  // ---- 路面の「止まれ」：止まれの標識と同じ所（細い道から広い道に出る手前）の、車線の真ん中 ----
+  const seen = new Set();
+  for (const [key, list] of map.nodes) {
+    const cars = list.filter((n) => !n.road.path && !n.road.e);
+    if (new Set(cars.map((n) => n.road)).size < 2 || seen.has(key)) continue;
+    seen.add(key);
+    const [x, z] = key.split(',').map(Number);
+    const arms = [];
+    for (const { road, v } of cars) {
+      for (const u of [v - 1, v + 1]) {
+        if (u < 0 || u >= road.p.length / 2) continue;
+        const dx = road.p[2 * u] - road.p[2 * v], dz = road.p[2 * u + 1] - road.p[2 * v + 1], l = Math.hypot(dx, dz) || 1;
+        arms.push({ road, ux: dx / l, uz: dz / l, len: l, incoming: !road.o || (road.o === 1) === (u < v) });
+      }
+    }
+    const widest = Math.max(...arms.map((a) => a.road.w));
+    for (const a of arms) {
+      if (a.road.w >= 8 || a.road.w + 2 > widest || !a.incoming || a.len < 8) continue;
+      const lane = a.road.o ? 0 : a.road.w / 4;
+      const tx = x + a.ux * 3.5 - a.uz * lane, tz = z + a.uz * 3.5 + a.ux * lane;
+      if (clearOfStart(tx, tz)) put('tomare', tx, Y.arrow, tz, along(-a.ux, -a.uz));
+    }
+  }
+  // ---- 道に沿う路面の物：自転車の通る所の印（広い道の左端）・マンホール（車道）・点字ブロック（駅のまわりの歩道） ----
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station');
+  map.roads.forEach((r, ri) => {
+    const n = r.p.length / 2;
+    const bike = !r.path && !r.e && r.w >= 9, manhole = !r.path && r.w >= 5;
+    const tactile = r.path && r.w >= 2.5 && stations.some((st) => Math.hypot(st.x - r.p[0], st.y - r.p[1]) < TACTILE_RADIUS + 200);
+    if (!bike && !manhole && !tactile) return;
+    let walked = 0;
+    for (let i = 0; i + 1 < n; i++) {
+      const x1 = r.p[2 * i], z1 = r.p[2 * i + 1], x2 = r.p[2 * i + 2], z2 = r.p[2 * i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 0.5) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      const at = (d) => [x1 + ux * d, z1 + uz * d, roadHeightAt(roadHeights, r, i, d / len)];
+      if (bike) {
+        for (let d = (30 - (walked % 30)) % 30; d < len; d += 30) {
+          const [cx, cz, h] = at(d);
+          for (const dir of r.o ? [r.o] : [1, -1]) {
+            const dx = ux * dir, dz = uz * dir, off = r.w / 2 - 0.9;
+            const bx = cx + dz * off, bz = cz - dx * off; // 進む向きの左
+            if (clearOfStart(bx, bz)) put('bikeMark', bx, h + Y.arrow, bz, along(dx, dz));
+          }
+        }
+      }
+      if (manhole) {
+        for (let d = (45 - (walked % 45)) % 45; d < len; d += 45) {
+          const [cx, cz, h] = at(d);
+          const off = (hashOf(ri, d + walked) - 0.5) * r.w * 0.5;
+          put('manhole', cx - uz * off, h + Y.arrow, cz + ux * off, 0);
+        }
+      }
+      if (tactile) {
+        const steps = Math.ceil(len / 2);
+        for (let k = 0; k < steps; k++) {
+          const [cx, cz, h] = at(((k + 0.5) * len) / steps);
+          if (!stations.some((st) => Math.hypot(st.x - cx, st.y - cz) < TACTILE_RADIUS)) continue;
+          put('tactile', cx, h + Y.arrow, cz, along(ux, uz), len / steps);
+        }
+      }
+      walked += len;
+    }
+  });
+  // ---- 止まって作業する車：細い車道の左端に、ゴミの収集車と宅配の車をときどき ----
+  let works = 0;
+  map.roads.forEach((r, ri) => {
+    if (r.path || r.e || r.w < 4 || r.w >= 9 || works >= 24) return;
+    let walked = 0;
+    for (let i = 0; i + 1 < r.p.length / 2; i++) {
+      const x1 = r.p[2 * i], z1 = r.p[2 * i + 1], x2 = r.p[2 * i + 2], z2 = r.p[2 * i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      // 線分の真ん中（交差点から 12m 以上離れた長い線分だけ）
+      if (len >= 30 && Math.floor((walked + len / 2) / WORK_SPACING) !== Math.floor(walked / WORK_SPACING) && hashOf(ri, i) < 0.6) {
+        const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+        const dir = r.o || (hashOf(i, ri) < 0.5 ? 1 : -1);
+        const dx = ux * dir, dz = uz * dir, off = r.w / 2 - 1.1;
+        const cx = (x1 + x2) / 2 + dz * off, cz = (z1 + z2) / 2 - dx * off;
+        if (clearOfStart(cx, cz)) {
+          put(hashOf(ri, i + 1) < 0.5 ? 'garbage' : 'delivery', cx, 0, cz, along(dx, dz));
+          works++;
+        }
+      }
+      walked += len;
+    }
+  });
+  // ---- 駅前の屋根付きの自転車置き場（駅のまわりの空いている地面に、1 駅に 2 つまで） ----
+  stations.forEach((st, si) => {
+    let n = 0;
+    for (const dist of [45, 70, 95]) {
+      for (let k = 0; k < 8 && n < 2; k++) {
+        const a = (k / 8) * Math.PI * 2 + hashOf(si, dist);
+        const x = st.x + Math.cos(a) * dist, z = st.y + Math.sin(a) * dist;
+        const near = nearestRoadPoint(map, x, z, false);
+        if (!near) continue;
+        const [rdx, rdz] = (() => {
+          const rr = near.road;
+          let bi = 0, bd = Infinity;
+          for (let q = 0; q + 3 < rr.p.length; q += 2) {
+            const d = Math.hypot((rr.p[q] + rr.p[q + 2]) / 2 - near.x, (rr.p[q + 1] + rr.p[q + 3]) / 2 - near.z);
+            if (d < bd) (bd = d), (bi = q);
+          }
+          const l = Math.hypot(rr.p[bi + 2] - rr.p[bi], rr.p[bi + 3] - rr.p[bi + 1]) || 1;
+          return [(rr.p[bi + 2] - rr.p[bi]) / l, (rr.p[bi + 3] - rr.p[bi + 1]) / l];
+        })();
+        // 置き場の長さ 14m・幅 4.4m が、すべて空いている地面に入るか
+        const pts = [[0, 0], [7, 0], [-7, 0], [7, 2.2], [-7, 2.2], [7, -2.2], [-7, -2.2]].map(([t, w]) => [x + rdx * t - rdz * w, z + rdz * t + rdx * w]);
+        if (!pts.every(([px, pz]) => freeSpot(map, roadHeights, px, pz, false))) continue;
+        put('bikePark', x, 0, z, along(rdx, rdz));
+        n++;
+      }
+    }
+  });
+  for (const [key, list] of Object.entries(lists)) {
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT && !['tomare', 'bikeMark', 'manhole', 'tactile'].includes(key);
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+  }
+}
+
 // スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
 // スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
 function addGates(group, map, heights) {
@@ -2867,6 +3061,8 @@ function* buildWorldSteps(map, textures) {
   addCityProps(group, map, roadHeights, heights);
   while (!city2.done) yield 0.985;
   addCity2Props(group, map, roadHeights);
+  while (!city3.done) yield 0.985;
+  addCity3Props(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -3658,7 +3854,7 @@ loadModelParts(SIGNAL_MODEL_URL, SIGNAL_MODEL_NAMES)
   })
   .catch((e) => console.warn(`信号機のモデルを読み込めませんでした: ${SIGNAL_MODEL_URL}`, e));
 
-// ---- 遠くの目印の高い建物（Blender で作った東京スカイツリーなど。tools/build-landmarks.py） ----
+// ---- 遠くの目印（Blender で作った東京スカイツリー・レインボーブリッジなど。tools/build-landmarks.py） ----
 // 実物の位置（緯度・経度）を区間の地図の座標にし、カメラから実物への向きに、霧の外側・空の球の内側（FAR_TOWER_RADIUS m）まで
 // 縮めて置く（カメラを中心に縮めるので、見える向きと大きさの比は実物と同じ。目印として見つけやすいよう FAR_TOWER_SCALE 倍）。
 // 遠いほど霧の色にかすませ、夕方・夜はライトアップの色で光らせる。近い（区間の中の）ときは区間の建物があるので出さない
@@ -3669,6 +3865,10 @@ const FAR_TOWERS = [
   { name: 'LM_Sunshine60', lat: 35.72935, lon: 139.71795, light: 0x6a5a40 }, // サンシャイン60
   { name: 'LM_Tocho', lat: 35.68963, lon: 139.69172, light: 0x6a5a40 }, // 東京都庁第一本庁舎
   { name: 'LM_Docomo', lat: 35.68383, lon: 139.70236, light: 0x6a5a40 }, // NTTドコモ代々木ビル
+  { name: 'LM_Rainbow', lat: 35.6365, lon: 139.7634, light: 0xdde8ff }, // レインボーブリッジ
+  { name: 'LM_Mori', lat: 35.66049, lon: 139.72923, light: 0x7a8aa8 }, // 六本木ヒルズ森タワー
+  { name: 'LM_Dome', lat: 35.70564, lon: 139.75189, light: 0xf0f0e0 }, // 東京ドーム
+  { name: 'LM_ParkTower', lat: 35.68568, lon: 139.6906, light: 0x6a5a40 }, // 新宿パークタワー
 ];
 const FAR_TOWER_RADIUS = 432; // FOG_FAR より遠く、SKY_RADIUS より近く
 const FAR_TOWER_NEAR = 700; // これより近いときは出さない m

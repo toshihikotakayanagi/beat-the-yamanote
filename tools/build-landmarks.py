@@ -205,11 +205,59 @@ p.loft([[Vector((x, y, 225)) for x, y in ((14, 12), (-14, 12), (-14, -12), (14, 
 p.loft([sq(1.6, 255), sq(0.3, 272)], "docomo")
 docomo = p.finish("LM_Docomo")
 
-marks = [skytree, tokyo_tower, sunshine, tocho, docomo]
+# ---- レインボーブリッジ（白い 2 本の主塔と吊り橋。橋の向きは東南東） ----
+p = Part()
+BR = math.radians(-20)  # 橋の軸の向き（東から北へ。東南東に延びる）
+ux, uy = math.cos(BR), math.sin(BR)
+vx, vy = -uy, ux
+along = lambda t, w, z: Vector((ux * t + vx * w, uy * t + vy * w, z))
+for t in (-285, 285):  # 主塔（2 本の脚と横の梁）
+    for w in (-14, 14):
+        p.loft([[along(t + a, w + b, 0) for a, b in ((-4, -3), (4, -3), (4, 3), (-4, 3))], [along(t + a, w + b, 126) for a, b in ((-2.5, -2), (2.5, -2), (2.5, 2), (-2.5, 2))]], "white", cap_top=True)
+    for z in (60, 118):
+        p.loft([[along(t + a, w, z + c) for a, w, c in ((-2, -14, 0), (2, -14, 0), (2, 14, 0), (-2, 14, 0))], [along(t + a, w, z + c) for a, w, c in ((-2, -14, 5), (2, -14, 5), (2, 14, 5), (-2, 14, 5))]], "white")
+deck = lambda t0, t1, z0, z1: p.loft([[along(t0, w, z0 + c) for w, c in ((-15, 0), (15, 0), (15, 7), (-15, 7))], [along(t1, w, z1 + c) for w, c in ((-15, 0), (15, 0), (15, 7), (-15, 7))]], "white")
+deck(-560, -285, 25, 50)
+deck(-285, 285, 50, 50)
+deck(285, 560, 50, 25)
+for w in (-14, 14):  # 主ケーブル（吊り橋の弧と両側の斜め）
+    pts = [along(-285 + 570 * k / 12, w, 126 - 70 * (1 - ((k - 6) / 6) ** 2)) for k in range(13)]
+    for a, b in zip(pts, pts[1:]):
+        p.loft([[a + Vector((0, 0, d)) for d in (0, 1.2)] + [a + Vector((0.6, 0, 1.2)), a + Vector((0.6, 0, 0))], [b + Vector((0, 0, d)) for d in (0, 1.2)] + [b + Vector((0.6, 0, 1.2)), b + Vector((0.6, 0, 0))]], "skytree", cap_top=False)
+    for t0, t1 in ((-285, -480), (285, 480)):
+        a, b = along(t0, w, 126), along(t1, w, 57)
+        p.loft([[a + Vector((0, 0, d)) for d in (0, 1.2)] + [a + Vector((0.6, 0, 1.2)), a + Vector((0.6, 0, 0))], [b + Vector((0, 0, d)) for d in (0, 1.2)] + [b + Vector((0.6, 0, 1.2)), b + Vector((0.6, 0, 0))]], "skytree", cap_top=False)
+rainbow = p.finish("LM_Rainbow")
 
-# ---- 下見用（5 つを並べる） ----
+# ---- 六本木ヒルズ森タワー（238m。角を落とした太い塔と、上の冠） ----
+p = Part()
+oct8 = lambda r, z, rot=math.pi / 8: [Vector((math.cos(rot + k * math.pi / 4) * r, math.sin(rot + k * math.pi / 4) * r, z)) for k in range(8)]
+p.loft([oct8(42, 0), oct8(40, 200), oct8(34, 215)], ["docomo2", "docomo"], cap_top=False)
+p.loft([oct8(30, 215), oct8(30, 232), oct8(20, 238)], ["docomo", "docomo2"])
+for k in range(8):  # 縦の白い筋
+    a = math.pi / 8 + k * math.pi / 4 + math.pi / 8
+    x, y = math.cos(a) * 41.2, math.sin(a) * 41.2
+    p.face([(x - math.sin(a) * 1.5, y + math.cos(a) * 1.5, 5), (x + math.sin(a) * 1.5, y - math.cos(a) * 1.5, 5), (x + math.sin(a) * 1.5, y - math.cos(a) * 1.5, 195), (x - math.sin(a) * 1.5, y + math.cos(a) * 1.5, 195)], "white")
+mori = p.finish("LM_Mori")
+
+# ---- 東京ドーム（白い平たい屋根の丸い建物） ----
+p = Part()
+p.loft([circle(102, 0, 24), circle(102, 18, 24)], "white", cap_top=False)
+p.loft([circle(102, 18, 24), circle(90, 34, 24), circle(65, 48, 24), circle(30, 56, 24)], "white")
+dome = p.finish("LM_Dome")
+
+# ---- 新宿パークタワー（段々に高さの違う 3 つの塔と、それぞれの三角の屋根） ----
+p = Part()
+for (x, y, h) in ((-22, 18, 235), (0, 0, 215), (22, -18, 195)):
+    p.box(x - 20, x + 20, y - 20, y + 20, 0, h, "tocho", "tocho2")
+    p.loft([[Vector((x + a, y + b, h)) for a, b in ((-20, -20), (20, -20), (20, 20), (-20, 20))], [Vector((x + a * 0.05, y + b * 0.05, h + 18)) for a, b in ((-20, -20), (20, -20), (20, 20), (-20, 20))]], "tocho2")
+park_tower = p.finish("LM_ParkTower")
+
+marks = [skytree, tokyo_tower, sunshine, tocho, docomo, rainbow, mori, dome, park_tower]
+
+# ---- 下見用（並べる） ----
 for i, ob in enumerate(marks):
-    ob.location = ((i - 2) * 160, 0, 0)
+    ob.location = (0, 1100, 0) if ob is rainbow else ((i - 4) * 170, 0, 0)
 g = bmesh.new()
 bmesh.ops.create_grid(g, x_segments=1, y_segments=1, size=600)
 gm = bpy.data.meshes.new("LM_PreviewGround")
