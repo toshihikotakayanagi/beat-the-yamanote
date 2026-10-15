@@ -130,8 +130,19 @@ const shopsQuery = (bbox) => `[out:json][timeout:90];
 nwr["shop"="convenience"](${bbox});
 out tags center;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ' };
+// 道ばたの小物（見た目だけ）：郵便ポスト・消火栓・駐輪場・工事中の所（工事中の道と、工事現場の面）
+const extrasQuery = (bbox) => `[out:json][timeout:90];
+(
+  node["amenity"="post_box"](${bbox});
+  node["emergency"="fire_hydrant"](${bbox});
+  nwr["amenity"="bicycle_parking"](${bbox});
+  way["highway"="construction"](${bbox});
+  way["landuse"="construction"](${bbox});
+);
+out tags center;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -928,6 +939,23 @@ function convertShops(osm, frame, bounds) {
   return shops;
 }
 
+// 道ばたの小物 { posts, hydrants, bikeParks, works }：どれも [x, y, ...]（見た目だけ。3D版が近くの道に向けて置く）。
+// works は工事中の所の真ん中（工事中の道と工事現場の面。まわりにコーンとバリケードを置く）。地下や建物の中の物は外す
+function convertExtras(osm, frame, bounds) {
+  const { toXY } = frame;
+  const out = { posts: [], hydrants: [], bikeParks: [], works: [] };
+  for (const el of osm.elements) {
+    const c = el.type === 'node' ? el : el.center;
+    const tags = el.tags ?? {};
+    if (!c || tags.indoor === 'yes' || (tags.level && !/^0$|^1$/.test(tags.level)) || /underground/.test(tags.location ?? '') || tags.parking === 'underground') continue;
+    const [x, y] = toXY(c.lat, c.lon);
+    if (x < bounds.minX - 20 || x > bounds.maxX + 20 || y < bounds.minY - 20 || y > bounds.maxY + 20) continue;
+    const list = tags.amenity === 'post_box' ? out.posts : tags.emergency === 'fire_hydrant' ? out.hydrants : tags.amenity === 'bicycle_parking' ? out.bikeParks : out.works;
+    list.push(x, y);
+  }
+  return out;
+}
+
 // OSM では橋になっていないが、ゲームでは橋にする道（OSM の way の番号 → 橋の高さ m と、橋にする点の範囲）。
 // upTo があれば、その番号の点までを橋にして、そこから先は普通の道として分ける（坂は 3D 版が付ける）。
 // 西日暮里駅の道灌山通り：実物は掘割の山手線の上を渡り、すぐ北の宇都宮線・常磐線などの高架の下をくぐるが、
@@ -1003,6 +1031,7 @@ async function processSection(id, refresh) {
   data.trees = convertTrees(await loadOsm(id, 'trees', frame.bbox, refresh), frame, data.bounds, data.roads);
   Object.assign(data, convertStreet(await loadOsm(id, 'street', frame.bbox, refresh), frame, data.bounds));
   data.shops = convertShops(await loadOsm(id, 'shops', frame.bbox, refresh), frame, data.bounds);
+  Object.assign(data, convertExtras(await loadOsm(id, 'extras', frame.bbox, refresh), frame, data.bounds));
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });
@@ -1010,7 +1039,7 @@ async function processSection(id, refresh) {
   await writeFile(outPath, json);
   console.log(
     `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
-      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3}`,
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3} / ポスト ${data.posts.length / 2} / 消火栓 ${data.hydrants.length / 2} / 駐輪場 ${data.bikeParks.length / 2} / 工事 ${data.works.length / 2}`,
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +
