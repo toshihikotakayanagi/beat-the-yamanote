@@ -3389,6 +3389,305 @@ function addGoalStaff(group) {
   group.userData.goalStaff = staff;
 }
 
+// ---- 街の物 その 9（Blender で作ったモデル。tools/build-city8.py） ----
+// 学校・ガソリンスタンド・コインパーキング・銭湯・噴水・シェアサイクルのポートは、OpenStreetMap の施設の位置（map.facilities）に置く。
+// 撮り鉄・航空障害灯・掲示板も。下校する子どもと湯おけの人は道を進む（syncRiders）。どれも見た目だけ
+const CITY8_URL = 'data/models/city8.glb';
+const CITY8_NAMES = {
+  schoolGate: 'C8_SchoolGate', tetsubo: 'C8_Tetsubo', jungleGym: 'C8_JungleGym', soccerGoal: 'C8_SoccerGoal', pupils: 'C8_Pupils',
+  gasStation: 'C8_GasStation', parkSign: 'C8_ParkSign', parkStall: 'C8_ParkStall', chimney: 'C8_Chimney', sentoFront: 'C8_SentoFront', bather: 'C8_Bather',
+  fountain: 'C8_Fountain', fountainWater: 'C8_FountainWater', cyclePort: 'C8_CyclePort', railfanUp: 'C8_RailfanUp', railfanDown: 'C8_RailfanDown',
+  tripod: 'C8_Tripod', obstLight: 'C8_ObstLight', electionBoard: 'C8_ElectionBoard', noticeBoard: 'C8_NoticeBoard',
+};
+const city8 = { geos: null, done: false };
+loadModelParts(CITY8_URL, CITY8_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city8.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 9）のモデルを読み込めませんでした: ${CITY8_URL}`, e))
+  .finally(() => (city8.done = true));
+const OBST_MAT = new THREE.MeshBasicMaterial({ vertexColors: true }); // 航空障害灯（夕方と夜に点滅。syncCity8）
+const OBST_MIN_H = 45; // この高さ m 以上のビルの屋上の角に航空障害灯
+const WATER_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.75, depthWrite: false }); // 噴水の水
+
+function addCity8Props(group, map, roadHeights, buildingHeights) {
+  const g = city8.geos;
+  if (!g) return;
+  const rnd = seededRng(`${map.id ?? 'city'}-8`);
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const lists = new Map();
+  const tmpQ = new THREE.Quaternion(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3(), Y_UP = new THREE.Vector3(0, 1, 0);
+  const put = (key, x, h, z, rotY, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Matrix4().compose(tmpP.set(x, h, z), tmpQ.setFromAxisAngle(Y_UP, rotY), tmpS.set(sx, sy, sz));
+    if (!lists.has(key)) lists.set(key, []);
+    lists.get(key).push(m);
+  };
+  const free = (x, z, onPath = true) => inBounds(map, x, z) && freeSpot(map, roadHeights, x, z, onPath);
+  const taken = [...(group.userData.taken ?? [])];
+  for (const o of group.children) if (['entrance', 'koban'].includes(o.name)) taken.push([o.position.x, o.position.z, 5]);
+  const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + r);
+  const fits = (x, z, dx, dz, pts, onPath) => pts.every(([u, w]) => free(x + dx * u - dz * w, z + dz * u + dx * w, onPath)); // u は (dx, dz) の向き、w はその左
+  const F = map.facilities ?? {};
+  const each = (list, fn) => {
+    for (let i = 0; i + 3 < (list?.length ?? 0); i += 4) fn(list[i], list[i + 1], list[i + 2], list[i + 3]);
+  };
+  // 道の方を向く向き：いちばん近い道の中心への向き (fx, fz) と、道の向き (ux, uz)
+  const toward = (x, z, carOnly) => {
+    const near = nearestRoadPoint(map, x, z, carOnly);
+    if (!near) return null;
+    const d = near.d || 1;
+    const [ux, uz] = roadDirAt(near.road, near.x, near.z);
+    return { near, fx: (near.x - x) / d, fz: (near.z - z) / d, ux, uz };
+  };
+
+  // ---- 学校：敷地の道の側に校門、空いた地面に鉄棒・ジャングルジム・サッカーゴール ----
+  const schools = [];
+  each(F.schools, (x, z, w, d) => {
+    if (!inBounds(map, x, z)) return;
+    schools.push([x, z]);
+    const t = toward(x, z, false);
+    if (t && t.near.d < Math.max(w, d) / 2 + 15) {
+      // 校門：敷地の中心からいちばん近い道の端に、道の方を向けて
+      const gx = t.near.x - t.fx * (t.near.road.w / 2 + 1.0), gz = t.near.z - t.fz * (t.near.road.w / 2 + 1.0);
+      if (fits(gx, gz, t.ux, t.uz, [[-2.8, 0], [2.8, 0]], true) && clear(gx, gz, 3)) {
+        put('schoolGate', gx, Y.area, gz, along(t.fx, t.fz));
+        taken.push([gx, gz, 3]);
+      }
+    }
+    // 校庭の遊具：敷地の中の空いた地面を探して置く
+    const half = Math.max(12, Math.min(60, Math.max(w, d) / 2));
+    const gear = [['tetsubo', [[-2.4, 0], [2.4, 0], [0, 0.6], [0, -0.6]]], ['jungleGym', [[-1, -1], [1, 1], [1, -1], [-1, 1]]], ['soccerGoal', [[-2.6, 0], [2.6, 0], [0, -1.6]]], ['soccerGoal', [[-2.6, 0], [2.6, 0], [0, -1.6]]]];
+    for (const [key, need] of gear) {
+      for (let k = 0; k < 30; k++) {
+        const px = x + (rnd() - 0.5) * 2 * half, pz = z + (rnd() - 0.5) * 2 * half;
+        const a = Math.floor(rnd() * 4) * (Math.PI / 2);
+        const dx = Math.cos(a), dz = Math.sin(a);
+        if (!fits(px, pz, dx, dz, [[0, 0], ...need], false) || !clear(px, pz, 2.5)) continue;
+        put(key, px, Y.area, pz, Math.atan2(-dz, dx));
+        taken.push([px, pz, 2.5]);
+        break;
+      }
+    }
+  });
+  group.userData.schools = schools;
+
+  // ---- ガソリンスタンド：いちばん近い車道の横に、屋根と給油機。給油中の車も ----
+  const fueling = [];
+  each(F.fuel, (x, z) => {
+    if (!inBounds(map, x, z)) return;
+    const t = toward(x, z, true);
+    if (!t || t.near.d > 45 || t.near.road.e) return;
+    for (const off of [7.5, 9, 11, 6.5]) {
+      const cx = t.near.x - t.fx * (t.near.road.w / 2 + off), cz = t.near.z - t.fz * (t.near.road.w / 2 + off);
+      // 屋根の四隅と真ん中（u は道に沿う向き、w は道から離れる向き）
+      const pts = [[0, 0], [-6.5, -4.5], [6.5, -4.5], [-6.5, 4.5], [6.5, 4.5], [0, 4.5], [0, -4.5]];
+      const ok = pts.every(([u, w]) => free(cx + t.ux * u - t.fx * w, cz + t.uz * u - t.fz * w)); // 歩道の上にかかってもよい（車の出入り口）
+      if (!ok || !clear(cx, cz, 7)) continue;
+      put('gasStation', cx, Y.area, cz, along(t.fx, t.fz));
+      fueling.push({ x: cx - t.ux * 1.3, z: cz - t.uz * 1.3, rot: along(t.fx, t.fz) }); // 給油機の島の横に、道の方を向けて
+      taken.push([cx, cz, 8]);
+      break;
+    }
+  });
+
+  // ---- コインパーキング：小さな駐車場に、区画（白線・車止め・ロック板）を並べ、半分ほどに車。道の側に「P」の看板 ----
+  const parked = [];
+  each(F.parking, (x, z, w, d) => {
+    if (!inBounds(map, x, z)) return;
+    const t = toward(x, z, true);
+    if (!t || t.near.d > 40 || t.near.road.e) return;
+    const n = Math.max(2, Math.min(8, Math.floor(Math.max(w, d, 12) / 2.6)));
+    let placed = 0;
+    for (let k = 0; k < n; k++) {
+      const u = (k - (n - 1) / 2) * 2.5;
+      const sx = x + t.ux * u, sz = z + t.uz * u;
+      // 区画の 4 隅（奥行きは道から離れる向き）
+      if (!fits(sx, sz, t.ux, t.uz, [[-1.1, 0], [1.1, 0], [0, 2.3], [0, -2.3]], false) || !clear(sx, sz, 2)) continue;
+      put('parkStall', sx, Y.area, sz, along(t.fx, t.fz));
+      if (rnd() < 0.6) parked.push({ x: sx - t.fx * 0.2, z: sz - t.fz * 0.2, rot: along(-t.fx, -t.fz), k });
+      placed++;
+    }
+    if (!placed) return;
+    const px = x + t.fx * (t.near.d - t.near.road.w / 2 - 0.8) + t.ux * ((n / 2) * 2.5 + 0.8), pz = z + t.fz * (t.near.d - t.near.road.w / 2 - 0.8) + t.uz * ((n / 2) * 2.5 + 0.8);
+    if (free(px, pz)) put('parkSign', px, Y.area, pz, along(t.fx, t.fz));
+    taken.push([x, z, (n / 2) * 2.5]);
+  });
+  const parkedCars = [...fueling.map((f) => ({ ...f, k: 0 })), ...parked];
+  if (parkedCars.length) {
+    const looks = [['sedan', '#c8ccd4'], ['kei', '#f4f4f0'], ['minivan', '#1e2028'], ['kei', '#d84a3a'], ['sedan', '#3a5a8a']];
+    const byLook = new Map();
+    parkedCars.forEach((c, i) => {
+      const lk = looks[(i * 7 + c.k) % looks.length];
+      const key = lk.join();
+      if (!byLook.has(key)) byLook.set(key, { lk, list: [] });
+      byLook.get(key).list.push(c);
+    });
+    const m = new THREE.Matrix4();
+    for (const { lk, list } of byLook.values()) {
+      const cg = carGeometry({ type: lk[0], color: lk[1] });
+      const body = new THREE.InstancedMesh(cg.body, CAR_BODY_MAT, list.length), light = new THREE.InstancedMesh(cg.lights, CAR_LIGHT_MAT, list.length);
+      list.forEach((c, i) => {
+        m.makeRotationY(c.rot).setPosition(c.x, Y.area, c.z);
+        body.setMatrixAt(i, m);
+        light.setMatrixAt(i, m);
+      });
+      body.castShadow = true;
+      body.name = 'parkedCars'; // デバッグ・自動テスト用
+      group.add(body, light);
+    }
+  }
+
+  // ---- 銭湯：建物の道に向いた壁に入口、そばの空いた地面に高い煙突 ----
+  const baths = [];
+  each(F.baths, (x, z) => {
+    if (!inBounds(map, x, z)) return;
+    baths.push([x, z]);
+    const cell = map.cells.get(cellKey(x, z));
+    const b = cell?.buildings.find((b) => insidePolygon(x, z, b.p)) ?? map.buildings.find((b) => x >= b.minX - 8 && x <= b.maxX + 8 && z >= b.minY - 8 && z <= b.maxY + 8);
+    if (b) {
+      let best = null;
+      for (let i = 0; i + 3 < b.p.length; i += 2) {
+        const ax = b.p[i], az = b.p[i + 1], bx = b.p[i + 2], bz = b.p[i + 3];
+        const l = Math.hypot(bx - ax, bz - az);
+        if (l < 4.5) continue;
+        let nx = -(bz - az) / l, nz = (bx - ax) / l;
+        const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+        if (insidePolygon(mx + nx * 0.5, mz + nz * 0.5, b.p)) (nx = -nx), (nz = -nz);
+        const near = nearestRoadPoint(map, mx + nx * 2, mz + nz * 2, false);
+        if (!near || near.road.e || !free(mx + nx * 1.5, mz + nz * 1.5)) continue; // 橋や高架の道の側、前がふさがった壁には付けない
+        if (!best || near.d < best.d) best = { mx, mz, nx, nz, d: near.d };
+      }
+      if (best) put('sentoFront', best.mx + best.nx * 0.12, 0, best.mz + best.nz * 0.12, along(best.nx, best.nz));
+    }
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2, r = 6 + (k % 3) * 4;
+      const cx = x + Math.cos(a) * r, cz = z + Math.sin(a) * r;
+      if (!fits(cx, cz, 1, 0, [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]], false) || !clear(cx, cz, 1.5)) continue;
+      put('chimney', cx, Y.area, cz, 0);
+      taken.push([cx, cz, 1.5]);
+      break;
+    }
+  });
+  group.userData.baths = baths;
+
+  // ---- 噴水（水は syncCity8 で上下）とシェアサイクルのポート ----
+  const fountains = [];
+  each(F.fountains, (x, z) => {
+    if (!inBounds(map, x, z) || !clear(x, z, 5)) return;
+    const ring = [[0, 0], ...Array.from({ length: 8 }, (_, k) => [Math.cos((k * Math.PI) / 4) * 4.4, Math.sin((k * Math.PI) / 4) * 4.4])];
+    if (!fits(x, z, 1, 0, ring, true)) return;
+    const y = surfaceAt(map, x, z).kind === 'path' ? Y.path : Y.area;
+    put('fountain', x, y, z, 0);
+    const water = new THREE.Mesh(g.fountainWater.body, WATER_MAT);
+    water.position.set(x, y, z);
+    water.name = 'fountainWater'; // デバッグ・自動テスト用
+    group.add(water);
+    fountains.push(water);
+    taken.push([x, z, 5]);
+  });
+  group.userData.fountains = fountains;
+  each(F.cycles, (x, z) => {
+    if (!inBounds(map, x, z)) return;
+    const t = toward(x, z, false);
+    if (!t || t.near.d > 25) return;
+    // 道の端の外側（歩道の上でもよい）に、道に沿って並べる
+    for (const off of [1.2, 2.2, 3.4]) {
+      const cx = t.near.x - t.fx * (t.near.road.w / 2 + off), cz = t.near.z - t.fz * (t.near.road.w / 2 + off);
+      if (!fits(cx, cz, t.ux, t.uz, [[0, 0], [-3.5, 0], [4.2, 0], [0, -0.9], [0, 0.6]], true) || !clear(cx, cz, 3)) continue;
+      put('cyclePort', cx, surfaceAt(map, cx, cz).kind === 'path' ? Y.path : Y.area, cz, along(t.fx, t.fz));
+      taken.push([cx, cz, 3.5]);
+      break;
+    }
+  });
+
+  // ---- 撮り鉄：山手線の地面の線路の柵の外で、線路にカメラを向ける（電車が近づくと構える。syncCity8） ----
+  const railfans = [];
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station');
+  for (const l of map.lines) {
+    if (l.k !== 'yamanote' || l.e || l.u || railfans.length >= 4) continue;
+    for (let i = 0; i + 3 < l.p.length && railfans.length < 4; i += 2) {
+      const x1 = l.p[i], z1 = l.p[i + 1], x2 = l.p[i + 2], z2 = l.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 30 || rnd() > 0.35) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      for (const side of [1, -1]) {
+        const nx = -uz * side, nz = ux * side;
+        const x = (x1 + x2) / 2 + nx * (FENCE_OFF + 1.4), z = (z1 + z2) / 2 + nz * (FENCE_OFF + 1.4);
+        if (stations.some((st) => Math.hypot(st.x - x, st.y - z) < FENCE_STATION_CLEAR) || !free(x, z) || !clear(x, z, 2) || onTrack(map, x, z, FENCE_OFF)) continue;
+        const o = new THREE.Group();
+        o.position.set(x, surfaceAt(map, x, z).kind === 'path' ? Y.path : Y.area, z);
+        o.rotation.y = along(-nx + ux * 0.6, -nz + uz * 0.6); // 線路の、少し先の方を向く
+        const up = new THREE.Mesh(g.railfanUp.body, STREET_MAT), down = new THREE.Mesh(g.railfanDown.body, STREET_MAT);
+        const tripod = new THREE.Mesh(g.tripod.body, STREET_MAT);
+        tripod.position.set(0.7, 0, 0.2);
+        up.castShadow = down.castShadow = true;
+        up.visible = false;
+        o.add(up, down, tripod);
+        o.name = 'railfan'; // デバッグ・自動テスト用
+        group.add(o);
+        railfans.push({ o, up, down });
+        taken.push([x, z, 2]);
+        break;
+      }
+    }
+  }
+  group.userData.railfans = railfans;
+
+  // ---- 航空障害灯：高いビルの屋上の、外側の角 4 か所（夕方と夜に赤く点滅） ----
+  for (const b of map.buildings) {
+    const h = buildingHeights?.[b.id] ?? 0;
+    if (h < OBST_MIN_H) continue;
+    const cx = (b.minX + b.maxX) / 2, cz = (b.minY + b.maxY) / 2;
+    if (!inBounds(map, cx, cz)) continue;
+    for (const [qx, qz] of [[b.minX, b.minY], [b.maxX, b.minY], [b.minX, b.maxY], [b.maxX, b.maxY]]) {
+      let best = null, bd = Infinity;
+      for (let i = 0; i + 1 < b.p.length; i += 2) {
+        const d = Math.hypot(b.p[i] - qx, b.p[i + 1] - qz);
+        if (d < bd) (bd = d), (best = [b.p[i], b.p[i + 1]]);
+      }
+      if (best) put('obstLight', best[0] + (cx - best[0]) * 0.04, h, best[1] + (cz - best[1]) * 0.04, 0, 3, 3, 3); // 遠くからも見えるよう大きめ
+    }
+  }
+
+  // ---- 掲示板：住宅地の細い道の端に、選挙のポスター掲示板と町内会の掲示板 ----
+  let boards = 0;
+  for (const r of map.roads) {
+    if (boards >= 10 || r.path || r.e || r.w > 6) continue;
+    if (rnd() > 0.08) continue;
+    const i = 2 * Math.floor(rnd() * (r.p.length / 2 - 1));
+    const x1 = r.p[i], z1 = r.p[i + 1], x2 = r.p[i + 2], z2 = r.p[i + 3];
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    if (len < 8) continue;
+    const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+    const side = rnd() < 0.5 ? 1 : -1;
+    const nx = -uz * side, nz = ux * side;
+    const x = (x1 + x2) / 2 + nx * (r.w / 2 + 0.9), z = (z1 + z2) / 2 + nz * (r.w / 2 + 0.9);
+    const key = boards % 2 ? 'noticeBoard' : 'electionBoard';
+    if (!fits(x, z, ux, uz, [[0, 0], [-1.8, 0], [1.8, 0]], false) || !clear(x, z, 2)) continue;
+    put(key, x, Y.area, z, along(-nx, -nz));
+    taken.push([x, z, 2]);
+    boards++;
+  }
+
+  for (const [key, list] of lists) {
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, key === 'obstLight' ? OBST_MAT : STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT && key !== 'parkStall';
+      group.add(mesh);
+    }
+  }
+  group.userData.taken = taken;
+}
+
 // 駅の入口：駅のまわりの空いている地面に、近くの道の方を向けて 1 つ（駅名の板付き）
 function addStationEntrances(group, map, roadHeights) {
   const g = city4.geos;
@@ -4321,6 +4620,8 @@ function* buildWorldSteps(map, textures) {
   while (!city7.done) yield 0.985;
   addCity7Props(group, map, roadHeights, heights);
   addGoalStaff(group);
+  while (!city8.done) yield 0.985;
+  addCity8Props(group, map, roadHeights, heights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -4451,6 +4752,7 @@ function fillBike(bike) {
   const c = { frame: 0xffcc33, jersey: 0xffcc33, shorts: 0x22324f, helmet: 0xe8443a, skin: 0xf2d0a9, tire: 0x1b1d22, metal: 0x9aa0aa, saddle: 0x15171b, ...s.colors };
   const transparent = s.opacity < 1;
   const o = { transparent, opacity: s.opacity, depthWrite: !transparent };
+  if (s.glow) o.blending = THREE.AdditiveBlending; // 光るゴースト
   s.body.clear();
   Object.assign(s, bikeModel ? fillBikeFromModel(s.body, c, o, kindOf(bike)) : fillBikeProcedural(s.body, c, o));
   attachAccessory(bike);
@@ -5237,7 +5539,19 @@ export function createRenderer3D(canvas) {
     return m;
   })();
   // ゴースト：同じ形の半透明の白
-  const ghost = makeBike({ frame: 0xe8ecf4, jersey: 0xe8ecf4, shorts: 0xc9ced8, helmet: 0xffffff, skin: 0xe8ecf4, tire: 0x9aa0aa, metal: 0xd0d4dc, saddle: 0xb0b5bf }, 0.45);
+  const GHOST_WHITE = { frame: 0xe8ecf4, jersey: 0xe8ecf4, shorts: 0xc9ced8, helmet: 0xffffff, skin: 0xe8ecf4, tire: 0x9aa0aa, metal: 0xd0d4dc, saddle: 0xb0b5bf };
+  const ghost = makeBike(GHOST_WHITE, 0.45);
+  // ゴーストの見た目（setGhostLook）と、軽さの設定（setQuality）
+  const GHOST_LOOKS = { white: { color: 'white', opacity: 0.45 }, glow: { color: 0x3aa8ff, opacity: 0.7, glow: true }, green: { color: 0x9acd32, opacity: 0.5 }, mine: { color: 'mine', opacity: 0.45 } };
+  let ghostLook = 'white';
+  const QUALITY = {
+    high: { pixel: 1, maxPixel: 3, shadows: true, riders: 1 },
+    mid: { pixel: 1, maxPixel: 1, shadows: false, riders: 0.5 },
+    low: { pixel: 0.7, maxPixel: 1, shadows: false, riders: 0.25 },
+  };
+  let quality = QUALITY.high;
+  let lastDpr = window.devicePixelRatio || 1;
+  let fps = 60; // 画面の滑らかさ（1 秒に描く回数。なめらかにした値）
   scene.add(player, ghost, headPool);
   let ghostPrev = null; // ゴーストの速さを求めるための前回の位置
   let bikeH = 0, ghostH = 0; // 自転車・ゴーストの高さ m（橋の上で上がる）
@@ -5766,10 +6080,13 @@ export function createRenderer3D(canvas) {
   // 自転車は歩道と細い道、バイクとスクーターは車道を、道のつながりに沿って走る。自転車のまわりに出し、離れたら消す
   // 同時に走らせる数（緊急車両はときどき 1 台）。dog は犬の散歩、vendor は石焼いも・古紙回収の軽トラ、mikoshi は縁日の近くのおみこし
   // big は観光バス・タンクローリー・引っ越し・ゴミ収集車・宣伝トラック、jogger・stroller・courier は歩道の人、cargo は自転車便
-  const RIDERS = { cycle: 8, motor: 5, emergency: 1, dog: 3, vendor: 1, mikoshi: 1, big: 2, jogger: 2, stroller: 1, courier: 1, cargo: 1 };
-  const ON_FOOT = new Set(['cycle', 'dog', 'mikoshi', 'jogger', 'stroller', 'courier', 'cargo']); // 一方通行を気にしない
+  // pupil は学校の近くの下校する子ども、bather は銭湯の近くの湯おけを持つ人
+  const RIDERS = { cycle: 8, motor: 5, emergency: 1, dog: 3, vendor: 1, mikoshi: 1, big: 2, jogger: 2, stroller: 1, courier: 1, cargo: 1, pupil: 2, bather: 1 };
+  const ON_FOOT = new Set(['cycle', 'dog', 'mikoshi', 'jogger', 'stroller', 'courier', 'cargo', 'pupil', 'bather']); // 一方通行を気にしない
   const BIG_CARS = ['openBus', 'tanker', 'mover', 'garbage', 'adTruck'];
-  const WALKERS = new Set(['dog', 'jogger', 'stroller', 'courier']); // 歩道の端を歩く
+  const WALKERS = new Set(['dog', 'jogger', 'stroller', 'courier', 'pupil', 'bather']); // 歩道の端を歩く
+  // 施設の近くにだけ出す人（自転車から 300m 以内の施設のまわり 60m）
+  const NEAR_PLACE = { pupil: 'schools', bather: 'baths' };
   const EMERGENCY = [['police', 'policeLamp'], ['ambulance', 'ambLamp'], ['fire', 'fireLamp']];
   const RIDER_SPAWN = [50, 170]; // 出す距離 m（自転車からの）
   const RIDER_DESPAWN = 230;
@@ -5783,6 +6100,16 @@ export function createRenderer3D(canvas) {
     if (kind === 'cycle') {
       const c = CYCLE_COLORS[pool.length % CYCLE_COLORS.length], j = CYCLE_COLORS[(pool.length * 3 + 2) % CYCLE_COLORS.length];
       o = makeBike({ frame: c, jersey: j, helmet: CYCLE_COLORS[(pool.length + 4) % CYCLE_COLORS.length], shorts: 0x2a2f3a });
+    } else if (kind === 'pupil' || kind === 'bather') {
+      const g = city8.geos;
+      if (!g) return null;
+      const key = kind === 'pupil' ? 'pupils' : 'bather';
+      o = new THREE.Group();
+      const body = new THREE.Mesh(g[key].body, STREET_MAT);
+      body.castShadow = true;
+      o.add(body);
+      o.userData.bob = 0.03;
+      o.userData.body = body;
     } else if (['big', 'jogger', 'stroller', 'courier', 'cargo'].includes(kind)) {
       const g = city6.geos;
       if (!g) return null;
@@ -5857,6 +6184,12 @@ export function createRenderer3D(canvas) {
       if (!f) return;
       (cx = f.x), (cy = f.z), (ring = [0, 30]);
     }
+    if (NEAR_PLACE[kind]) {
+      const at = (world?.userData[NEAR_PLACE[kind]] ?? []).find(([x, z]) => Math.hypot(x - p.x, z - p.y) < 300);
+      if (!at) return;
+      [cx, cy] = at;
+      ring = [5, 60];
+    }
     for (let tries = 0; tries < 15; tries++) {
       const a = Math.random() * Math.PI * 2, d = ring[0] + Math.random() * (ring[1] - ring[0]);
       const cell = map.cells.get(cellKey(cx + Math.sin(a) * d, cy - Math.cos(a) * d));
@@ -5871,7 +6204,7 @@ export function createRenderer3D(canvas) {
       const len = Math.hypot(sg.x2 - sg.x1, sg.y2 - sg.y1);
       const speed = {
         cycle: 3.5 + Math.random() * 2.5, emergency: 12 + Math.random() * 2, dog: 1.1 + Math.random() * 0.3, vendor: 2.2 + Math.random() * 0.6, mikoshi: 0.7,
-        big: 7 + Math.random() * 2, jogger: 2.6 + Math.random() * 0.6, stroller: 1.0, courier: 1.2, cargo: 4 + Math.random(),
+        big: 7 + Math.random() * 2, jogger: 2.6 + Math.random() * 0.6, stroller: 1.0, courier: 1.2, cargo: 4 + Math.random(), pupil: 1.0, bather: 0.9,
       }[kind] ?? 8 + Math.random() * 4;
       riders.list.push({ kind, o, road: r, v: dir > 0 ? sg.v : sg.v + 1, dir, s: Math.random() * len, speed, side: Math.random(), life: kind === 'emergency' ? 30 : Infinity });
       return;
@@ -5891,7 +6224,7 @@ export function createRenderer3D(canvas) {
     });
     for (const kind of Object.keys(RIDERS)) {
       const n = riders.list.filter((rd) => rd.kind === kind).length;
-      if (n >= RIDERS[kind] || (kind === 'emergency' && riders.emWait > 0)) continue;
+      if (n >= Math.round(RIDERS[kind] * quality.riders) || (kind === 'emergency' && riders.emWait > 0)) continue;
       spawnRider(kind, map, p);
       if (kind === 'emergency') riders.emWait = 45 + Math.random() * 45; // 次の緊急車両まで
     }
@@ -6487,6 +6820,28 @@ export function createRenderer3D(canvas) {
       s.o.material.color.setScalar(1 - haze);
       s.o.material.emissive.copy(fog.color).multiplyScalar(haze).add(shipHaze.setScalar(windowGlow * 0.12));
       s.o.visible = true;
+    }
+  }
+
+  // ---- 街の物 その 9 の動き：航空障害灯の点滅・噴水の水・撮り鉄 ----
+  const c8 = { t: 0 };
+  function syncCity8(game, dt) {
+    c8.t += dt;
+    // 航空障害灯：夕方と夜だけ、ゆっくり明るくなったり暗くなったり
+    OBST_MAT.visible = currentTime !== 'day';
+    OBST_MAT.color.setScalar(0.15 + 0.85 * Math.max(0, Math.sin(c8.t * Math.PI * 0.75)));
+    const ud = world?.userData;
+    for (const w of ud?.fountains ?? []) {
+      const k = 1 + 0.18 * Math.sin(c8.t * 2.2) + 0.06 * Math.sin(c8.t * 5.3);
+      w.scale.set(1 + (k - 1) * 0.4, k, 1 + (k - 1) * 0.4);
+    }
+    // 撮り鉄：山手線の電車が 200m より近いとカメラを構える
+    const cars = trainGroup.visible ? train.filter((c) => c.visible) : [];
+    for (const rf of ud?.railfans ?? []) {
+      const p = rf.o.position;
+      const near = cars.some((c) => Math.hypot(c.position.x - p.x, c.position.z - p.z) < 200);
+      rf.up.visible = near;
+      rf.down.visible = !near;
     }
   }
 
@@ -7151,7 +7506,27 @@ export function createRenderer3D(canvas) {
       player.userData.type = ghost.userData.type = type;
       player.userData.colors = colors;
       fillBike(player);
+      this.setGhostLook(ghostLook);
+    },
+
+    // ゴーストの見た目（white：白い半透明 / glow：光る水色 / green：山手線の黄緑 / mine：自分と同じ色の半透明）
+    setGhostLook(look) {
+      ghostLook = GHOST_LOOKS[look] ? look : 'white';
+      const L = GHOST_LOOKS[ghostLook];
+      const one = (hex) => ({ frame: hex, jersey: hex, shorts: hex, helmet: hex, skin: hex, tire: hex, metal: hex, saddle: hex });
+      Object.assign(ghost.userData, {
+        colors: L.color === 'mine' ? { ...player.userData.colors } : L.color === 'white' ? GHOST_WHITE : one(L.color),
+        opacity: L.opacity,
+        glow: Boolean(L.glow),
+      });
       fillBike(ghost);
+    },
+
+    // 軽さ（high：ふつう / mid：軽い / low：とても軽い）。画面の細かさ・影・道を行き来する人や車の数を減らす
+    setQuality(q) {
+      quality = QUALITY[q] ?? QUALITY.high;
+      if (shadows) sun.castShadow = quality.shadows;
+      this.resize(viewW, viewH, lastDpr);
     },
 
     setAtmosphere(time, weather) {
@@ -7253,7 +7628,8 @@ export function createRenderer3D(canvas) {
     resize(w, h, dpr) {
       viewW = w;
       viewH = h;
-      renderer.setPixelRatio(dpr);
+      lastDpr = dpr;
+      renderer.setPixelRatio(Math.min(dpr, quality.maxPixel) * quality.pixel);
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -7264,8 +7640,11 @@ export function createRenderer3D(canvas) {
       hudCtx.setTransform(1, 0, 0, 1, 0, 0);
       hudCtx.clearRect(0, 0, hudCtx.canvas.width, hudCtx.canvas.height);
       const now = performance.now();
-      const dt = Math.min(0.1, (now - lastTime) / 1000);
+      const rawDt = (now - lastTime) / 1000;
+      const dt = Math.min(0.1, rawDt);
       lastTime = now;
+      if (rawDt > 0) fps += (1 / rawDt - fps) * 0.05;
+      r3d.hud.fps = Math.round(fps);
       // タイトル画面と遊び方の画面は、山手線のミニチュア（区間の街はその間も少しずつ作る）
       if ((game.state === 'title' || game.state === 'howto') && renderDiorama(dt)) {
         if (game.map) {
@@ -7316,6 +7695,7 @@ export function createRenderer3D(canvas) {
       syncCity5(game, dt);
       syncCity6(game, dt);
       syncCity7(game, dt);
+      syncCity8(game, dt);
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する

@@ -631,7 +631,7 @@ function drawHowto(ctx, game, view) {
     : [
         '矢印キー / WASD で操作　P：一時停止　R：やり直し　Esc：戻る',
         'M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響',
-        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点　F：季節　J：飾り' : ''}`,
+        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点　F：季節　J：飾り　Q：軽さ' : ''}　L：ゴーストの見た目`,
       ];
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
@@ -682,6 +682,9 @@ function drawReady(ctx, game, view) {
   });
   // 自転車の飾り（3D版）
   if (game.mode === '3d') {
+    // 軽さ（今の画面の滑らかさ＝1 秒に描く回数も出す）
+    const q = `軽さ：${QUALITY_NAMES[game.quality] ?? 'ふつう'}　いま ${view.fps ?? '-'} fps`;
+    lines.push([game.touch ? q : `${q}（Q）`, { size: 13, color: (view.fps ?? 60) < 30 ? '#ffc93c' : QUIET }, 'quality']);
     const acc = `自転車の飾り：${ACCESSORY_NAMES[game.accessory] ?? 'なし'}`;
     lines.push([game.touch ? acc : `${acc}（J）`, { size: 13, color: game.accessory && game.accessory !== 'none' ? TEXT : QUIET }, 'accessory']);
   }
@@ -717,6 +720,8 @@ function drawReady(ctx, game, view) {
     } else {
       lines.push(['ゴースト：勝つとベストの走りが記録されます', { size: 13, color: QUIET }]);
     }
+    const look = `ゴーストの見た目：${GHOST_LOOK_NAMES[game.ghostLook] ?? '白'}`;
+    lines.push([game.touch ? look : `${look}（L）`, { size: 13, color: QUIET }, 'ghostLook']);
     lines.push([game.touch ? 'ここをタップでスタート' : 'スペース / クリックでスタート', { size: 20, weight: 'bold' }, 'start']);
   }
   if (game.touch) {
@@ -975,6 +980,8 @@ function shareLine(game) {
 
 const GOAL_SHOW_MS = 2200; // src/game.js の GOAL_SHOW_MS と同じ
 const SEASON_NAMES = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' };
+const GHOST_LOOK_NAMES = { white: '白', glow: '光る水色', green: '山手線の黄緑', mine: '自分と同じ色' };
+const QUALITY_NAMES = { high: 'ふつう', mid: '軽い', low: 'とても軽い' };
 const ACCESSORY_NAMES = { none: 'なし', scarf: 'マフラー', bag: '買い物袋', flowers: '花束', child: '子ども乗せの子ども' };
 // 3D版：結果画面の前に、大きく「ゴール！」とタイム（後ろでくす玉が割れる）か、「電車が先に到着…」（後ろで電車のドアが開く）だけを出す
 function drawGoalFlash(ctx, game, view) {

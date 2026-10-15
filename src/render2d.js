@@ -2,6 +2,22 @@
 // HUD（メニュー・レースバー・ミニマップなど）は game.js が同じキャンバスの上に描く。
 import { drawPlayer, GHOST_STYLE, PLAYER_STYLE } from './player.js';
 import { bikeTypeOf } from './outfits.js';
+
+// ゴーストの見た目（game.ghostLook）：白い半透明・光る水色・山手線の黄緑・自分と同じ色
+const hex = (v) => `#${v.toString(16).padStart(6, '0')}`;
+function ghostStyle(game) {
+  const c = game.riderColors;
+  switch (game.ghostLook) {
+    case 'glow':
+      return { ...GHOST_STYLE, body: '#6ad0ff', nose: '#bff0ff', tire: '#3a8ac8', alpha: 0.75 };
+    case 'green':
+      return { ...GHOST_STYLE, body: '#9acd32', nose: '#c8f080', tire: '#5a8a20', alpha: 0.6 };
+    case 'mine':
+      return c ? { ...GHOST_STYLE, body: hex(c.jersey), nose: hex(c.helmet), alpha: 0.5 } : GHOST_STYLE;
+    default:
+      return GHOST_STYLE;
+  }
+}
 import { drawMap } from './map.js';
 import { drawObstacles } from './obstacles.js';
 import { drawTrain } from './trainpath.js';
@@ -39,9 +55,9 @@ export function createRenderer2D() {
       // ライバルの電車：カウントダウン〜結果のあいだ、線路の上を走る（自転車やゴーストより下）
       if (game.inRace && game.map.trainRoute) drawTrain(ctx, game.map.trainRoute, game.trainProgress);
       // ゴーストは自転車の下に描く
-      if (game.ghostPose) drawPlayer(ctx, game.ghostPose, GHOST_STYLE);
+      if (game.ghostPose) drawPlayer(ctx, game.ghostPose, ghostStyle(game));
       // 選んだ服とヘルメットの色・自転車の種類（かご）で描く
-      const c = game.riderColors, hex = (v) => `#${v.toString(16).padStart(6, '0')}`;
+      const c = game.riderColors;
       drawPlayer(ctx, p, c ? { ...PLAYER_STYLE, body: hex(c.jersey), nose: hex(c.helmet), basket: bikeTypeOf(game.bikeType).basket } : PLAYER_STYLE);
     },
   };

@@ -559,6 +559,22 @@ function setSeason(season) {
   save('season', game.season);
 }
 
+// ゴーストの見た目（見た目だけ）：白い半透明・光る水色・山手線の黄緑・自分と同じ色
+const GHOST_LOOKS = ['white', 'glow', 'green', 'mine'];
+function setGhostLook(look) {
+  game.ghostLook = GHOST_LOOKS.includes(look) ? look : 'white';
+  renderer.setGhostLook?.(game.ghostLook);
+  save('ghostLook', game.ghostLook);
+}
+
+// 軽さ（3D版）：ふつう・軽い・とても軽い。画面の細かさ・影・道を行き来する人や車の数を減らす
+const QUALITIES = ['high', 'mid', 'low'];
+function setQuality(q) {
+  game.quality = QUALITIES.includes(q) ? q : 'high';
+  renderer.setQuality?.(game.quality);
+  save('quality', game.quality);
+}
+
 // 自転車の飾り（3D版。見た目だけ）：マフラー・かごの買い物袋・花束（ロードバイクは背中のリュック）
 const ACCESSORIES = ['none', 'scarf', 'bag', 'flowers', 'child']; // child（子ども乗せの子ども）は電動アシスト自転車だけ
 function setAccessory(accessory) {
@@ -621,6 +637,10 @@ function act(action, x = null) {
     setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
+  } else if (action === 'ghostLook') {
+    setGhostLook(cycle(GHOST_LOOKS, game.ghostLook));
+  } else if (action === 'quality') {
+    setQuality(cycle(QUALITIES, game.quality));
   } else if (action === 'accessory') {
     let next = cycle(ACCESSORIES, game.accessory);
     if (next === 'child' && game.bikeType !== 'ebike') next = cycle(ACCESSORIES, next);
@@ -710,6 +730,10 @@ window.addEventListener('keydown', (e) => {
     act('season');
   } else if (e.code === 'KeyJ' && game.mode === '3d') {
     act('accessory');
+  } else if (e.code === 'KeyL') {
+    act('ghostLook');
+  } else if (e.code === 'KeyQ' && game.mode === '3d') {
+    act('quality');
   } else if (s === 'ready' && (e.code === 'KeyV' || e.code === 'KeyU' || e.code === 'KeyK')) {
     act({ KeyV: 'bikeType', KeyU: 'outfit', KeyK: 'helmet' }[e.code]);
   } else if (e.code === 'KeyB') {
@@ -827,6 +851,8 @@ export async function startGame(r) {
   setRiderLook(load('bikeType'), load('outfit'), load('helmet'));
   setSeason(load('season'));
   setAccessory(load('accessory'));
+  setGhostLook(load('ghostLook'));
+  setQuality(load('quality'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
   if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;
