@@ -560,9 +560,9 @@ function setSeason(season) {
 }
 
 // 自転車の飾り（3D版。見た目だけ）：マフラー・かごの買い物袋・花束（ロードバイクは背中のリュック）
-const ACCESSORIES = ['none', 'scarf', 'bag', 'flowers'];
+const ACCESSORIES = ['none', 'scarf', 'bag', 'flowers', 'child']; // child（子ども乗せの子ども）は電動アシスト自転車だけ
 function setAccessory(accessory) {
-  game.accessory = ACCESSORIES.includes(accessory) ? accessory : 'none';
+  game.accessory = ACCESSORIES.includes(accessory) && !(accessory === 'child' && game.bikeType !== 'ebike') ? accessory : 'none';
   renderer.setAccessory?.(game.accessory);
   save('accessory', game.accessory);
 }
@@ -575,6 +575,7 @@ function setRiderLook(bikeType, outfit, helmet) {
   game.helmet = ok(HELMETS, helmet);
   game.riderColors = riderColors(game.outfit, game.helmet);
   renderer.setBike?.(game.bikeType, game.riderColors);
+  if (game.accessory === 'child' && game.bikeType !== 'ebike') setAccessory('none'); // 子ども乗せは電動アシスト自転車だけ
   save('bikeType', game.bikeType);
   save('outfit', game.outfit);
   save('helmet', game.helmet);
@@ -621,7 +622,9 @@ function act(action, x = null) {
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
   } else if (action === 'accessory') {
-    setAccessory(cycle(ACCESSORIES, game.accessory));
+    let next = cycle(ACCESSORIES, game.accessory);
+    if (next === 'child' && game.bikeType !== 'ebike') next = cycle(ACCESSORIES, next);
+    setAccessory(next);
   } else if (action === 'season') {
     setSeason(cycle(SEASONS, game.season));
   } else if (action === 'bikeType') {

@@ -975,7 +975,7 @@ function shareLine(game) {
 
 const GOAL_SHOW_MS = 2200; // src/game.js の GOAL_SHOW_MS と同じ
 const SEASON_NAMES = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' };
-const ACCESSORY_NAMES = { none: 'なし', scarf: 'マフラー', bag: '買い物袋', flowers: '花束' };
+const ACCESSORY_NAMES = { none: 'なし', scarf: 'マフラー', bag: '買い物袋', flowers: '花束', child: '子ども乗せの子ども' };
 // 3D版：結果画面の前に、大きく「ゴール！」とタイム（後ろでくす玉が割れる）か、「電車が先に到着…」（後ろで電車のドアが開く）だけを出す
 function drawGoalFlash(ctx, game, view) {
   const r = game.result;

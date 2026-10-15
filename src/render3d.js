@@ -2530,6 +2530,7 @@ function addCity5Props(group, map, roadHeights) {
         const corners = [[0, 0], [2.6, 0], [-2.6, 0], [0, 1.5], [0, -1.5], [2.6, 1.2], [-2.6, 1.2]];
         if (!corners.every(([u, w]) => free(x + sx * u + fx * w, z + sz * u + fz * w, false))) continue;
         put('summer', 'tanabata', x - sx * 1.8, Y.area, z - sz * 1.8, 0);
+        (group.userData.taken ??= []).push([x, z, 4]); // 季節の飾りの場所（addCity7Props でほかの物を置かない）
         put('summer', 'furin', x + sx * 1.2, Y.area, z + sz * 1.2, along(fx, fz));
         put('winter', 'xmas', x, Y.area, z, rnd() * 6);
         done = true;
@@ -2567,6 +2568,7 @@ function addCity5Props(group, map, roadHeights) {
     // ちょうちんの列（屋台の前の上、端から端まで。モデルは X の向きに 8m）
     put('static', 'lanterns', ax - dx * 1.5 - nx * 1.0, 3.1, az - dz * 1.5 - nz * 1.0, faceTo(dx, dz), span / 8, 1, 1);
     festivals.push({ x: near.x, z: near.z, name: l.n });
+    for (const [px, pz] of placed) (group.userData.taken ??= []).push([px, pz, 2]);
   }
   group.userData.festivals = festivals;
 
@@ -2798,7 +2800,7 @@ const ACCESSORY_SPOTS = {
 function attachAccessory(bike) {
   const s = bike.userData, g = city6.geos;
   s.scarfTail = null;
-  if (!g || !s.accessory || s.accessory === 'none') return;
+  if (!s.accessory || s.accessory === 'none' || (!g && s.accessory !== 'child')) return;
   const kind = s.type === 'road' || !s.type ? 'road' : 'up';
   const spot = ACCESSORY_SPOTS[kind];
   const add = (key, pos, rotX = 0) => {
@@ -2809,7 +2811,15 @@ function attachAccessory(bike) {
     s.body.add(m);
     return m;
   };
-  if (s.accessory === 'scarf') {
+  if (s.accessory === 'child') {
+    // 電動アシスト自転車の後ろの子ども乗せだけ
+    if (s.type === 'ebike' && city7.geos) {
+      const m = new THREE.Mesh(city7.geos.child.body, STREET_MAT);
+      m.position.set(...CHILD_SEAT);
+      m.castShadow = true;
+      s.body.add(m);
+    }
+  } else if (s.accessory === 'scarf') {
     add('scarfRing', spot.neck);
     s.scarfTail = add('scarfTail', [spot.neck[0], spot.neck[1] + 0.02, spot.neck[2] + 0.09]);
   } else if (kind === 'road') add(s.accessory === 'bag' ? 'backpack' : 'packFlowers', spot.pack, spot.tilt);
@@ -3043,6 +3053,340 @@ function addCity6Props(group, map, roadHeights, buildingHeights) {
       parent.add(mesh);
     }
   }
+}
+
+// ---- 街の物 その 8（Blender で作ったモデル。tools/build-city7.py） ----
+// 神社とお寺の入口・交番・首都高・赤ちょうちんの居酒屋とラーメンの屋台・タクシー乗り場。
+// 電車の乗客・子ども乗せの子ども・雲と虹・東京湾の船・ゴールの駅員さんも。どれも見た目だけ
+const CITY7_URL = 'data/models/city7.glb';
+const CITY7_NAMES = {
+  torii: 'C7_Torii', toro: 'C7_Toro', komainu: 'C7_Komainu', sanmon: 'C7_Sanmon', koban: 'C7_Koban', hwyPier: 'C7_HwyPier', hwySign: 'C7_HwySign',
+  izakaya: 'C7_Izakaya', ramen: 'C7_Ramen', taxiSign: 'C7_TaxiSign', paxYamanote: 'C7_PaxYamanote', paxCommuter: 'C7_PaxCommuter', child: 'C7_Child',
+  cloud0: 'C7_Cloud0', cloud1: 'C7_Cloud1', cloud2: 'C7_Cloud2', rainbow: 'C7_Rainbow', containerShip: 'C7_ContainerShip', ferry: 'C7_Ferry',
+  staff: 'C7_Staff', staffArm: 'C7_StaffArm',
+};
+const city7 = { geos: null, done: false };
+loadModelParts(CITY7_URL, CITY7_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city7.geos = geos;
+    for (const b of bikes) if (b.userData.accessory === 'child') fillBike(b); // 子ども乗せの子どもを付け直す
+  })
+  .catch((e) => console.warn(`街の物（その 8）のモデルを読み込めませんでした: ${CITY7_URL}`, e))
+  .finally(() => (city7.done = true));
+const SHRINE_NAME = /神社|稲荷|八幡|天神|大社|神宮/, TEMPLE_NAME = /寺|院$|観音|不動/;
+// 首都高が上を通る道（名前。昭和通りは国道 4 号＝trunk の所だけ）。実物の路線をおおまかに当てはめたもの
+const HWY_ROAD = (r) => !r.e && r.n && (/^(玉川通り|六本木通り|甲州街道|海岸通り)/.test(r.n) || (/^昭和通り/.test(r.n) && r.t === 'trunk'));
+const HWY_Y = 14; // 高架の上面の高さ m
+const HWY_W = 17; // 高架の幅 m
+const HWY_PIER_SPACING = 32;
+const NIGHT_MAT = new THREE.MeshBasicMaterial({ vertexColors: true }); // 夜だけ灯る物（灯籠の窓）
+const CHILD_SEAT = [0, 0.86, 0.56]; // 電動アシスト自転車の子ども乗せの座る所（tools/build-bicycle.py）
+
+function addCity7Props(group, map, roadHeights, buildingHeights) {
+  const g = city7.geos;
+  if (!g) return;
+  const rnd = seededRng(`${map.id ?? 'city'}-7`);
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const lists = new Map();
+  const tmpQ = new THREE.Quaternion(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3(), Y_UP = new THREE.Vector3(0, 1, 0);
+  const put = (where, key, x, h, z, rotY, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Matrix4().compose(tmpP.set(x, h, z), tmpQ.setFromAxisAngle(Y_UP, rotY), tmpS.set(sx, sy, sz));
+    const id = `${where}|${key}`;
+    if (!lists.has(id)) lists.set(id, []);
+    lists.get(id).push(m);
+  };
+  const free = (x, z, onPath = true) => inBounds(map, x, z) && freeSpot(map, roadHeights, x, z, onPath);
+  // ほかの物（駅の入口・季節の飾り・縁日の屋台など）とぶつからないよう、置いた所を覚えておく
+  const taken = [...(group.userData.taken ?? [])];
+  for (const o of group.children) if (o.name === 'entrance') taken.push([o.position.x, o.position.z, 5]);
+  const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + r);
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station' && inBounds(map, l.x, l.y));
+  const night = new THREE.Group(); // 夕方と夜だけ（ラーメンの屋台）
+  group.add(night);
+  group.userData.nightProps = night;
+
+  // ---- 神社とお寺の入口：寺社のいちばん近い道の、寺社の側に、鳥居（と狛犬・灯籠）か山門 ----
+  let gates = 0;
+  for (const l of (map.landmarks ?? []).filter((l) => l.k === 'worship' && inBounds(map, l.x, l.y))) {
+    if (gates >= 8) break;
+    const shrine = SHRINE_NAME.test(l.n), temple = !shrine && TEMPLE_NAME.test(l.n);
+    if (!shrine && !temple) continue;
+    const near = nearestRoadPoint(map, l.x, l.y, false);
+    if (!near || near.d > 70 || near.road.e) continue;
+    const [dx, dz] = roadDirAt(near.road, near.x, near.z);
+    let nx = -dz, nz = dx; // 道の横（寺社の側）
+    if ((l.x - near.x) * nx + (l.y - near.z) * nz < 0) (nx = -nx), (nz = -nz);
+    // 道の端から、縁日の屋台の奥（置けなければ、もう少し奥）。参道（歩道）の上には置いてよい
+    const need = shrine ? [[-2.2, 0], [2.2, 0], [0, 0], [-1.7, -2], [1.7, -2], [-3.6, -1], [3.6, -1]] : [[-3.6, 0], [3.6, 0], [0, 0], [-3.6, 1.3], [3.6, -1.3]];
+    let cx = null, cz = null;
+    for (const off of [6, 8, 10, 4.5].map((o) => near.road.w / 2 + o)) {
+      const x0 = near.x + nx * off, z0 = near.z + nz * off;
+      if (need.every(([u, w]) => free(x0 + dx * u + nx * w, z0 + dz * u + nz * w)) && clear(x0, z0, 5)) {
+        (cx = x0), (cz = z0);
+        break;
+      }
+    }
+    if (cx === null) continue;
+    const at = (u, w) => [cx + dx * u + nx * w, cz + dz * u + nz * w];
+    const face = along(-nx, -nz); // 前を道へ
+    if (shrine) {
+      put('static', 'torii', cx, Y.area, cz, face);
+      for (const s of [-1, 1]) {
+        const [kx, kz] = at(s * 1.7, -2);
+        put('static', 'komainu', kx, Y.area, kz, face + s * 0.35);
+        const [tx, tz] = at(s * 3.6, -1);
+        put('static', 'toro', tx, Y.area, tz, face);
+      }
+    } else put('static', 'sanmon', cx, Y.area, cz, face);
+    taken.push([cx, cz, 5]);
+    gates++;
+  }
+
+  // ---- 交番：駅のまわりの空いた地面に、道の方を向けて 1 つ（入口と季節の飾りから離す） ----
+  for (const st of stations) {
+    let done = false;
+    for (const dist of [28, 40, 55, 70]) {
+      for (let k = 0; k < 16 && !done; k++) {
+        const a = (k / 16) * Math.PI * 2 + 0.6;
+        const x = st.x + Math.cos(a) * dist, z = st.y + Math.sin(a) * dist;
+        const near = nearestRoadPoint(map, x, z, false);
+        if (!near || near.d > 9 || near.d < 4) continue;
+        const fx = (near.x - x) / near.d, fz = (near.z - z) / near.d;
+        const corners = [[2.4, 2.2], [2.4, -2.2], [-2.2, 2.2], [-2.2, -2.2], [0, 0], [3, 1.6]];
+        if (!corners.every(([u, w]) => free(x + fx * u - fz * w, z + fz * u + fx * w, false)) || !clear(x, z, 4)) continue;
+        const o = new THREE.Group();
+        o.position.set(x, Y.area, z);
+        o.rotation.y = along(fx, fz);
+        o.add(new THREE.Mesh(g.koban.body, STREET_MAT), new THREE.Mesh(g.koban.glow, STREET_GLOW_MAT));
+        o.children[0].castShadow = true;
+        o.name = 'koban'; // デバッグ・自動テスト用
+        group.add(o);
+        taken.push([x, z, 4]);
+        done = true;
+      }
+      if (done) break;
+    }
+  }
+
+  // ---- タクシー乗り場：駅の近くの車道の端に、客を待つタクシーの列と案内、歩道に並ぶ人 ----
+  const taxis = [];
+  for (const st of stations) {
+    let best = null;
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2, d = 35 + (k % 3) * 12;
+      const near = nearestRoadPoint(map, st.x + Math.cos(a) * d, st.y + Math.sin(a) * d, true);
+      if (!near || near.road.e || near.road.w < 10 || near.road.path) continue;
+      const ds = Math.hypot(near.x - st.x, near.z - st.y);
+      if (ds < 25 || ds > 90) continue;
+      if ([map.start, map.goal].some((pt) => Math.hypot(pt.x - near.x, pt.y - near.z) < 30)) continue;
+      if (!best || ds < best.ds) best = { ...near, ds };
+    }
+    if (!best) continue;
+    const r = best.road;
+    const [dx, dz] = roadDirAt(r, best.x, best.z);
+    let nx = -dz, nz = dx;
+    if ((st.x - best.x) * nx + (st.y - best.z) * nz < 0) (nx = -nx), (nz = -nz); // 駅の側の端
+    const edge = r.w / 2;
+    // 左側通行：駅の側の端（n）が進む向きの左になる向き（左は (前の z, -前の x)）
+    const fdx = -nz, fdz = nx;
+    for (let k = 0; k < 4; k++) {
+      const x = best.x + nx * (edge - 1.3) - fdx * k * 5.6, z = best.z + nz * (edge - 1.3) - fdz * k * 5.6;
+      if (!inBounds(map, x, z)) continue;
+      taxis.push({ x, z, rot: along(fdx, fdz) });
+    }
+    const sx = best.x + nx * (edge + 0.9) + fdx * 2.5, sz = best.z + nz * (edge + 0.9) + fdz * 2.5;
+    if (free(sx, sz)) put('static', 'taxiSign', sx, Y.path, sz, along(-nx, -nz));
+    const queue = [];
+    for (let k = 0; k < 6; k++) {
+      const x = sx - fdx * (0.9 + k * 0.75) + nx * 0.4, z = sz - fdz * (0.9 + k * 0.75) + nz * 0.4;
+      if (free(x, z)) queue.push([x, z, along(fdx, fdz)]);
+    }
+    if (queue.length && city3.geos) {
+      queue.forEach(([x, z, rot], k) => put('static', `queue${k % 4}`, x, Y.path, z, rot));
+    }
+    taken.push([best.x, best.z, 12]);
+  }
+  if (taxis.length) {
+    const tg = carGeometry({ type: 'taxi', color: '#1f2a44' });
+    const body = new THREE.InstancedMesh(tg.body, CAR_BODY_MAT, taxis.length), light = new THREE.InstancedMesh(tg.lights, CAR_LIGHT_MAT, taxis.length);
+    const m = new THREE.Matrix4();
+    taxis.forEach((t, i) => {
+      m.makeRotationY(t.rot).setPosition(t.x, Y.road, t.z);
+      body.setMatrixAt(i, m);
+      light.setMatrixAt(i, m);
+    });
+    body.castShadow = true;
+    body.name = 'taxiQueue'; // デバッグ・自動テスト用
+    group.add(body, light);
+  }
+
+  // ---- 赤ちょうちんの居酒屋：繁華街・ガード下の駅のまわり・名前が横丁や小路の道の、道に向いた建物の壁に ----
+  const districts = NEON_DISTRICTS.map((d) => [...latLonXY(map, d.lat, d.lon), d.r]);
+  for (const st of stations) if (GUARD_STATIONS.test(st.n)) districts.push([st.x, st.y, GUARD_RADIUS]);
+  const alleyRoads = map.roads.filter((r) => r.n && /横丁|小路/.test(r.n));
+  const nearAlley = (x, z) => alleyRoads.some((r) => {
+    for (let i = 0; i + 3 < r.p.length; i += 2) {
+      const ax = r.p[i], az = r.p[i + 1], bx = r.p[i + 2] - ax, bz = r.p[i + 3] - az, l2 = bx * bx + bz * bz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * bx + (z - az) * bz) / l2));
+      if (Math.hypot(x - ax - bx * t, z - az - bz * t) < r.w / 2 + 4) return true;
+    }
+    return false;
+  });
+  const izakayas = [];
+  for (const b of map.buildings) {
+    if (izakayas.length >= 16) break;
+    const cx = (b.minX + b.maxX) / 2, cz = (b.minY + b.maxY) / 2;
+    const inDistrict = districts.some(([dx, dz, r]) => Math.hypot(dx - cx, dz - cz) < r);
+    if (!inDistrict && !nearAlley(cx, cz)) continue;
+    if ((buildingHeights?.[b.id] ?? 0) < 3.5 || rnd() > 0.35) continue;
+    for (let i = 0; i + 3 < b.p.length; i += 2) {
+      const ax = b.p[i], az = b.p[i + 1], bx = b.p[i + 2], bz = b.p[i + 3];
+      const l = Math.hypot(bx - ax, bz - az);
+      if (l < 5) continue;
+      let nx = -(bz - az) / l, nz = (bx - ax) / l;
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      if (insidePolygon(mx + nx * 0.5, mz + nz * 0.5, b.p)) (nx = -nx), (nz = -nz);
+      const near = nearestRoadPoint(map, mx + nx * 2, mz + nz * 2, false);
+      if (!near || near.d > near.road.w / 2 + 1.5 || near.road.e) continue;
+      if (!inBounds(map, mx, mz) || izakayas.some(([x, z]) => Math.hypot(x - mx, z - mz) < 14)) continue;
+      if ([map.start, map.goal].some((pt) => Math.hypot(pt.x - mx, pt.y - mz) < FURNITURE_CLEAR_START)) continue;
+      put('static', 'izakaya', mx + nx * 0.12, 0, mz + nz * 0.12, along(nx, nz));
+      izakayas.push([mx, mz]);
+      break;
+    }
+  }
+
+  // ---- ラーメンの屋台（夕方と夜だけ）：駅のまわりの歩道の広い所に ----
+  let ramens = 0;
+  // 駅から 15〜80m の歩道の横の空いた地面に、歩道の方を向けて（1 駅に 1 つ）
+  for (const st of stations) {
+    let done = false;
+    for (const r of map.roads) {
+      if (done || ramens >= 3 || !r.path || r.e) continue;
+      for (let i = 0; i + 3 < r.p.length && !done; i += 2) {
+        const mx = (r.p[i] + r.p[i + 2]) / 2, mz = (r.p[i + 1] + r.p[i + 3]) / 2;
+        const ds = Math.hypot(mx - st.x, mz - st.y);
+        if (ds < 15 || ds > 80) continue;
+        const l = Math.hypot(r.p[i + 2] - r.p[i], r.p[i + 3] - r.p[i + 1]);
+        if (l < 4) continue;
+        const ux = (r.p[i + 2] - r.p[i]) / l, uz = (r.p[i + 3] - r.p[i + 1]) / l;
+        for (const s of [1, -1]) {
+          const nx = -uz * s, nz = ux * s;
+          const x = mx + nx * (r.w / 2 + 1.3), z = mz + nz * (r.w / 2 + 1.3);
+          if (!clear(x, z, 3) || ![[0, 0], [1.2, 0], [-1.2, 0], [0, 0.9], [0, -0.7]].every(([u, w]) => free(x + ux * u + nx * w, z + uz * u + nz * w, false))) continue;
+          put('night', 'ramen', x, Y.area, z, along(-nx, -nz));
+          taken.push([x, z, 3]);
+          ramens++;
+          done = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // ---- 首都高：名前の決まった大きな道の上に、高さ HWY_Y m の高架（板・防音壁・橋脚・案内板）。上を車が走る（syncCity7） ----
+  const hwys = map.roads.filter(HWY_ROAD).filter((r) => r.p.length >= 4);
+  if (hwys.length) {
+    const deck = new GeometryBuilder(), walls = new GeometryBuilder(true), lines = new GeometryBuilder(true);
+    const WALL = [0.62, 0.68, 0.64], WHITE_L = [0.88, 0.88, 0.86];
+    const paths = [];
+    for (const r of hwys) {
+      addDeck(deck, r.p, HWY_W, HWY_Y);
+      for (const s of [-1, 1]) addOffsetStrip(lines, r.p, s * (HWY_W / 2 - 1.2), 0.18, HWY_Y + 0.02, WHITE_L);
+      addOffsetStrip(lines, r.p, 0, 0.5, HWY_Y + 0.02, [0.85, 0.7, 0.2]); // 真ん中の線
+      for (let i = 0; i + 3 < r.p.length; i += 2) {
+        const x1 = r.p[i], z1 = r.p[i + 1], x2 = r.p[i + 2], z2 = r.p[i + 3];
+        const len = Math.hypot(x2 - x1, z2 - z1);
+        if (len < 1e-6) continue;
+        const nx = -(z2 - z1) / len, nz = (x2 - x1) / len;
+        for (const s of [-1, 1]) {
+          const ox = nx * (HWY_W / 2 - 0.15) * s, oz = nz * (HWY_W / 2 - 0.15) * s;
+          const a = [x1 + ox, HWY_Y, z1 + oz], c = [x2 + ox, HWY_Y, z2 + oz], d = [x2 + ox, HWY_Y + 2.4, z2 + oz], e = [x1 + ox, HWY_Y + 2.4, z1 + oz];
+          walls.tri(a, c, d, [nx * s, 0, nz * s], WALL);
+          walls.tri(a, d, e, [nx * s, 0, nz * s], WALL);
+        }
+      }
+      for (const [x, z, i] of pillarSpots(r.p, HWY_PIER_SPACING)) {
+        if (!inBounds(map, x, z) || onTrack(map, x, z, 5)) continue;
+        if ([map.start, map.goal].some((pt) => Math.hypot(pt.x - x, pt.y - z) < 20)) continue;
+        if ((surfaceAt(map, x, z).segs ?? []).some((sg) => sg.road !== r && !sg.road.path && sg.road.w >= 6)) continue; // 交差点の真ん中には立てない
+        const dx = r.p[2 * i + 2] - r.p[2 * i], dz = r.p[2 * i + 3] - r.p[2 * i + 1], l = Math.hypot(dx, dz) || 1;
+        put('static', 'hwyPier', x, 0, z, faceTo(-dz / l, dx / l), 1, (HWY_Y - DECK_T) / 12.6, 1); // 高架の下まで伸ばす
+        if (rnd() < 0.08) put('static', 'hwySign', x + (-dz / l) * (HWY_W / 2 + 0.1), HWY_Y - 2.9, z + (dx / l) * (HWY_W / 2 + 0.1), along(-dz / l, dx / l));
+      }
+      const cum = [0];
+      for (let i = 0; i + 3 < r.p.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(r.p[i + 2] - r.p[i], r.p[i + 3] - r.p[i + 1]));
+      if (cum[cum.length - 1] > 60) paths.push({ p: r.p, cum, len: cum[cum.length - 1] });
+    }
+    const deckMesh = new THREE.Mesh(deck.build(), new THREE.MeshLambertMaterial({ color: 0x5a5e66, side: THREE.DoubleSide }));
+    deckMesh.castShadow = deckMesh.receiveShadow = true;
+    deckMesh.name = 'highway'; // デバッグ・自動テスト用
+    const wallMesh = new THREE.Mesh(walls.build(), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    wallMesh.castShadow = true;
+    group.add(deckMesh, wallMesh, new THREE.Mesh(lines.build(), new THREE.MeshLambertMaterial({ vertexColors: true })));
+    // 高架を走る車（左側通行で 2 車線ずつ）
+    const total = paths.reduce((s, p) => s + p.len, 0);
+    const cars = [];
+    const looks = [['sedan', '#c8ccd4'], ['minivan', '#f4f4f0'], ['kei', '#3a5a8a'], ['sedan', '#1e2028'], ['taxi', '#1f2a44'], ['minivan', '#8a2a2a']];
+    const n = Math.min(16, Math.round(total / 120));
+    for (let k = 0; k < n && paths.length; k++) {
+      const [type, color] = looks[k % looks.length];
+      const cg = carGeometry({ type, color });
+      const o = new THREE.Group();
+      const body = new THREE.Mesh(cg.body, CAR_BODY_MAT);
+      body.castShadow = true;
+      o.add(body, new THREE.Mesh(cg.lights, CAR_LIGHT_MAT));
+      o.name = 'hwyCar'; // デバッグ・自動テスト用
+      group.add(o);
+      const path = paths[k % paths.length];
+      cars.push({ o, path, s: rnd() * path.len, dir: k % 2 ? 1 : -1, lane: k % 4 < 2 ? 2.4 : 5.6, speed: 15 + rnd() * 6 });
+    }
+    group.userData.hwyCars = cars;
+  }
+
+  // ---- 東京湾の船・雲は syncCity7。並べた物を InstancedMesh にする ----
+  for (const [id, list] of lists) {
+    const [where, key] = id.split('|');
+    const parent = where === 'night' ? night : group;
+    const qk = key.startsWith('queue') ? Number(key.slice(5)) : null;
+    const geos = qk !== null ? { body: city3.geos[`stand${qk}`].body, glow: null } : g[key];
+    for (const [geo, material] of [[geos.body, STREET_MAT], [geos.glow, key === 'toro' ? NIGHT_MAT : STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT;
+      parent.add(mesh);
+    }
+  }
+}
+
+// ゴールの門の横の駅員さん（勝ったら手を挙げて振る。syncCity7）
+function addGoalStaff(group) {
+  const g = city7.geos, gg = group.userData.goalGate;
+  if (!g || !gg) return;
+  const staff = [];
+  for (const side of [-1, 1]) {
+    const o = new THREE.Group();
+    o.position.set(side * (gg.reach + 0.4), 0, 4.0);
+    o.rotation.y = Math.atan2(side * 0.8, -0.6); // 前（-z）を道の真ん中と、走ってくる自転車の方へ
+    const body = new THREE.Mesh(g.staff.body, STREET_MAT);
+    body.castShadow = true;
+    const arm = new THREE.Group();
+    arm.position.set(0.21, 1.42, 0);
+    arm.add(new THREE.Mesh(g.staffArm.body, STREET_MAT));
+    o.add(body, arm);
+    o.name = 'staff'; // デバッグ・自動テスト用
+    gg.gate.add(o);
+    staff.push({ arm, side });
+  }
+  group.userData.goalStaff = staff;
 }
 
 // 駅の入口：駅のまわりの空いている地面に、近くの道の方を向けて 1 つ（駅名の板付き）
@@ -3974,6 +4318,9 @@ function* buildWorldSteps(map, textures) {
   addStationEntrances(group, map, roadHeights);
   while (!city6.done) yield 0.985;
   addCity6Props(group, map, roadHeights, heights);
+  while (!city7.done) yield 0.985;
+  addCity7Props(group, map, roadHeights, heights);
+  addGoalStaff(group);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -5382,6 +5729,7 @@ export function createRenderer3D(canvas) {
           car.add(body);
           if (g.glow) car.add(new THREE.Mesh(g.glow, OTHER_TRAIN_GLOW));
           car.userData.back = !own && k === n - 1; // 最後尾は先頭車を後ろ向きに
+          car.userData.commuter = !own && !shinkansen; // 窓に乗客の影を付ける（syncPassengers）
           cars.push(car);
           otherTrains.group.add(car);
         }
@@ -5890,6 +6238,7 @@ export function createRenderer3D(canvas) {
 
   // ---- 街の物 その 7 の動き：大型ビジョンの画・警備員の誘導灯・子どものボール・自転車のマフラー・花火・富士山 ----
   let currentTime = 'evening';
+  let prevWeather = null; // 虹を出すため（雨から晴れ）
   const c6 = { t: 0, visionAt: 0 };
   function syncCity6(game, dt) {
     c6.t += dt;
@@ -5986,6 +6335,158 @@ export function createRenderer3D(canvas) {
     for (const m of [fuji.body, fuji.snow]) {
       m.material.color.setScalar(1 - haze);
       m.material.emissive.copy(scene.fog.color).multiplyScalar(haze * 0.9);
+    }
+  }
+
+  // ---- 街の物 その 8 の動き：夜だけの物・首都高の車・ゴールの駅員さん・電車の乗客・雲と虹・東京湾の船 ----
+  const c7 = { t: 0 };
+  const rainbow = { at: null, mesh: null };
+  function syncCity7(game, dt) {
+    c7.t += dt;
+    const ud = world?.userData;
+    const lit = currentTime !== 'day';
+    if (ud?.nightProps) ud.nightProps.visible = lit;
+    NIGHT_MAT.visible = lit;
+    // 首都高の車：高架の上を道に沿って走り、端に着いたら折り返す（左側通行）
+    for (const c of ud?.hwyCars ?? []) {
+      const P = c.path;
+      c.s += c.speed * c.dir * dt;
+      if (c.s > P.len - 5 || c.s < 5) {
+        c.dir = c.s > P.len / 2 ? -1 : 1;
+        c.s = Math.max(5, Math.min(P.len - 5, c.s));
+      }
+      let i = 0;
+      while (i + 2 < P.cum.length && P.cum[i + 1] < c.s) i++;
+      const segLen = P.cum[i + 1] - P.cum[i] || 1, t = (c.s - P.cum[i]) / segLen;
+      const x1 = P.p[2 * i], z1 = P.p[2 * i + 1], x2 = P.p[2 * i + 2], z2 = P.p[2 * i + 3];
+      const hx = ((x2 - x1) / segLen) * c.dir, hz = ((z2 - z1) / segLen) * c.dir;
+      c.o.position.set(x1 + (x2 - x1) * t + hz * c.lane, HWY_Y, z1 + (z2 - z1) * t - hx * c.lane);
+      c.o.rotation.y = -Math.atan2(hx, -hz);
+    }
+    // ゴールの駅員さん：勝ったら右手を挙げて振る
+    for (const s of ud?.goalStaff ?? []) {
+      if (goalShow.openAt === null) s.arm.rotation.set(0, 0, 0);
+      else {
+        const k = Math.min(1, (goalShow.t - goalShow.openAt) / 0.5);
+        s.arm.rotation.set(2.7 * k, 0, Math.sin(c7.t * 8 + s.side) * 0.45 * k);
+      }
+    }
+    syncPassengers();
+    syncClouds();
+    syncRainbow();
+    syncBayShips();
+  }
+
+  // 電車の乗客：山手線の車両と、ほかの路線の通勤電車（新幹線と新交通などは除く）の窓に、人の影を付ける
+  function syncPassengers() {
+    const g = city7.geos;
+    if (!g) return;
+    train.forEach((car, i) => {
+      if (car.userData.pax) return;
+      const m = new THREE.Mesh(g.paxYamanote.body, new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true }));
+      if (i % 2) m.scale.z = -1; // 車両ごとに並びを変える
+      car.add(m);
+      car.userData.pax = m;
+    });
+    for (const t of otherTrains.list) {
+      t.cars.forEach((car, i) => {
+        if (car.userData.pax || !car.userData.commuter) return;
+        const m = new THREE.Mesh(g.paxCommuter.body, OTHER_TRAIN_MAT);
+        if (i % 2) m.scale.z = -1;
+        car.add(m);
+        car.userData.pax = m;
+      });
+    }
+  }
+
+  // 雲：晴れた昼と夕方に、空の遠くをゆっくり流れる（遠くの目印と同じく霧の外の決まった距離に置く）
+  const clouds = [];
+  const cloudTint = new THREE.Color();
+  function syncClouds() {
+    if (!clouds.length) {
+      if (!city7.geos) return;
+      for (let i = 0; i < 12; i++) {
+        const mat = new THREE.MeshLambertMaterial({ vertexColors: true, fog: false, transparent: true, opacity: 0.95 });
+        const o = new THREE.Mesh(city7.geos[`cloud${i % 3}`].body, mat);
+        o.name = 'cloud'; // デバッグ・自動テスト用
+        scene.add(o);
+        clouds.push({ o, az: (i / 12) * Math.PI * 2 + Math.random() * 0.4, el: 0.09 + Math.random() * 0.22, s: 1 + Math.random() * 0.8, speed: 0.004 + Math.random() * 0.004 });
+      }
+    }
+    const on = currentWeather === 'clear' && currentTime !== 'night';
+    cloudTint.set(currentTime === 'evening' ? 0xffc0a8 : 0xffffff);
+    const cam = camera.position;
+    for (const c of clouds) {
+      c.o.visible = on;
+      if (!on) continue;
+      c.az += c.speed * (1 / 60);
+      const dir = new THREE.Vector3(Math.sin(c.az) * Math.cos(c.el), Math.sin(c.el), -Math.cos(c.az) * Math.cos(c.el));
+      c.o.position.copy(cam).addScaledVector(dir, 415);
+      c.o.rotation.set(0, -c.az, 0); // 長い向きを、見る向きに直角に
+      c.o.scale.setScalar(c.s);
+      c.o.material.color.copy(cloudTint);
+      c.o.material.emissive.copy(cloudTint).multiplyScalar(0.35);
+    }
+  }
+
+  // 虹：雨や雪から晴れに切り替えたとき（夜は除く）、太陽と反対の空に出て、40 秒ほどで消える
+  function syncRainbow() {
+    if (!rainbow.mesh) {
+      if (!city7.geos) return;
+      rainbow.mesh = new THREE.Mesh(city7.geos.rainbow.glow, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, depthWrite: false, fog: false, side: THREE.DoubleSide }));
+      rainbow.mesh.name = 'rainbow'; // デバッグ・自動テスト用
+      rainbow.mesh.renderOrder = -1;
+      scene.add(rainbow.mesh);
+    }
+    const since = rainbow.at === null ? Infinity : c7.t - rainbow.at;
+    const on = since < 45 && currentWeather === 'clear' && currentTime !== 'night';
+    rainbow.mesh.visible = on;
+    if (!on) return;
+    const a = Math.min(1, since / 4) * Math.min(1, (45 - since) / 8);
+    rainbow.mesh.material.opacity = 0.5 * a;
+    const dx = -SUN_DIR.x, dz = -SUN_DIR.z, l = Math.hypot(dx, dz) || 1;
+    const cam = camera.position;
+    rainbow.mesh.position.set(cam.x + (dx / l) * 410, cam.y - 40, cam.z + (dz / l) * 410);
+    rainbow.mesh.rotation.set(0, Math.atan2(dx, dz), 0);
+    rainbow.mesh.scale.setScalar(300);
+  }
+
+  // 東京湾の船：コンテナ船（ほぼ止まっている）とフェリー（ゆっくり行き来する）。遠くの目印と同じく、向きと見かけの大きさを保って置く
+  const BAY_SHIPS = [
+    { key: 'containerShip', from: [35.6125, 139.7795], to: [35.6118, 139.7805], heading: 0.5, period: 900 },
+    { key: 'ferry', from: [35.6455, 139.7735], to: [35.6185, 139.7925], heading: 2.6, period: 420 },
+  ];
+  const bay = { ships: null };
+  const shipHaze = new THREE.Color();
+  function syncBayShips() {
+    const origin = worldMap?.origin;
+    if (!bay.ships) {
+      if (!city7.geos) return;
+      bay.ships = BAY_SHIPS.map((s) => {
+        const o = new THREE.Mesh(city7.geos[s.key].body, new THREE.MeshLambertMaterial({ vertexColors: true, fog: false }));
+        o.name = s.key; // デバッグ・自動テスト用
+        scene.add(o);
+        return { ...s, o };
+      });
+    }
+    const cam = camera.position, fog = scene.fog;
+    for (const s of bay.ships) {
+      s.o.visible = false;
+      if (!origin) continue;
+      const u = (Math.sin((c7.t / s.period) * Math.PI * 2) + 1) / 2;
+      const lat = s.from[0] + (s.to[0] - s.from[0]) * u, lon = s.from[1] + (s.to[1] - s.from[1]) * u;
+      const mPerDegLon = 111320 * Math.cos((origin.lat * Math.PI) / 180);
+      const dx = (lon - origin.lon) * mPerDegLon - cam.x, dz = -(lat - origin.lat) * 110540 - cam.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < FAR_TOWER_NEAR || dist > 9000) continue;
+      const k = FAR_TOWER_RADIUS / dist;
+      s.o.position.set(cam.x + dx * k, cam.y * (1 - k), cam.z + dz * k);
+      s.o.scale.setScalar(k * 3); // 街の中からも見つけやすいよう、実物より大きく
+      s.o.rotation.y = s.heading;
+      const haze = Math.min(0.85, (0.3 + dist / 25000) * (FOG_FAR / fog.far));
+      s.o.material.color.setScalar(1 - haze);
+      s.o.material.emissive.copy(fog.color).multiplyScalar(haze).add(shipHaze.setScalar(windowGlow * 0.12));
+      s.o.visible = true;
     }
   }
 
@@ -6657,6 +7158,8 @@ export function createRenderer3D(canvas) {
       const t = TIMES[time] ?? TIMES.evening, w = WEATHERS[weather] ?? WEATHERS.clear;
       currentWeather = weather; // 雨の日は歩行者が傘をさす
       currentTime = TIMES[time] ? time : 'evening'; // 夏の花火・富士山
+      if (prevWeather && prevWeather !== 'clear' && weather === 'clear') rainbow.at = c7.t; // 雨や雪がやんだら虹（天気の切り替えは 雨→雪→晴れ の順）
+      prevWeather = weather;
       const gray = new THREE.Color(0x8a8f99);
       const tone = (hex, k = w.gray) => {
         const c = new THREE.Color(hex);
@@ -6812,6 +7315,7 @@ export function createRenderer3D(canvas) {
       syncLoseShow(game, dt);
       syncCity5(game, dt);
       syncCity6(game, dt);
+      syncCity7(game, dt);
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
