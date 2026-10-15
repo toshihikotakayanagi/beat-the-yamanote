@@ -449,8 +449,8 @@ const PANEL_PAD = 14; // 板の上下の余白
 //   { height, draw } … 高さ height の自由な描画。draw(y, h) に縮めたあとの位置と高さを渡す
 // 動作のある行・升目は game.hits に登録する。
 // 縦に収まらない（横向きのスマホなど）ときは、文字と行間をまとめて縮める。
-function drawOverlay(ctx, game, view, lines) {
-  ctx.fillStyle = 'rgba(15, 16, 20, 0.7)';
+function drawOverlay(ctx, game, view, lines, dim = 0.7) {
+  ctx.fillStyle = `rgba(15, 16, 20, ${dim})`;
   ctx.fillRect(0, 0, view.w, view.h);
   const total = lines.reduce((sum, item) => sum + lineHeight(item), 0);
   const k = Math.min(1, (view.h - 32) / total);
@@ -621,7 +621,7 @@ function drawTitle(ctx, game, view) {
     [`音：${game.muted ? 'オフ' : 'オン'}${game.touch ? '（右上のボタン）' : '（M キーで切り替え）'}`, { size: 12, color: QUIET }],
     ['地図 © OpenStreetMap contributors（ODbL）・音楽と効果音は Web Audio で自作', { size: 12, color: QUIET }],
     ['JR東日本とは関係のない非公式のファンゲームです', { size: 12, color: QUIET }],
-  ]);
+  ], game.mode === '3d' ? 0.3 : 0.7); // 3D版は後ろの山手線のミニチュアが見えるように
 }
 
 function drawHowto(ctx, game, view) {
@@ -631,7 +631,7 @@ function drawHowto(ctx, game, view) {
     : [
         '矢印キー / WASD で操作　P：一時停止　R：やり直し　Esc：戻る',
         'M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響',
-        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点' : ''}`,
+        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点　F：季節' : ''}`,
       ];
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
@@ -666,6 +666,7 @@ function drawReady(ctx, game, view) {
     cells: [
       { title: `時間帯：${TIME_NAMES[game.timeOfDay]}`, note: game.touch ? 'タップで切り替え' : 'T で切り替え', color: TEXT, noteColor: QUIET, action: 'time', outlined: true },
       { title: `天気：${WEATHER_NAMES[game.weather]}`, note: game.touch ? 'タップで切り替え' : 'Y で切り替え', color: TEXT, noteColor: QUIET, action: 'weather', outlined: true },
+      ...(game.mode === '3d' ? [{ title: `季節：${SEASON_NAMES[game.season] ?? '夏'}`, note: game.touch ? 'タップで切り替え' : 'F で切り替え', color: TEXT, noteColor: QUIET, action: 'season', outlined: true }] : []),
     ],
   });
   // 自転車の種類・服・ヘルメット（見た目だけ。タップかキーで切り替え）
@@ -968,7 +969,8 @@ function shareLine(game) {
 }
 
 const GOAL_SHOW_MS = 2200; // src/game.js の GOAL_SHOW_MS と同じ
-// 3D版で勝ったとき、結果画面の前に大きく「ゴール！」とタイムだけを出す（後ろでくす玉が割れる）
+const SEASON_NAMES = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' };
+// 3D版：結果画面の前に、大きく「ゴール！」とタイム（後ろでくす玉が割れる）か、「電車が先に到着…」（後ろで電車のドアが開く）だけを出す
 function drawGoalFlash(ctx, game, view) {
   const r = game.result;
   const elapsed = Math.max(0, Math.min(1, 1 - (r.shownAt - performance.now()) / GOAL_SHOW_MS)); // 0〜1
@@ -981,10 +983,12 @@ function drawGoalFlash(ctx, game, view) {
   ctx.lineJoin = 'round';
   ctx.lineWidth = size * 0.12;
   ctx.strokeStyle = 'rgba(10, 12, 16, 0.85)';
-  ctx.strokeText('ゴール！', view.w / 2, y);
-  ctx.fillStyle = PLAYER_YELLOW;
-  ctx.fillText('ゴール！', view.w / 2, y);
-  const sub = `${formatTime(r.time)}　電車より ${(game.train.limit - r.time).toFixed(1)} 秒早く到着`;
+  const title = r.win ? 'ゴール！' : '電車が先に到着…';
+  if (!r.win) ctx.font = `bold ${Math.round(size * 0.62)}px sans-serif`;
+  ctx.strokeText(title, view.w / 2, y);
+  ctx.fillStyle = r.win ? PLAYER_YELLOW : '#ff8a7a';
+  ctx.fillText(title, view.w / 2, y);
+  const sub = r.win ? `${formatTime(r.time)}　電車より ${(game.train.limit - r.time).toFixed(1)} 秒早く到着` : `${game.map.to}駅まで あと ${r.distance.toFixed(0)} m`;
   ctx.font = `bold ${Math.round(size * 0.28)}px sans-serif`;
   ctx.lineWidth = size * 0.06;
   ctx.strokeText(sub, view.w / 2, y + size * 0.85);
@@ -1001,6 +1005,7 @@ function drawResult(ctx, game, view) {
         { height: 64, draw: (y, h) => drawWinTitle(ctx, game, view, y, h) },
         [`タイム ${formatTime(r.time)}　電車より ${(game.train.limit - r.time).toFixed(1)} 秒早く到着`, { size: 18 }],
         medalLine(r.medal),
+        ...(view.podium ? [{ height: 150, draw: (y, h) => ctx.drawImage(view.podium, view.w / 2 - (h * 360) / 210 / 2, y, (h * 360) / 210, h) }] : []),
         [
           r.newBest ? 'ベストタイム更新！' : `ベストタイム ${formatTime(game.best)}`,
           { size: 16, color: PLAYER_YELLOW, weight: r.newBest ? 'bold' : 'normal' },

@@ -9,6 +9,7 @@
 #   BK_Rider  乗っている人の胴体・頭とヘルメット・ハンドルを握る腕（動かない。前かがみ）
 #   BK_FrameCity・BK_FrameEbike  ママチャリと電動アシスト自転車のフレーム（かご・泥よけ・荷台など。電動は電池と子ども乗せも）
 #   BK_RiderUp  背すじを立てて乗る人（ママチャリ・電動アシスト自転車用）
+#   BK_Poncho・BK_PonchoUp  雨の日の合羽（前かがみ用・背すじを立てた人用。材質 BK_Poncho）
 #   BK_Wheel  車輪 1 つ（原点は車軸。前後の車輪に使い、x 軸まわりに回す）
 #   BK_Crank  クランク・ギア・ペダル（原点はペダルの軸。x 軸まわりに回す）
 #   BK_Thigh  太もも、BK_Shin すね（長さ 1・太さ 1 の筒。ゲームで腰→ひざ、ひざ→ペダルに伸ばして置く。-Z の端が腰・ひざ側）
@@ -280,6 +281,22 @@ UP_HIP, UP_SHOULDER = G(0, 0.98, 0.25), G(0, 1.46, 0.08)
 UP_GRIP = G(0.27, 1.075, -0.2)
 rider_up = make_rider("BK_RiderUp", UP_HIP, UP_SHOULDER, UP_GRIP, Vector((0.05, 0.0, -0.07)), Vector((0, 0.04, 0.21)), False)
 
+# ---- 雨の日の合羽（胴体をおおうポンチョ。腰の下まで広がる。ゲームで雨の日だけ出す） ----
+def make_poncho(name, hip, shoulder):
+    r = Part()
+    ax = (shoulder - hip).normalized()
+    belly = Vector((0, ax.z, -ax.y))
+    rings = [(-0.22, 0.27, 0.2), (-0.05, 0.25, 0.17), (0.15, 0.22, 0.155), (0.35, 0.235, 0.16), (0.5, 0.215, 0.135), (0.6, 0.11, 0.09)]
+    r.loft([hip + ax * t + belly * 0.01 for t, _, _ in rings], [(wx, dy) for _, wx, dy in rings], "poncho", seg=12,
+           u=Vector((1, 0, 0)), v=belly, caps=(False, False))
+    return r.finish(name)
+
+
+MAT["poncho"] = material("BK_Poncho", srgb(0xbfe0f0), rough=0.2)
+MI["poncho"] = len(MI)
+poncho = make_poncho("BK_Poncho", HIP, SHOULDER)
+poncho_up = make_poncho("BK_PonchoUp", UP_HIP, UP_SHOULDER)
+
 # ---- ママチャリと電動アシスト自転車のフレーム ----
 # 低くまたげる曲がったフレーム・後ろに引いたハンドル・前かご・泥よけ・荷台・チェーンカバー・スタンド・ライト。
 # 電動アシスト自転車は、さらにシートチューブの後ろの電池・ペダルの軸のモーター・ハンドルの表示・荷台の子ども乗せ
@@ -401,7 +418,7 @@ h.prism_x([(-0.13, 0.01), (0.1, 0.01), (0.13, 0.03), (0.12, 0.055), (0.03, 0.08)
 h.prism_x([(-0.13, 0.0), (0.12, 0.0), (0.12, 0.012), (-0.13, 0.012)], -0.047, 0.047, "sock")  # 靴底の白い線
 shoe = h.finish("BK_Shoe")
 
-parts = [frame, wheel, crank, rider, thigh, shin, shoe, frame_city, frame_ebike, rider_up]
+parts = [frame, wheel, crank, rider, thigh, shin, shoe, frame_city, frame_ebike, rider_up, poncho, poncho_up]
 
 
 # ---- 下見用：ゲームと同じように車輪・クランク・脚を置いた自転車 ----

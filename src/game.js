@@ -311,8 +311,8 @@ function finish(win) {
   // ゴーストとの差（マイナスならゴーストより速い）。負けたときは比べない
   // メダル（勝ったときだけ）と、ひとつ上のメダルまでの秒数
   r.medal = win ? medalFor(game.train, time) : null;
-  // 結果画面を出す時刻（メダルを出す動きの起点）。3D版で勝ったときは、ゴールの演出（くす玉・紙吹雪）を少し見せてから出す
-  r.shownAt = performance.now() + (win && renderer.mode === '3d' ? GOAL_SHOW_MS : 0);
+  // 結果画面を出す時刻（メダルを出す動きの起点）。3D版は、ゴールの演出（勝ち：くす玉・紙吹雪、負け：電車のドアが開く）を少し見せてから出す
+  r.shownAt = performance.now() + (renderer.mode === '3d' ? GOAL_SHOW_MS : 0); // 負けたときは、先に着いた電車から乗客が降りる様子
   r.ghostDiff = win && game.ghost ? Math.round((time - game.ghost.time) * 10) / 10 : null;
   if (win && (game.best == null || time < game.best)) {
     game.best = time;
@@ -550,6 +550,15 @@ function setAtmosphere(time, weather) {
   applyWeatherEffects();
 }
 
+// 季節（3D版の木の色・桜の花びら・七夕やクリスマスの飾り。見た目だけ）。はじめは今日の日付の季節
+const SEASONS = ['spring', 'summer', 'autumn', 'winter'];
+const seasonOfToday = () => SEASONS[Math.floor(((new Date().getMonth() + 10) % 12) / 3)]; // 3〜5 月が春
+function setSeason(season) {
+  game.season = SEASONS.includes(season) ? season : seasonOfToday();
+  renderer.setSeason?.(game.season);
+  save('season', game.season);
+}
+
 // 自転車の種類・服・ヘルメット（見た目だけ。速さや記録は変わらない）
 function setRiderLook(bikeType, outfit, helmet) {
   const ok = (list, id) => (list.some((x) => x.id === id) ? id : list[0].id);
@@ -603,6 +612,8 @@ function act(action, x = null) {
     setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
+  } else if (action === 'season') {
+    setSeason(cycle(SEASONS, game.season));
   } else if (action === 'bikeType') {
     setRiderLook(cycleId(BIKE_TYPES, game.bikeType), game.outfit, game.helmet);
   } else if (action === 'outfit') {
@@ -682,6 +693,8 @@ window.addEventListener('keydown', (e) => {
     act('weather');
   } else if (e.code === 'KeyE') {
     act('weatherEffects');
+  } else if (e.code === 'KeyF' && game.mode === '3d') {
+    act('season');
   } else if (s === 'ready' && (e.code === 'KeyV' || e.code === 'KeyU' || e.code === 'KeyK')) {
     act({ KeyV: 'bikeType', KeyU: 'outfit', KeyK: 'helmet' }[e.code]);
   } else if (e.code === 'KeyB') {
@@ -797,6 +810,7 @@ export async function startGame(r) {
   game.weatherEffects = load('weatherEffects') === '1';
   setAtmosphere(load('timeOfDay'), load('weather'));
   setRiderLook(load('bikeType'), load('outfit'), load('helmet'));
+  setSeason(load('season'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
   if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;
