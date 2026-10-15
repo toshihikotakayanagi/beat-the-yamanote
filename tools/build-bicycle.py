@@ -6,7 +6,9 @@
 # Blender の +Y が進む向き（glb では -z、ゲームの自転車の前）、X は左右、Z は高さ。
 # 動く部品は別の物にして、ゲームで動かす：
 #   BK_Frame  フレーム・フォーク・ハンドル・サドル・チェーン・ボトル（動かない）
-#   BK_Rider  乗っている人の胴体・頭とヘルメット・ハンドルを握る腕（動かない）
+#   BK_Rider  乗っている人の胴体・頭とヘルメット・ハンドルを握る腕（動かない。前かがみ）
+#   BK_FrameCity・BK_FrameEbike  ママチャリと電動アシスト自転車のフレーム（かご・泥よけ・荷台など。電動は電池と子ども乗せも）
+#   BK_RiderUp  背すじを立てて乗る人（ママチャリ・電動アシスト自転車用）
 #   BK_Wheel  車輪 1 つ（原点は車軸。前後の車輪に使い、x 軸まわりに回す）
 #   BK_Crank  クランク・ギア・ペダル（原点はペダルの軸。x 軸まわりに回す）
 #   BK_Thigh  太もも、BK_Shin すね（長さ 1・太さ 1 の筒。ゲームで腰→ひざ、ひざ→ペダルに伸ばして置く。-Z の端が腰・ひざ側）
@@ -234,34 +236,158 @@ for s in (-1, 1):
 crank = c.finish("BK_Crank")
 
 # ---- 乗っている人の胴体・頭・腕 ----
-r = Part()
-ax = (SHOULDER - HIP).normalized()
-belly = Vector((0, ax.z, -ax.y))  # 胴体に直角で前（おなか）向き
-L = (SHOULDER - HIP).length
-torso = [(-0.07, 0.13, 0.08), (0.0, 0.17, 0.11), (0.1, 0.16, 0.1), (0.24, 0.155, 0.1), (0.27, 0.16, 0.105), (0.31, 0.17, 0.11),
-         (0.42, 0.19, 0.12), (0.5, 0.19, 0.1), (0.56, 0.1, 0.06)]
-r.loft([HIP + ax * t for t, _, _ in torso], [(wx, dy) for _, wx, dy in torso],
-       ["shorts", "shorts", "jersey", "accent", "jersey", "jersey", "jersey", "jersey"], seg=10, u=Vector((1, 0, 0)), v=belly)
-head = SHOULDER + Vector((0, 0.1, 0.2))
-r.tube(SHOULDER + ax * 0.08, head + Vector((0, -0.03, -0.06)), 0.05, 0.045, "skin")
-r.ellipsoid(head, 0.1, 0.11, 0.11, "skin", seg=10, rows=6)
-# ヘルメット（後ろに少し長い）・通気の溝・サングラス
-hc = head + Vector((0, -0.01, 0.02))
-r.ellipsoid(hc, 0.125, 0.15, 0.12, "accent", seg=12, rows=4, top=0.55)
-for x in (-0.045, 0, 0.045):
-    r.loft([hc + Vector((x, 0.08, 0.09)), hc + Vector((x, 0, 0.113)), hc + Vector((x, -0.08, 0.09))], [0.006, 0.006, 0.006], "dark", seg=4)
-gl = [head + Vector((math.sin(t) * 0.112, math.cos(t) * 0.112, 0.01)) for t in [math.radians(a) for a in range(-75, 76, 25)]]
-for a, b in zip(gl, gl[1:]):
-    r.face([a + Vector((0, 0, -0.02)), b + Vector((0, 0, -0.02)), b + Vector((0, 0, 0.02)), a + Vector((0, 0, 0.02))], "dark")
-for s in (-1, 1):
-    sh = SHOULDER + Vector((s * 0.17, 0, -0.02))
-    el = G(s * 0.2125, 1.23, -0.26)
-    gr = G(s * 0.24, 1.04, -0.36)
-    mid = sh.lerp(el, 0.55)
-    r.loft([sh, mid, el], [0.05, 0.042, 0.034], ["jersey", "skin"])
-    wrist = el.lerp(gr, 0.75)
-    r.loft([el, wrist, gr + (gr - el).normalized() * 0.02], [0.033, 0.026, 0.03], ["skin", "dark"])
-rider = r.finish("BK_Rider")
+# 前かがみ（ロードバイク）と、背すじを立てた姿勢（ママチャリ・電動アシスト自転車）の 2 つ。
+# hip・shoulder は腰と肩、grip はハンドルを握る位置（右手）、elbow は腕の真ん中からひじをずらす向き
+def make_rider(name, hip, shoulder, grip, elbow, head_up, glasses):
+    r = Part()
+    ax = (shoulder - hip).normalized()
+    belly = Vector((0, ax.z, -ax.y))  # 胴体に直角で前（おなか）向き
+    torso = [(-0.07, 0.13, 0.08), (0.0, 0.17, 0.11), (0.1, 0.16, 0.1), (0.24, 0.155, 0.1), (0.27, 0.16, 0.105), (0.31, 0.17, 0.11),
+             (0.42, 0.19, 0.12), (0.5, 0.19, 0.1), (0.56, 0.1, 0.06)]
+    r.loft([hip + ax * t for t, _, _ in torso], [(wx, dy) for _, wx, dy in torso],
+           ["shorts", "shorts", "jersey", "accent", "jersey", "jersey", "jersey", "jersey"], seg=10, u=Vector((1, 0, 0)), v=belly)
+    head = shoulder + head_up
+    r.tube(shoulder + ax * 0.08, head + Vector((0, -0.03, -0.06)), 0.05, 0.045, "skin")
+    r.ellipsoid(head, 0.1, 0.11, 0.11, "skin", seg=10, rows=6)
+    # ヘルメット（後ろに少し長い）・通気の溝・サングラス
+    hc = head + Vector((0, -0.01, 0.02))
+    r.ellipsoid(hc, 0.125, 0.15, 0.12, "accent", seg=12, rows=4, top=0.55)
+    for x in (-0.045, 0, 0.045):
+        r.loft([hc + Vector((x, 0.08, 0.09)), hc + Vector((x, 0, 0.113)), hc + Vector((x, -0.08, 0.09))], [0.006, 0.006, 0.006], "dark", seg=4)
+    if glasses:
+        gl = [head + Vector((math.sin(t) * 0.112, math.cos(t) * 0.112, 0.01)) for t in [math.radians(a) for a in range(-75, 76, 25)]]
+        for a, b in zip(gl, gl[1:]):
+            r.face([a + Vector((0, 0, -0.02)), b + Vector((0, 0, -0.02)), b + Vector((0, 0, 0.02)), a + Vector((0, 0, 0.02))], "dark")
+    else:  # 目と、ヘルメットのあごひも
+        for x in (-0.035, 0.035):
+            r.box(head + Vector((x, 0.104, 0.015)), 0.012, 0.006, 0.012, "dark")
+        for x in (-0.095, 0.095):
+            r.tube(hc + Vector((x, 0.02, -0.03)), head + Vector((x * 0.6, 0.06, -0.1)), 0.006, mat="dark", seg=4)
+    for s in (-1, 1):
+        sh = shoulder + Vector((s * 0.17, 0, -0.02))
+        gr = Vector((s * grip.x, grip.y, grip.z))
+        el = sh.lerp(gr, 0.5) + Vector((s * elbow.x, elbow.y, elbow.z))
+        mid = sh.lerp(el, 0.55)
+        r.loft([sh, mid, el], [0.05, 0.042, 0.034], ["jersey", "skin"])
+        wrist = el.lerp(gr, 0.75)
+        r.loft([el, wrist, gr + (gr - el).normalized() * 0.02], [0.033, 0.026, 0.03], ["skin", "dark"])
+    return r.finish(name)
+
+
+rider = make_rider("BK_Rider", HIP, SHOULDER, G(0.24, 1.04, -0.36), Vector((0.008, 0.02, 0.005)), Vector((0, 0.1, 0.2)), True)
+# 背すじを立てた姿勢（src/render3d.js の BIKE_TYPES.city と同じ）
+UP_HIP, UP_SHOULDER = G(0, 0.98, 0.25), G(0, 1.46, 0.08)
+UP_GRIP = G(0.27, 1.075, -0.2)
+rider_up = make_rider("BK_RiderUp", UP_HIP, UP_SHOULDER, UP_GRIP, Vector((0.05, 0.0, -0.07)), Vector((0, 0.04, 0.21)), False)
+
+# ---- ママチャリと電動アシスト自転車のフレーム ----
+# 低くまたげる曲がったフレーム・後ろに引いたハンドル・前かご・泥よけ・荷台・チェーンカバー・スタンド・ライト。
+# 電動アシスト自転車は、さらにシートチューブの後ろの電池・ペダルの軸のモーター・ハンドルの表示・荷台の子ども乗せ
+C_HEAD_TOP, C_HEAD_BOTTOM = G(0, 0.95, -0.4), G(0, 0.76, -0.44)
+C_SEAT, C_SADDLE = G(0, 0.8, 0.2), G(0, 0.92, 0.255)
+
+
+def fender(p, axle, a0, a1, rad=WHEEL_R + 0.035, half=0.03, n=10):
+    """車輪の上の泥よけ（axle のまわり、角度 a0〜a1。0 が前、90° が真上）"""
+    pts = [axle + Vector((0, math.cos(math.radians(a0 + (a1 - a0) * k / n)) * rad, math.sin(math.radians(a0 + (a1 - a0) * k / n)) * rad)) for k in range(n + 1)]
+    for a, b in zip(pts, pts[1:]):
+        p.face([a + Vector((-half, 0, 0)), b + Vector((-half, 0, 0)), b + Vector((half, 0, 0)), a + Vector((half, 0, 0))], "metal")
+        p.face([a + Vector((half, 0, 0)), b + Vector((half, 0, 0)), b + Vector((-half, 0, 0)), a + Vector((-half, 0, 0))], "metal")
+
+
+def basket(p, c, sx, sy, sz):
+    """針金のかご（c は底の真ん中。sx 左右・sy 前後・sz 高さの半分ではなく全体）"""
+    for z in (0, sz * 0.5, sz):
+        q = [c + Vector((x, y, z)) for x, y in ((-sx / 2, -sy / 2), (sx / 2, -sy / 2), (sx / 2, sy / 2), (-sx / 2, sy / 2))]
+        for a, b in zip(q, q[1:] + q[:1]):
+            p.tube(a, b, 0.006 if z else 0.008, mat="metal", seg=4)
+    for k in range(7):
+        x = -sx / 2 + sx * k / 6
+        for y in (-sy / 2, sy / 2):
+            p.tube(c + Vector((x, y, 0)), c + Vector((x, y, sz)), 0.004, mat="metal", seg=3)
+    for k in range(1, 5):
+        y = -sy / 2 + sy * k / 5
+        for x in (-sx / 2, sx / 2):
+            p.tube(c + Vector((x, y, 0)), c + Vector((x, y, sz)), 0.004, mat="metal", seg=3)
+    p.box(c + Vector((0, 0, 0.004)), sx / 2, sy / 2, 0.004, "metal")  # 底の板
+
+
+def city_frame(name, ebike):
+    p = Part()
+    # 曲がったメインのパイプ（ヘッドから低く下りてペダルの軸へ）
+    p.loft([C_HEAD_BOTTOM + Vector((0, 0.01, 0.06)), G(0, 0.6, -0.33), G(0, 0.42, -0.2), G(0, 0.34, -0.06), BB + Vector((0, 0, 0.01))],
+           [0.03, 0.03, 0.03, 0.03, 0.03], "frame", seg=8)
+    p.tube(BB, C_SEAT + Vector((0, 0, 0.03)), 0.027, 0.024)  # シートチューブ
+    p.tube(C_HEAD_BOTTOM + (C_HEAD_BOTTOM - C_HEAD_TOP) * 0.15, C_HEAD_TOP + (C_HEAD_TOP - C_HEAD_BOTTOM) * 0.15, 0.033)  # ヘッドチューブ
+    p.box(BB, 0.045, 0.04, 0.04, "frame")
+    for s in (-1, 1):
+        p.tube(Vector((s * 0.025, BB.y - 0.02, BB.z)), Vector((s * 0.065, REAR.y, REAR.z)), 0.015, 0.011)  # チェーンステー
+        p.tube(Vector((s * 0.02, C_SEAT.y + 0.01, C_SEAT.z - 0.05)), Vector((s * 0.065, REAR.y, REAR.z)), 0.013, 0.01)  # シートステー
+        p.tube(Vector((s * 0.04, C_HEAD_BOTTOM.y - 0.01, C_HEAD_BOTTOM.z - 0.03)), Vector((s * 0.06, FRONT.y, FRONT.z)), 0.017, 0.011)  # フォーク
+    p.box(C_HEAD_BOTTOM + Vector((0, 0, -0.03)), 0.06, 0.03, 0.02, "frame")
+    # 後ろに引いたハンドル・握り・ベル
+    stem = C_HEAD_TOP + Vector((0, 0.02, 0.12))
+    p.tube(C_HEAD_TOP, stem, 0.018, mat="metal")
+    gx, gy, gz = UP_GRIP
+    bar = [Vector((-gx - 0.03, gy - 0.02, gz)), Vector((-0.22, stem.y - 0.02, stem.z)), Vector((0, stem.y, stem.z)),
+           Vector((0.22, stem.y - 0.02, stem.z)), Vector((gx + 0.03, gy - 0.02, gz))]
+    for a, b in zip(bar, bar[1:]):
+        p.tube(a, b, 0.012, mat="metal", seg=6)
+    for s in (-1, 1):
+        p.tube(Vector((s * (gx - 0.06), gy + 0.01, gz)), Vector((s * (gx + 0.04), gy - 0.03, gz)), 0.02, mat="dark", seg=8)
+        p.tube(Vector((s * 0.16, stem.y - 0.01, stem.z)), Vector((s * 0.2, stem.y - 0.1, stem.z - 0.02)), 0.006, mat="metal", seg=4)  # ブレーキのレバー
+    p.ellipsoid(Vector((-0.13, stem.y - 0.03, stem.z + 0.015)), 0.022, 0.022, 0.015, "metal", seg=8, rows=3, top=0.5)  # ベル
+    # サドル（幅の広い、やわらかい形）とシートポスト
+    p.tube(C_SEAT, C_SADDLE + Vector((0, 0, -0.03)), 0.015, mat="metal")
+    p.ellipsoid(C_SADDLE + Vector((0, -0.02, -0.03)), 0.12, 0.14, 0.05, "dark", seg=10, rows=4, top=0.5)
+    p.box(C_SADDLE + Vector((0, -0.02, -0.04)), 0.11, 0.12, 0.012, "dark")
+    # 泥よけ・前かご（フォークの上）・荷台・チェーンカバー・スタンド・ライト
+    fender(p, FRONT, 20, 175)
+    fender(p, REAR, 0, 160)
+    bk = FRONT + Vector((0, 0.06, 0.6))
+    basket(p, bk + Vector((0, 0, -0.02)), 0.36, 0.28, 0.24)
+    p.tube(C_HEAD_TOP + Vector((0, 0.05, -0.08)), bk + Vector((0, -0.12, 0.02)), 0.01, mat="metal", seg=4)
+    for s in (-1, 1):
+        p.tube(Vector((s * 0.06, FRONT.y, FRONT.z)), bk + Vector((s * 0.1, 0, -0.02)), 0.006, mat="metal", seg=4)
+    rack_z = 0.8
+    for s in (-1, 1):
+        p.tube(G(s * 0.08, rack_z, 0.33), G(s * 0.08, rack_z, 0.76), 0.008, mat="metal", seg=4)
+        p.tube(Vector((s * 0.07, REAR.y, REAR.z)), G(s * 0.08, rack_z, 0.7), 0.007, mat="metal", seg=4)
+    for z in (0.4, 0.5, 0.6, 0.7):
+        p.tube(G(-0.08, rack_z, z), G(0.08, rack_z, z), 0.006, mat="metal", seg=4)
+    p.tube(G(0, rack_z, 0.33), C_SEAT + Vector((0, -0.03, -0.05)), 0.007, mat="metal", seg=4)
+    guard = [(BB.y - 0.12, BB.z + 0.12), (REAR.y + 0.02, REAR.z + 0.08), (REAR.y + 0.06, REAR.z), (REAR.y + 0.02, REAR.z - 0.07),
+             (BB.y - 0.12, BB.z - 0.1), (BB.y + 0.1, BB.z - 0.1), (BB.y + 0.12, BB.z + 0.02), (BB.y + 0.06, BB.z + 0.11)]
+    p.prism_x(guard, 0.085, 0.095, "frame")
+    p.tube(Vector((0.07, REAR.y, REAR.z)), Vector((0.1, REAR.y - 0.22, 0.03)), 0.01, mat="metal", seg=4)  # スタンド（たたんだ形）
+    p.box(C_HEAD_BOTTOM + Vector((0, 0.08, -0.04)), 0.035, 0.035, 0.03, "metal")  # ライト
+    p.box(C_HEAD_BOTTOM + Vector((0, 0.116, -0.04)), 0.028, 0.003, 0.022, "sock")
+    p.box(REAR + Vector((0, -0.4, 0.1)), 0.03, 0.006, 0.02, "accent")  # 後ろの反射板
+    if ebike:
+        # 電池（シートチューブの後ろ）・モーター・ハンドルの表示
+        d = (C_SEAT - BB).normalized()
+        back = Vector((0, -d.z, d.y))  # シートチューブに直角で後ろ向き
+        b0, b1 = BB + d * 0.16 + back * 0.055, BB + d * 0.46 + back * 0.055
+        p.loft([b0, b0 + d * 0.02, b1 - d * 0.02, b1], [(0.05, 0.035), (0.055, 0.04), (0.055, 0.04), (0.05, 0.035)], ["dark", "dark", "dark"], seg=8,
+               u=Vector((1, 0, 0)), v=back)
+        p.box(b1 + d * 0.02, 0.05, 0.03, 0.02, "metal")
+        p.box(b0 + d * 0.12 + back * 0.04, 0.056, 0.005, 0.06, "frame")  # 電池の色の線
+        p.loft([BB + Vector((-0.08, 0, 0)), BB + Vector((0.08, 0, 0))], [0.075, 0.075], "dark", seg=12)
+        p.box(stem + Vector((0.05, -0.02, 0.025)), 0.035, 0.02, 0.012, "dark")
+        p.box(stem + Vector((0.05, -0.0225, 0.038)), 0.026, 0.014, 0.001, "sock")
+        # 後ろの子ども乗せ（荷台の上）
+        cs = G(0, rack_z + 0.02, 0.56)
+        p.box(cs + Vector((0, 0, 0.02)), 0.15, 0.16, 0.02, "dark")
+        p.prism_x([(cs.y + 0.12, cs.z), (cs.y + 0.14, cs.z), (cs.y - 0.17, cs.z + 0.5), (cs.y - 0.21, cs.z + 0.46)], -0.17, 0.17, "dark")  # 背もたれ
+        for s in (-1, 1):
+            p.prism_x([(cs.y + 0.14, cs.z), (cs.y - 0.12, cs.z), (cs.y - 0.17, cs.z + 0.42), (cs.y + 0.08, cs.z + 0.22)], s * 0.16, s * 0.18, "dark")  # 横の囲い
+        p.tube(Vector((-0.15, cs.y + 0.15, cs.z + 0.24)), Vector((0.15, cs.y + 0.15, cs.z + 0.24)), 0.015, mat="frame", seg=6)  # 前のバー
+        p.box(Vector((0, cs.y - 0.18, cs.z + 0.49)), 0.13, 0.02, 0.04, "frame")
+    return p.finish(name)
+
+
+frame_city = city_frame("BK_FrameCity", False)
+frame_ebike = city_frame("BK_FrameEbike", True)
 
 # ---- 脚（長さ 1・太さ 1 の筒。-Z の端が腰・ひざ） ----
 t = Part()
@@ -275,7 +401,7 @@ h.prism_x([(-0.13, 0.01), (0.1, 0.01), (0.13, 0.03), (0.12, 0.055), (0.03, 0.08)
 h.prism_x([(-0.13, 0.0), (0.12, 0.0), (0.12, 0.012), (-0.13, 0.012)], -0.047, 0.047, "sock")  # 靴底の白い線
 shoe = h.finish("BK_Shoe")
 
-parts = [frame, wheel, crank, rider, thigh, shin, shoe]
+parts = [frame, wheel, crank, rider, thigh, shin, shoe, frame_city, frame_ebike, rider_up]
 
 
 # ---- 下見用：ゲームと同じように車輪・クランク・脚を置いた自転車 ----
@@ -292,27 +418,32 @@ def knee_of(hip, foot):  # src/render3d.js の kneeOf と同じ（ゲームの�
     return [foot[0], hip[1] + math.cos(a) * THIGH, hip[2] + math.sin(a) * THIGH]
 
 
-def limb(src, a, b, rad):
+def limb(src, o, a, b, rad):
     a, b = Vector(a), Vector(b)
     q = Vector((0, 0, 1)).rotation_difference((b - a).normalized())
-    place(src, Matrix.Translation((a + b) / 2) @ q.to_matrix().to_4x4() @ Matrix.Diagonal((rad, rad, (b - a).length, 1)))
+    place(src, o @ Matrix.Translation((a + b) / 2) @ q.to_matrix().to_4x4() @ Matrix.Diagonal((rad, rad, (b - a).length, 1)))
 
 
 for ob in parts:
-    ob.hide_render = ob.name != "BK_Frame" and ob.name != "BK_Rider"
-ang = 0.7
-place(wheel, Matrix.Translation(REAR) @ Matrix.Rotation(-1.3, 4, 'X'))
-place(wheel, Matrix.Translation(FRONT) @ Matrix.Rotation(-0.4, 4, 'X'))
-place(crank, Matrix.Translation(BB) @ Matrix.Rotation(ang, 4, 'X'))
-for side in (-1, 1):
-    a = ang + (0 if side > 0 else math.pi)  # ゲームの animateBike と同じ
-    foot = [side * 0.13, 0.3 + math.cos(a) * CRANK, 0.06 + math.sin(a) * CRANK]
-    hip = [side * 0.1, 1.03, 0.21]
-    knee = knee_of(hip, foot)
-    knee[0] = side * 0.12
-    limb(thigh, G(*hip), G(*knee), 0.06)
-    limb(shin, G(*knee), G(*foot), 0.045)
-    place(shoe, Matrix.Translation(G(*foot)))
+    ob.hide_render = True
+# 3 台を横に並べる（左からロードバイク・ママチャリ・電動アシスト自転車）
+for off, fr, rd, hip_g in ((0.0, frame, rider, (1.03, 0.21)), (-1.3, frame_city, rider_up, (0.98, 0.25)), (1.3, frame_ebike, rider_up, (0.98, 0.25))):
+    o = Matrix.Translation((off, 0, 0))
+    place(fr, o)
+    place(rd, o)
+    ang = 0.7
+    place(wheel, o @ Matrix.Translation(REAR) @ Matrix.Rotation(-1.3, 4, 'X'))
+    place(wheel, o @ Matrix.Translation(FRONT) @ Matrix.Rotation(-0.4, 4, 'X'))
+    place(crank, o @ Matrix.Translation(BB) @ Matrix.Rotation(ang, 4, 'X'))
+    for side in (-1, 1):
+        a = ang + (0 if side > 0 else math.pi)  # ゲームの animateBike と同じ
+        foot = [side * 0.13, 0.3 + math.cos(a) * CRANK, 0.06 + math.sin(a) * CRANK]
+        hip = [side * 0.1, hip_g[0], hip_g[1]]
+        knee = knee_of(hip, foot)
+        knee[0] = side * 0.12
+        limb(thigh, o, G(*hip), G(*knee), 0.06)
+        limb(shin, o, G(*knee), G(*foot), 0.045)
+        place(shoe, o @ Matrix.Translation(G(*foot)))
 for ob in preview_col.objects:
     ob.hide_render = False
 
@@ -330,7 +461,7 @@ preview_col.objects.link(sun)
 cam = bpy.data.objects.new("BK_Camera", bpy.data.cameras.new("BK_Camera"))
 cam.data.lens = 50
 preview_col.objects.link(cam)
-cam.location = (3.3, 1.9, 1.7)
+cam.location = (5.2, 3.4, 2.4)
 cam.rotation_euler = (Vector((0, 0.05, 0.85)) - cam.location).to_track_quat('-Z', 'Y').to_euler()
 scene.camera = cam
 world = bpy.data.worlds.new("BK_World")

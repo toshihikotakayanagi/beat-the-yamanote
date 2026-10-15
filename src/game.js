@@ -16,6 +16,7 @@ import { createObstacles, updateObstacles, markInsideSignals, signalState } from
 import { drawHud } from './hud.js';
 import { shareText, share } from './share.js';
 import { trainPath, trainDistance, frontDistance } from './trainpath.js';
+import { BIKE_TYPES, OUTFITS, HELMETS, riderColors } from './outfits.js';
 
 const STEP = 1 / 60; // 物理更新の間隔（固定）
 const COUNTDOWN = 3; // 秒
@@ -298,6 +299,7 @@ function startCountdown() {
   audio.departure(); // カウントダウンの間に発車メロディ
 }
 
+const GOAL_SHOW_MS = 2200;
 function finish(win) {
   const time = Math.round(game.time * 100) / 100;
   const next = game.sections[game.sectionIndex + 1];
@@ -309,7 +311,8 @@ function finish(win) {
   // ゴーストとの差（マイナスならゴーストより速い）。負けたときは比べない
   // メダル（勝ったときだけ）と、ひとつ上のメダルまでの秒数
   r.medal = win ? medalFor(game.train, time) : null;
-  r.shownAt = performance.now(); // 結果画面でメダルを出す動きの起点
+  // 結果画面を出す時刻（メダルを出す動きの起点）。3D版で勝ったときは、ゴールの演出（くす玉・紙吹雪）を少し見せてから出す
+  r.shownAt = performance.now() + (win && renderer.mode === '3d' ? GOAL_SHOW_MS : 0);
   r.ghostDiff = win && game.ghost ? Math.round((time - game.ghost.time) * 10) / 10 : null;
   if (win && (game.best == null || time < game.best)) {
     game.best = time;
@@ -547,6 +550,20 @@ function setAtmosphere(time, weather) {
   applyWeatherEffects();
 }
 
+// 自転車の種類・服・ヘルメット（見た目だけ。速さや記録は変わらない）
+function setRiderLook(bikeType, outfit, helmet) {
+  const ok = (list, id) => (list.some((x) => x.id === id) ? id : list[0].id);
+  game.bikeType = ok(BIKE_TYPES, bikeType);
+  game.outfit = ok(OUTFITS, outfit);
+  game.helmet = ok(HELMETS, helmet);
+  game.riderColors = riderColors(game.outfit, game.helmet);
+  renderer.setBike?.(game.bikeType, game.riderColors);
+  save('bikeType', game.bikeType);
+  save('outfit', game.outfit);
+  save('helmet', game.helmet);
+}
+const cycleId = (list, id) => list[(list.findIndex((x) => x.id === id) + 1) % list.length].id;
+
 // 天気の影響を「あり」にしたり天気を変えたりしたら、記録・ゴースト・制限時間を、その条件のものにする
 function setWeatherEffects(on) {
   game.weatherEffects = on;
@@ -586,6 +603,12 @@ function act(action, x = null) {
     setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
+  } else if (action === 'bikeType') {
+    setRiderLook(cycleId(BIKE_TYPES, game.bikeType), game.outfit, game.helmet);
+  } else if (action === 'outfit') {
+    setRiderLook(game.bikeType, cycleId(OUTFITS, game.outfit), game.helmet);
+  } else if (action === 'helmet') {
+    setRiderLook(game.bikeType, game.outfit, cycleId(HELMETS, game.helmet));
   } else if (action === 'weatherEffects') {
     if (s === 'ready' || s === 'title') setWeatherEffects(!game.weatherEffects);
   } else if (action === 'switch') {
@@ -627,7 +650,7 @@ function onPrimary() {
   if (game.paused) act('resume');
   else if (s === 'title' || s === 'howto') act('start');
   else if (s === 'ready') act('start');
-  else if (s === 'result') act(game.result.next ? 'next' : 'retry');
+  else if (s === 'result' && performance.now() >= game.result.shownAt) act(game.result.next ? 'next' : 'retry'); // ゴールの演出のあいだは進まない
 }
 
 window.addEventListener('keydown', (e) => {
@@ -659,6 +682,8 @@ window.addEventListener('keydown', (e) => {
     act('weather');
   } else if (e.code === 'KeyE') {
     act('weatherEffects');
+  } else if (s === 'ready' && (e.code === 'KeyV' || e.code === 'KeyU' || e.code === 'KeyK')) {
+    act({ KeyV: 'bikeType', KeyU: 'outfit', KeyK: 'helmet' }[e.code]);
   } else if (e.code === 'KeyB') {
     audio.ringBell(); // 自転車のベル（鳴らすだけ）
   } else if (e.code === 'KeyC' && renderer.nextCamera) {
@@ -771,6 +796,7 @@ export async function startGame(r) {
   setMuted(load('muted') === '1');
   game.weatherEffects = load('weatherEffects') === '1';
   setAtmosphere(load('timeOfDay'), load('weather'));
+  setRiderLook(load('bikeType'), load('outfit'), load('helmet'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
   if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;

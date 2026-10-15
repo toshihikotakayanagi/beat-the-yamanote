@@ -1,6 +1,7 @@
 // 2D版の世界の描き方：自転車を中心に、北が上の地図を真上から見る。
 // HUD（メニュー・レースバー・ミニマップなど）は game.js が同じキャンバスの上に描く。
-import { drawPlayer, GHOST_STYLE } from './player.js';
+import { drawPlayer, GHOST_STYLE, PLAYER_STYLE } from './player.js';
+import { bikeTypeOf } from './outfits.js';
 import { drawMap } from './map.js';
 import { drawObstacles } from './obstacles.js';
 import { drawTrain } from './trainpath.js';
@@ -39,7 +40,9 @@ export function createRenderer2D() {
       if (game.inRace && game.map.trainRoute) drawTrain(ctx, game.map.trainRoute, game.trainProgress);
       // ゴーストは自転車の下に描く
       if (game.ghostPose) drawPlayer(ctx, game.ghostPose, GHOST_STYLE);
-      drawPlayer(ctx, p);
+      // 選んだ服とヘルメットの色・自転車の種類（かご）で描く
+      const c = game.riderColors, hex = (v) => `#${v.toString(16).padStart(6, '0')}`;
+      drawPlayer(ctx, p, c ? { ...PLAYER_STYLE, body: hex(c.jersey), nose: hex(c.helmet), basket: bikeTypeOf(game.bikeType).basket } : PLAYER_STYLE);
     },
   };
 }

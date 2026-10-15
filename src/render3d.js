@@ -2257,6 +2257,76 @@ function addStartShow(group) {
   group.userData.startShow = { arm, lamps };
 }
 
+// ---- ゴールの演出（Blender で作ったモデル。tools/build-goal.py） ----
+// ゴールの門の梁から下がるくす玉。勝ってゴールすると左右に割れ、「祝 ゴール」のたれ幕が下り、紙吹雪が舞う。
+// 門の両側では法被の人が小旗を振って応援する（ゴールすると跳びはねる）。どれも見た目だけ
+const GOAL_URL = 'data/models/goal.glb';
+const GOAL_NAMES = {
+  cord: 'GL_Cord', ballL: 'GL_BallL', ballR: 'GL_BallR', streamer: 'GL_Streamer',
+  fan0: 'GL_Fan0', fan1: 'GL_Fan1', fan2: 'GL_Fan2', fanArm: 'GL_FanArm',
+};
+const goalModel = { geos: null, done: false };
+loadModelParts(GOAL_URL, GOAL_NAMES)
+  .then((parts) => {
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) geos[key] = addModelParts(new GeometryBuilder(true), list).build();
+    goalModel.geos = geos;
+  })
+  .catch((e) => console.warn(`ゴールの演出のモデルを読み込めませんでした: ${GOAL_URL}`, e))
+  .finally(() => (goalModel.done = true));
+const GOAL_HINGE = [0, 3.9, -0.45]; // くす玉のてっぺん（門の真ん中。横断幕の少し先の、横断幕より下に吊るす）
+const GOAL_BEAM_BOTTOM = 5.85; // 門の梁の下の高さ（ひもをここまで伸ばす。tools/build-street.py の GATE_H - 0.15）
+const GOAL_CORD_LEN = 1.6; // tools/build-goal.py の CORD_LEN
+const GOAL_BALL_R = 0.6; // tools/build-goal.py の BALL_R
+const FAN_SHOULDER = [0, 1.42, 0.21]; // 応援する人の右肩（tools/build-goal.py の SH）
+const CONFETTI_N = 320; // 紙吹雪の枚数
+const CONFETTI_COLORS = [0xe8443a, 0xffcc33, 0x80c241, 0x3b82f0, 0xf48cbc, 0xffffff, 0xff8a1c];
+
+function addGoalShow(group) {
+  const g = goalModel.geos, gg = group.userData.goalGate;
+  if (!g || !gg) return;
+  const { gate, reach } = gg;
+  const mk = (geo) => {
+    const m = new THREE.Mesh(geo, STREET_MAT);
+    m.castShadow = true;
+    return m;
+  };
+  const ball = new THREE.Group();
+  ball.position.set(...GOAL_HINGE);
+  const left = mk(g.ballL), right = mk(g.ballR), streamer = mk(g.streamer);
+  streamer.visible = false;
+  const cord = mk(g.cord);
+  cord.scale.y = (GOAL_BEAM_BOTTOM - GOAL_HINGE[1]) / GOAL_CORD_LEN;
+  ball.add(cord, left, right, streamer);
+  // 応援する人：門の左右に 4 人ずつ、道の方（と、走ってくる自転車の方）を向く
+  const fans = [];
+  for (const side of [-1, 1]) {
+    for (let k = 0; k < 4; k++) {
+      const fan = new THREE.Group();
+      fan.position.set(side * (reach + 1.3 + (k % 2) * 0.8), 0, 2.6 - k * 1.3);
+      fan.rotation.y = (side < 0 ? 0 : Math.PI) + side * 0.35; // +x（体の前）を道の真ん中へ。少し手前へ向ける
+      fan.add(mk(g[`fan${(k + (side > 0 ? 1 : 0)) % 3}`]));
+      const arm = mk(g.fanArm);
+      arm.position.set(...FAN_SHOULDER);
+      fan.add(arm);
+      gate.add(fan);
+      fans.push({ fan, arm, phase: k * 1.7 + (side > 0 ? 0.9 : 0) });
+    }
+  }
+  // 紙吹雪（くす玉が割れたら、中から舞い落ちる。1 枚ずつ色が違う）
+  const confetti = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.13, 0.09), new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }), CONFETTI_N);
+  const col = new THREE.Color();
+  for (let i = 0; i < CONFETTI_N; i++) confetti.setColorAt(i, col.setHex(CONFETTI_COLORS[i % CONFETTI_COLORS.length]));
+  confetti.frustumCulled = false;
+  confetti.visible = false;
+  confetti.name = 'goalConfetti'; // デバッグ・自動テスト用
+  gate.add(ball, confetti);
+  group.userData.goalShow = {
+    ball, left, right, streamer, fans, confetti,
+    bits: { pos: new Float32Array(CONFETTI_N * 3), vel: new Float32Array(CONFETTI_N * 3), spin: new Float32Array(CONFETTI_N * 3), rot: new Float32Array(CONFETTI_N * 3) },
+  };
+}
+
 // 駅の入口：駅のまわりの空いている地面に、近くの道の方を向けて 1 つ（駅名の板付き）
 function addStationEntrances(group, map, roadHeights) {
   const g = city4.geos;
@@ -2319,6 +2389,7 @@ function addGates(group, map, heights) {
     mesh(banner, 0, GATE_BANNER_Y);
     group.add(gate);
     if (pt === map.start) group.userData.startGate = { gate, reach }; // スタートの演出を足す（addStartShow）
+    else group.userData.goalGate = { gate, reach }; // ゴールの演出を足す（addGoalShow）
   }
 }
 
@@ -3175,6 +3246,8 @@ function* buildWorldSteps(map, textures) {
   addCity3Props(group, map, roadHeights);
   while (!city4.done) yield 0.985;
   addStartShow(group);
+  while (!goalModel.done) yield 0.985;
+  addGoalShow(group);
   addStationEntrances(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
@@ -3197,6 +3270,7 @@ function* buildWorldSteps(map, textures) {
   );
   beam.position.set(g.x, 60, g.y);
   group.add(beam);
+  group.userData.goalBeam = beam; // ゴールの演出のあいだは消す（syncGoalShow）
 
   return group;
 }
@@ -3249,7 +3323,18 @@ function placeTube(mesh, a, b, r) {
 // Blender で作った自転車と乗っている人（tools/build-bicycle.py）。読み込めるまでは下のプログラムで組み立てた形を出し、
 // 読み込めたら作った自転車の中身を入れ替える。材質の名前で色を決める（ゴーストは白くする）
 const BIKE_MODEL_URL = 'data/models/bicycle.glb';
-const BIKE_MODEL_NAMES = { frame: 'BK_Frame', rider: 'BK_Rider', wheel: 'BK_Wheel', crank: 'BK_Crank', thigh: 'BK_Thigh', shin: 'BK_Shin', shoe: 'BK_Shoe' };
+const BIKE_MODEL_NAMES = {
+  frame: 'BK_Frame', rider: 'BK_Rider', wheel: 'BK_Wheel', crank: 'BK_Crank', thigh: 'BK_Thigh', shin: 'BK_Shin', shoe: 'BK_Shoe',
+  frameCity: 'BK_FrameCity', frameEbike: 'BK_FrameEbike', riderUp: 'BK_RiderUp',
+};
+// 自転車の種類（src/outfits.js の BIKE_TYPES）ごとのフレームと乗る人のモデル、腰の位置（脚を置く起点）。
+// ママチャリと電動アシスト自転車は背すじを立てて乗る（tools/build-bicycle.py の UP_HIP と同じ）。見た目だけで速さは同じ
+const BIKE_KINDS = {
+  road: { frame: 'frame', rider: 'rider', hip: BIKE.hip },
+  city: { frame: 'frameCity', rider: 'riderUp', hip: [0, 0.98, 0.25] },
+  ebike: { frame: 'frameEbike', rider: 'riderUp', hip: [0, 0.98, 0.25] },
+};
+const kindOf = (bike) => BIKE_KINDS[bike.userData.type] ?? BIKE_KINDS.road;
 const BIKE_MAT_COLORS = { BK_Frame: 'frame', BK_Metal: 'metal', BK_Saddle: 'saddle', BK_Tire: 'tire', BK_Jersey: 'jersey', BK_Shorts: 'shorts', BK_Skin: 'skin', BK_Helmet: 'helmet' };
 let bikeModel = null;
 const bikes = []; // 作った自転車（モデルが読み込めたら中身を入れ替える）
@@ -3272,12 +3357,12 @@ function loadBikeModel() {
 }
 loadBikeModel();
 
-function makeBike(colors = {}, opacity = 1) {
+function makeBike(colors = {}, opacity = 1, type = 'road') {
   const bike = new THREE.Group();
   bike.rotation.order = 'YXZ'; // 向き（y）のあとに傾き（z）
   const body = new THREE.Group(); // 傾く部分
   bike.add(body);
-  bike.userData = { colors, opacity, body, phase: 0, lean: 0, prevAngle: null };
+  bike.userData = { colors, opacity, type, body, phase: 0, lean: 0, prevAngle: null };
   fillBike(bike);
   bikes.push(bike);
   return bike;
@@ -3290,11 +3375,11 @@ function fillBike(bike) {
   const transparent = s.opacity < 1;
   const o = { transparent, opacity: s.opacity, depthWrite: !transparent };
   s.body.clear();
-  Object.assign(s, bikeModel ? fillBikeFromModel(s.body, c, o) : fillBikeProcedural(s.body, c, o));
+  Object.assign(s, bikeModel ? fillBikeFromModel(s.body, c, o, kindOf(bike)) : fillBikeProcedural(s.body, c, o));
   if (!transparent) bike.traverse((m) => m.isMesh && (m.castShadow = true)); // ゴーストは影を落とさない
 }
 
-function fillBikeFromModel(body, c, o) {
+function fillBikeFromModel(body, c, o, kind) {
   const mats = new Map();
   const convert = (src) => {
     if (!mats.has(src)) {
@@ -3310,8 +3395,8 @@ function fillBikeFromModel(body, c, o) {
     return ob;
   };
   const B = BIKE;
-  part('frame');
-  part('rider');
+  part(kind.frame);
+  part(kind.rider);
   const wheels = [B.rearAxle, B.frontAxle].map((axle) => {
     const w = part('wheel');
     w.position.set(...axle);
@@ -3440,7 +3525,8 @@ function animateBike(bike, pose, speed, dt, h = 0) {
     const a = crankAngle + (leg.side > 0 ? 0 : Math.PI);
     // クランクの回転（x 軸まわり）と同じ向きに回るペダルの位置
     const foot = [leg.side * 0.13, BIKE.bb[1] + Math.cos(a) * BIKE.crank, BIKE.bb[2] + Math.sin(a) * BIKE.crank];
-    const hip = [leg.side * 0.1, BIKE.hip[1], BIKE.hip[2]];
+    const kh = kindOf(bike).hip;
+    const hip = [leg.side * 0.1, kh[1], kh[2]];
     const knee = kneeOf(hip, foot);
     knee[0] = leg.side * 0.12;
     placeTube(leg.thigh, hip, knee, 0.06);
@@ -4789,6 +4875,74 @@ export function createRenderer3D(canvas) {
     show.arm.rotation.x = wave;
   }
 
+  // ゴールの演出：勝ってゴールしたら、くす玉が割れてたれ幕が下り、紙吹雪が舞い、応援の人が跳びはねる。
+  // それまでは、応援の人がゆっくり小旗を振る。結果画面から次へ進むか、やり直すと元に戻す
+  const goalShow = { openAt: null, t: 0 };
+  const cfDummy = new THREE.Object3D();
+  function syncGoalShow(game, dt) {
+    const show = world?.userData.goalShow;
+    goalShow.t += dt;
+    const won = game.state === 'result' && game.result?.win;
+    if (!won) goalShow.openAt = null;
+    if (!show) return;
+    const { bits, confetti } = show;
+    if (won && goalShow.openAt === null) {
+      goalShow.openAt = goalShow.t;
+      // 紙吹雪：くす玉の中から、上と横へ散らす
+      for (let i = 0; i < CONFETTI_N; i++) {
+        const a = Math.random() * Math.PI * 2, r = Math.random() * 0.3;
+        bits.pos.set([GOAL_HINGE[0] + Math.cos(a) * r, GOAL_HINGE[1] - GOAL_BALL_R + (Math.random() - 0.5) * 0.4, GOAL_HINGE[2] + Math.sin(a) * r], i * 3);
+        const sp = 1 + Math.random() * 3;
+        bits.vel.set([Math.cos(a) * sp, Math.random() * 2.5, Math.sin(a) * sp], i * 3);
+        bits.spin.set([(Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12], i * 3);
+        bits.rot.set([Math.random() * 6, Math.random() * 6, Math.random() * 6], i * 3);
+      }
+    }
+    const since = goalShow.openAt === null ? -1 : goalShow.t - goalShow.openAt;
+    if (world.userData.goalBeam) world.userData.goalBeam.visible = since < 0; // 光の柱はくす玉の前をふさぐので消す
+    // くす玉：0.6 秒で開き、少し行き過ぎて戻る
+    const k = since < 0 ? 0 : Math.min(1, since / 0.6);
+    const back = 1.70158;
+    const open = (1 + (back + 1) * (k - 1) ** 3 + back * (k - 1) ** 2) * 1.9;
+    show.left.rotation.z = -open;
+    show.right.rotation.z = open;
+    show.streamer.visible = since > 0.15;
+    show.streamer.scale.y = Math.max(0.001, Math.min(1, (since - 0.15) / 0.5));
+    // 応援の人：ゴール前はゆっくり、ゴールしたら速く振って跳ねる
+    for (const f of show.fans) {
+      const fast = since >= 0;
+      f.arm.rotation.x = Math.sin(goalShow.t * (fast ? 10 : 3) + f.phase) * (fast ? 0.6 : 0.35) + 0.15;
+      f.fan.position.y = fast ? Math.max(0, Math.sin(goalShow.t * 7 + f.phase)) * 0.18 : 0;
+    }
+    // 紙吹雪：空気でゆっくりになり、ひらひら揺れながら落ちて、地面で止まる
+    confetti.visible = since >= 0;
+    if (since < 0 || dt <= 0) return;
+    const drag = Math.exp(-2.2 * dt);
+    for (let i = 0; i < CONFETTI_N; i++) {
+      const j = i * 3, P = bits.pos, V = bits.vel, S = bits.spin, R = bits.rot;
+      if (P[j + 1] > 0.02) {
+        V[j] *= drag;
+        V[j + 2] *= drag;
+        V[j + 1] = Math.max(-0.9, (V[j + 1] - 9.8 * dt) * drag);
+        const flutter = Math.sin(goalShow.t * 5 + i) * 0.5;
+        P[j] += (V[j] + flutter) * dt;
+        P[j + 1] = Math.max(0.02, P[j + 1] + V[j + 1] * dt);
+        P[j + 2] += (V[j + 2] + Math.cos(goalShow.t * 4 + i) * 0.4) * dt;
+        R[j] += S[j] * dt;
+        R[j + 1] += S[j + 1] * dt;
+        R[j + 2] += S[j + 2] * dt;
+      } else {
+        R[j] = -Math.PI / 2; // 地面に寝かせる
+        R[j + 2] = 0;
+      }
+      cfDummy.position.set(P[j], P[j + 1], P[j + 2]);
+      cfDummy.rotation.set(R[j], R[j + 1], R[j + 2]);
+      cfDummy.updateMatrix();
+      confetti.setMatrixAt(i, cfDummy.matrix);
+    }
+    confetti.instanceMatrix.needsUpdate = true;
+  }
+
   // 渋谷スクランブル交差点：交差点の信号が赤（車が止まる）のあいだ、四隅から人がいっせいに渡る（斜めにも）。
   // 青のあいだは四隅で待つ。見た目だけ（人の当たり判定はない）。人の形は tools/build-city3.py の待つ人
   const scramble = { map: null, people: [], meshes: null, group: null };
@@ -5001,6 +5155,7 @@ export function createRenderer3D(canvas) {
   const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
   const ease = (from, to, dt) => from + (to - from) * Math.min(1, CAMERA_EASE * dt);
 
+  const camLook = new THREE.Vector3(), camBall = new THREE.Vector3(), camTo = new THREE.Vector3();
   function placeCamera(game, dt) {
     const p = game.player;
     const c = CAMERAS[cameraMode];
@@ -5030,7 +5185,24 @@ export function createRenderer3D(canvas) {
     const lx = Math.sin(look), lz = -Math.cos(look);
     // 橋の上では自転車と一緒にカメラも上がる
     camera.position.set(p.x - fx * cam.back, bikeH + cam.up, p.y - fz * cam.back);
-    camera.lookAt(p.x + lx * cam.ahead, bikeH + (cameraMode === 'first' ? 1.5 : 1), p.y + lz * cam.ahead);
+    camLook.set(p.x + lx * cam.ahead, bikeH + (cameraMode === 'first' ? 1.5 : 1), p.y + lz * cam.ahead);
+    // ゴールの演出のあいだは、ゴールの門の手前（自転車のいる側）へカメラを寄せ、割れるくす玉を見上げる
+    // （ゴールの判定は門の 25 m 手前なので、そのままだとくす玉が小さい）
+    const gs = world?.userData.goalShow;
+    if (gs && goalShow.openAt !== null) {
+      const w = Math.min(1, (goalShow.t - goalShow.openAt) / 1.2);
+      const e = w * w * (3 - 2 * w);
+      const gate = gs.ball.parent;
+      camTo.set(p.x, bikeH, p.y);
+      gate.worldToLocal(camTo);
+      camTo.set(0, 2.4, (camTo.z >= 0 ? 1 : -1) * 12);
+      gate.localToWorld(camTo);
+      camera.position.lerp(camTo, e);
+      gs.ball.getWorldPosition(camBall);
+      camBall.y -= GOAL_BALL_R * 2.2;
+      camLook.lerp(camBall, e);
+    }
+    camera.lookAt(camLook);
     if (Math.abs(camera.fov - cam.fov) > 0.01) {
       camera.fov = cam.fov;
       camera.updateProjectionMatrix();
@@ -5090,6 +5262,14 @@ export function createRenderer3D(canvas) {
     hud: { ppm: 1, landmarks: false, goalPointer: false, goal3d: null, landmarks3d: null },
 
     // 時間帯（day / evening / night）と天気（clear / rain / snow）。見た目だけで、走りやすさは変えない
+    // 自分の自転車の種類（road / city / ebike）と色（frame・jersey・shorts・helmet）。ゴーストも同じ種類にする
+    setBike(type, colors) {
+      player.userData.type = ghost.userData.type = type;
+      player.userData.colors = colors;
+      fillBike(player);
+      fillBike(ghost);
+    },
+
     setAtmosphere(time, weather) {
       const t = TIMES[time] ?? TIMES.evening, w = WEATHERS[weather] ?? WEATHERS.clear;
       currentWeather = weather; // 雨の日は歩行者が傘をさす
@@ -5208,6 +5388,7 @@ export function createRenderer3D(canvas) {
       syncRiders(game, dt);
       syncCrossings(game, dt);
       syncStartShow(game, dt);
+      syncGoalShow(game, dt);
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する

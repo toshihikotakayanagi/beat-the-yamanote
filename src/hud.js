@@ -4,6 +4,7 @@ import { trainProgress, timeLeft, DIFFICULTIES } from './train.js';
 import { drawMinimap, minimapRect, minimapImage, IMAGE_SCALE } from './minimap.js';
 import { fastestRoute } from './route.js';
 import { drawLandmarks, drawLandmarks3D } from './landmarks.js';
+import { bikeTypeOf, outfitOf, helmetOf } from './outfits.js';
 
 const YAMANOTE_GREEN = '#9acd32';
 const PLAYER_YELLOW = '#ffcc33';
@@ -405,12 +406,13 @@ const CELL_GAP = 8; // 升目どうしのすき間
 
 const lineHeight = (item) => (Array.isArray(item) ? (item[1]?.size ?? 16) + GAP : item.cells ? CELL_H + CELL_GAP : item.height + GAP);
 
-// 2 列の升目を 1 段描く。cells: [{ title, note, color, noteColor, selected, outlined, action }]（1〜2 個）
+// 2〜3 列の升目を 1 段描く。cells: [{ title, note, color, noteColor, selected, outlined, action }]（1〜3 個。1〜2 個は 2 列で並べる）
 function drawCellRow(ctx, game, view, cells, y, k) {
   const h = CELL_H * k;
-  const cw = Math.min(260, (view.w - 32 - CELL_GAP) / 2);
+  const n = Math.max(2, cells.length);
+  const cw = Math.min(n === 2 ? 260 : 190, (view.w - 32 - CELL_GAP * (n - 1)) / n);
   cells.forEach((c, col) => {
-    const cx = view.w / 2 + (col === 0 ? -1 : 1) * (cw + CELL_GAP) / 2;
+    const cx = view.w / 2 + (col - (n - 1) / 2) * (cw + CELL_GAP);
     const x0 = cx - cw / 2;
     if (c.selected) {
       ctx.fillStyle = 'rgba(154, 205, 50, 0.14)';
@@ -623,12 +625,13 @@ function drawTitle(ctx, game, view) {
 }
 
 function drawHowto(ctx, game, view) {
-  // キーの説明は 1 行だと板の幅に収まらないので 2 行に分ける
+  // キーの説明は 1 行だと板の幅に収まらないので 3 行に分ける
   const controls = game.touch
     ? ['画面下のボタンで操作（左：ハンドル、右：ブレーキ／アクセル）　右上の ❚❚ で一時停止']
     : [
         '矢印キー / WASD で操作　P：一時停止　R：やり直し　Esc：戻る',
-        `M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響　B：ベル${game.mode === '3d' ? '　C：視点' : ''}`,
+        'M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響',
+        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点' : ''}`,
       ];
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
@@ -663,6 +666,17 @@ function drawReady(ctx, game, view) {
     cells: [
       { title: `時間帯：${TIME_NAMES[game.timeOfDay]}`, note: game.touch ? 'タップで切り替え' : 'T で切り替え', color: TEXT, noteColor: QUIET, action: 'time', outlined: true },
       { title: `天気：${WEATHER_NAMES[game.weather]}`, note: game.touch ? 'タップで切り替え' : 'Y で切り替え', color: TEXT, noteColor: QUIET, action: 'weather', outlined: true },
+    ],
+  });
+  // 自転車の種類・服・ヘルメット（見た目だけ。タップかキーで切り替え）
+  // 文字をその色で書く（黒っぽい色は暗い板の上で読めないので、明るい灰色にする）
+  const swatch = (hex) => ((hex >> 16) + ((hex >> 8) & 255) + (hex & 255) < 200 ? '#a8aeb8' : `#${hex.toString(16).padStart(6, '0')}`);
+  const outfit = outfitOf(game.outfit), helmet = helmetOf(game.helmet);
+  lines.push({
+    cells: [
+      { title: `自転車：${bikeTypeOf(game.bikeType).name}`, note: game.touch ? 'タップで切り替え' : 'V で切り替え', color: TEXT, noteColor: QUIET, action: 'bikeType', outlined: true },
+      { title: `服：${outfit.name}`, note: game.touch ? 'タップで切り替え' : 'U で切り替え', color: swatch(outfit.jersey), noteColor: QUIET, action: 'outfit', outlined: true },
+      { title: `ヘルメット：${helmet.name}`, note: game.touch ? 'タップで切り替え' : 'K で切り替え', color: swatch(helmet.color), noteColor: QUIET, action: 'helmet', outlined: true },
     ],
   });
   // 天気の影響：あり／なし（雨・雪で走りやすさが変わる。記録は別）
@@ -953,8 +967,35 @@ function shareLine(game) {
   return [game.touch ? '結果をシェア' : 'S 結果をシェア（コピー）', { size: 15, color: QUIET }, 'share'];
 }
 
+const GOAL_SHOW_MS = 2200; // src/game.js の GOAL_SHOW_MS と同じ
+// 3D版で勝ったとき、結果画面の前に大きく「ゴール！」とタイムだけを出す（後ろでくす玉が割れる）
+function drawGoalFlash(ctx, game, view) {
+  const r = game.result;
+  const elapsed = Math.max(0, Math.min(1, 1 - (r.shownAt - performance.now()) / GOAL_SHOW_MS)); // 0〜1
+  const size = Math.min(96, view.w / 6) * (1 + 0.3 * Math.max(0, 1 - elapsed * 4)); // 大きく出て、すぐ落ち着く
+  const y = view.h * 0.68; // 画面の下の方（上の方では、くす玉が割れる）
+  ctx.save();
+  ctx.font = `bold ${size}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = size * 0.12;
+  ctx.strokeStyle = 'rgba(10, 12, 16, 0.85)';
+  ctx.strokeText('ゴール！', view.w / 2, y);
+  ctx.fillStyle = PLAYER_YELLOW;
+  ctx.fillText('ゴール！', view.w / 2, y);
+  const sub = `${formatTime(r.time)}　電車より ${(game.train.limit - r.time).toFixed(1)} 秒早く到着`;
+  ctx.font = `bold ${Math.round(size * 0.28)}px sans-serif`;
+  ctx.lineWidth = size * 0.06;
+  ctx.strokeText(sub, view.w / 2, y + size * 0.85);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(sub, view.w / 2, y + size * 0.85);
+  ctx.restore();
+}
+
 function drawResult(ctx, game, view) {
   const r = game.result;
+  if (performance.now() < r.shownAt) return drawGoalFlash(ctx, game, view);
   const lines = r.win
     ? [
         { height: 64, draw: (y, h) => drawWinTitle(ctx, game, view, y, h) },
@@ -1021,7 +1062,9 @@ export function drawHud(ctx, game, view) {
   else if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);
   // メニュー画面ではレース情報を出さない
   if (!menu) {
-    if (view.goal3d) drawGoalPointer3D(ctx, game, view);
+    if (game.state === 'result') {
+      // ゴールしたあとは、ゴールの方向や距離は出さない
+    } else if (view.goal3d) drawGoalPointer3D(ctx, game, view);
     else if (view.goalPointer !== false) drawGoalPointer(ctx, game, view);
     drawRaceBar(ctx, game, view);
     drawStatus(ctx, game);

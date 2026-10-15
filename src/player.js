@@ -46,7 +46,8 @@ const DRAW_SCALE = 3.2;
 
 // body：ジャージとフレームの色、nose：ヘルメットの色、tire：タイヤとハンドルの色
 // halo：足もとに光る輪を描く（暗い地図や信号の印の中でも自分の位置がすぐ分かるように。ゴーストには付けない）
-const PLAYER_STYLE = { body: '#ffcc33', nose: '#e8443a', tire: '#15171b', alpha: 1, halo: true };
+// basket：前かご（ママチャリ・電動アシスト自転車）
+export const PLAYER_STYLE = { body: '#ffcc33', nose: '#e8443a', tire: '#15171b', alpha: 1, halo: true, basket: false };
 const HALO_R = 4.2; // 光る輪の半径 m
 export const GHOST_STYLE = { body: '#e8ecf4', nose: '#c9ced8', tire: '#9aa0aa', alpha: 0.6 }; // ゴースト（ベストの走り）
 
@@ -88,6 +89,12 @@ export function drawPlayer(ctx, p, style = PLAYER_STYLE) {
     ctx.moveTo(0, y - 0.33);
     ctx.lineTo(0, y + 0.33);
     ctx.stroke();
+  }
+  // 前かご
+  if (style.basket) {
+    ctx.strokeStyle = '#c8ccd4';
+    ctx.lineWidth = 0.04;
+    ctx.strokeRect(-0.18, -0.78, 0.36, 0.28);
   }
   // フレーム
   ctx.strokeStyle = style.body;
