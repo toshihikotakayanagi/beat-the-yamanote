@@ -1463,6 +1463,174 @@ function addTownProps(group, map, roadHeights, buildingHeights) {
   }
 }
 
+// ---- 線路のまわり・川と橋・空を飛ぶ物（Blender で作ったモデル。tools/build-scenery.py） ----
+// 線路の柵（地面の高さの線路の外側）と信号機（山手線の線路の左）、橋の欄干（車道の橋の両側）、川に浮かぶ船、
+// 空の飛行機・ヘリコプター・鳥。どれも見た目だけ（自転車とはぶつからない）
+const SCENERY_URL = 'data/models/scenery.glb';
+const SCENERY_NAMES = {
+  fence: 'RF_Fence', signal: 'RS_Signal', signalLamp: 'RS_Lamp', bridgeRail: 'BR_Rail', boat: 'BT_Boat', yakata: 'BT_Yakata',
+  plane: 'SK_Plane', heli: 'SK_Heli', rotor: 'SK_Rotor', birdBody: 'BD_Body', birdWingL: 'BD_WingL', birdWingR: 'BD_WingR',
+};
+const scenery = { geos: null, done: false }; // 名前 → { body, glow }
+loadModelParts(SCENERY_URL, SCENERY_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    scenery.geos = geos;
+  })
+  .catch((e) => console.warn(`線路のまわり・川・空の物のモデルを読み込めませんでした: ${SCENERY_URL}`, e))
+  .finally(() => (scenery.done = true));
+const FENCE_OFF = 3.2; // 線路の中心から柵までの距離 m
+const FENCE_STATION_CLEAR = 140; // 駅のまわりこの距離 m には柵を立てない（ホームがあるので）
+const SIGNAL_SPACING = 450;
+const BOAT_SPACING = 220;
+
+function addRailsideAndRivers(group, map, roadHeights) {
+  const g = scenery.geos;
+  if (!g) return;
+  const lists = {};
+  const put = (key, x, h, z, rotY, sz = 1) => {
+    const m = new THREE.Matrix4().makeTranslation(x, h, z).multiply(new THREE.Matrix4().makeRotationY(rotY));
+    if (sz !== 1) m.multiply(new THREE.Matrix4().makeScale(1, 1, sz));
+    (lists[key] ??= []).push(m);
+  };
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station');
+  const nearStation = (x, z, d) => stations.some((st) => Math.hypot(st.x - x, st.y - z) < d);
+  // 線路の線分の空間の索引（20m 四方）
+  const tracks = map.lines.filter((l) => l.k !== 'river' && !l.u);
+  const grid = new Map();
+  const G = 20;
+  for (const l of tracks) {
+    for (let i = 0; i + 3 < l.p.length; i += 2) {
+      const sg = [l.p[i], l.p[i + 1], l.p[i + 2], l.p[i + 3], l];
+      for (let gx = Math.floor(Math.min(sg[0], sg[2]) / G) - 1; gx <= Math.floor(Math.max(sg[0], sg[2]) / G) + 1; gx++) {
+        for (let gz = Math.floor(Math.min(sg[1], sg[3]) / G) - 1; gz <= Math.floor(Math.max(sg[1], sg[3]) / G) + 1; gz++) {
+          const k = `${gx},${gz}`;
+          if (!grid.has(k)) grid.set(k, []);
+          grid.get(k).push(sg);
+        }
+      }
+    }
+  }
+  const nearTrack = (x, z, d, except) =>
+    (grid.get(`${Math.floor(x / G)},${Math.floor(z / G)}`) ?? []).some(([ax, az, bx, bz, l]) => {
+      if (l === except) return false;
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      return Math.hypot(x - ax - dx * t, z - az - dz * t) < d;
+    });
+  // ---- 線路の柵：地面の高さの線路の両側。となりにほかの線路があれば、その側は内側なので立てない ----
+  for (const l of tracks) {
+    if (l.e) continue;
+    for (let i = 0; i + 3 < l.p.length; i += 2) {
+      const x1 = l.p[i], z1 = l.p[i + 1], x2 = l.p[i + 2], z2 = l.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 0.5) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      const steps = Math.ceil(len / 3);
+      for (let k = 0; k < steps; k++) {
+        const t = (k + 0.5) / steps;
+        const mx = x1 + (x2 - x1) * t, mz = z1 + (z2 - z1) * t;
+        if (nearStation(mx, mz, FENCE_STATION_CLEAR)) continue;
+        for (const side of [-1, 1]) {
+          const nx = -uz * side, nz = ux * side;
+          const fx = mx + nx * FENCE_OFF, fz = mz + nz * FENCE_OFF;
+          if (nearTrack(fx, fz, FENCE_OFF - 0.4, l)) continue; // 外側だけ
+          const sf = surfaceAt(map, fx, fz);
+          if (sf.kind !== 'ground') continue; // 道（踏切・線路をくぐる道）や建物の中には立てない
+          put('fence', fx, 0, fz, faceTo(-nx, -nz), len / steps);
+        }
+      }
+    }
+  }
+  // ---- 線路の信号機：山手線の線路の左に、SIGNAL_SPACING m おき（駅のまわりは除く） ----
+  for (const l of tracks) {
+    if (l.k !== 'yamanote') continue;
+    let next = SIGNAL_SPACING / 2, walked = 0;
+    for (let i = 0; i + 3 < l.p.length; i += 2) {
+      const x1 = l.p[i], z1 = l.p[i + 1], x2 = l.p[i + 2], z2 = l.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 1e-6) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      while (next <= walked + len) {
+        const t = (next - walked) / len;
+        next += SIGNAL_SPACING;
+        const sx = x1 + (x2 - x1) * t + uz * 2.4, sz = z1 + (z2 - z1) * t - ux * 2.4; // 進む向きの左
+        if (nearStation(sx, sz, 80) || nearTrack(sx, sz, 1.8, l)) continue;
+        put('signal', sx, (l.e ? ELEVATED_H : 0) + Y.rail, sz, faceTo(-ux, -uz));
+      }
+      walked += len;
+    }
+  }
+  // ---- 橋の欄干：車道の橋（高さ 0.5m 以上の所）の両側 ----
+  for (const r of map.roads) {
+    if (!r.e || r.path) continue;
+    for (let i = 0; i + 1 < r.p.length / 2; i++) {
+      const x1 = r.p[2 * i], z1 = r.p[2 * i + 1], x2 = r.p[2 * i + 2], z2 = r.p[2 * i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 0.5) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      const steps = Math.ceil(len / 2);
+      for (let k = 0; k < steps; k++) {
+        const t = (k + 0.5) / steps;
+        const h = roadHeightAt(roadHeights, r, i, t);
+        if (h < 0.5) continue;
+        const mx = x1 + (x2 - x1) * t, mz = z1 + (z2 - z1) * t;
+        for (const side of [-1, 1]) {
+          const nx = -uz * side, nz = ux * side;
+          const ex = mx + nx * (r.w / 2 - 0.1), ez = mz + nz * (r.w / 2 - 0.1);
+          // となりに同じ高さの道（歩道の橋など）が続いていれば、そちらの外に立つので立てない
+          const seg = surfaceAt(map, ex + nx * 0.6, ez + nz * 0.6).segs ?? [];
+          if (seg.some((sg) => sg.road !== r && Math.abs(segHeight(roadHeights, sg, ex, ez) - h) < 0.6)) continue;
+          put('bridgeRail', ex, h + Y.road, ez, faceTo(nx, nz), len / steps);
+        }
+      }
+    }
+  }
+  // ---- 川の船：川の線に沿って BOAT_SPACING m おき、岸寄りに（小さな船と屋形船を交互に） ----
+  let boatNo = 0;
+  for (const l of map.lines) {
+    if (l.k !== 'river' || l.w < 8) continue;
+    let next = BOAT_SPACING / 2, walked = 0;
+    for (let i = 0; i + 3 < l.p.length; i += 2) {
+      const x1 = l.p[i], z1 = l.p[i + 1], x2 = l.p[i + 2], z2 = l.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 1e-6) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      while (next <= walked + len) {
+        const t = (next - walked) / len;
+        next += BOAT_SPACING;
+        const side = boatNo % 2 ? 1 : -1;
+        const bx = x1 + (x2 - x1) * t - uz * side * (l.w / 2 - 2.2), bz = z1 + (z2 - z1) * t + ux * side * (l.w / 2 - 2.2);
+        if ((surfaceAt(map, bx, bz).segs ?? []).length) continue; // 橋の下には置かない
+        put(boatNo % 2 ? 'yakata' : 'boat', bx, Y.river, bz, faceTo(ux, uz) - Math.PI / 2);
+        boatNo++;
+      }
+      walked += len;
+    }
+  }
+  for (const [key, list] of Object.entries(lists)) {
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT && key !== 'fence';
+      group.add(mesh);
+    }
+  }
+  // 信号機の灯（灯の板は信号機と同じ置き方）
+  if (lists.signal && g.signalLamp.glow) {
+    const mesh = new THREE.InstancedMesh(g.signalLamp.glow, STREET_GLOW_MAT, lists.signal.length);
+    lists.signal.forEach((m, i) => mesh.setMatrixAt(i, m));
+    group.add(mesh);
+  }
+}
+
 // スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
 // スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
 function addGates(group, map, heights) {
@@ -1744,6 +1912,10 @@ function addStations(group, map, textures) {
 // 新橋駅・浜松町駅・田町駅・大崎駅・五反田駅・目黒駅・恵比寿駅・原宿駅・代々木駅・新大久保駅・高田馬場駅・目白駅・大塚駅・巣鴨駅・駒込駅・田端駅・西日暮里駅・日暮里駅・鶯谷駅・御徒町駅）で .blend を作り、tools/export-glb.py で書き出す。
 // 窓の灯りは放射のテクスチャ（emissiveMap）で、時間帯で明るさを変える
 const MODELS = [
+  // 有名な建物（tools/build-famous-buildings.py）：地図データの同じ建物の箱は描かない
+  { url: 'data/models/shibuya109.glb', lat: 35.6596063, lon: 139.6988671, heading: 180, clear: [-11.8, -7.8, -2.7, 1.3] }, // SHIBUYA109
+  { url: 'data/models/qfront.glb', lat: 35.6598686, lon: 139.7003755, heading: 180, clear: [-3.3, 0.7, -0.3, 3.7] }, // QFRONT（大きな画面）
+  { url: 'data/models/radio_kaikan.glb', lat: 35.6979554, lon: 139.7719352, heading: 180, clear: [-0.7, 3.3, -10.1, -6.1] }, // 秋葉原ラジオ会館
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
   { url: 'data/models/takanawa_gateway.glb', lat: 35.635739, lon: 139.740657, heading: 289.2, clear: [-52, 110, -15, 32] },
   { url: 'data/models/ueno_station.glb', lat: 35.712253, lon: 139.776149, heading: 137.4, clear: [-56, 56, -30, 30] },
@@ -2327,6 +2499,8 @@ function* buildWorldSteps(map, textures) {
   addShops(group, map, heights);
   while (!townModel.done) yield 0.985;
   addTownProps(group, map, roadHeights, heights);
+  while (!scenery.done) yield 0.985;
+  addRailsideAndRivers(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -3777,6 +3951,92 @@ export function createRenderer3D(canvas) {
     }
   }
 
+  // ---- 空を飛ぶ物：飛行機・ヘリコプター（遠く。霧の外側に向きと大きさの比を保って置く）と、鳥の群れ（近く） ----
+  // 飛行機とヘリは、空の高さ elev の所を、方角 from から to へ横切る。しばらく待って次が飛ぶ。見た目だけ
+  const sky2 = { group: new THREE.Group(), flyers: [], birds: [], t: 0 };
+  scene.add(sky2.group);
+  const FLYER_R = 425; // 置く距離（霧の外側・空の球の内側）
+  function newFlight(f) {
+    const heli = f.kind === 'heli';
+    const from = Math.random() * Math.PI * 2;
+    const turn = (heli ? 0.6 : 1.4) + Math.random() * 0.8;
+    f.from = from;
+    f.to = from + (Math.random() < 0.5 ? turn : -turn);
+    f.elev = heli ? 0.07 + Math.random() * 0.08 : 0.2 + Math.random() * 0.25; // 仰ぎ見る角度 rad
+    f.dur = heli ? 70 + Math.random() * 30 : 40 + Math.random() * 25; // 横切る秒数
+    f.t = -(heli ? 30 + Math.random() * 60 : 10 + Math.random() * 30); // 負の間は待つ
+    // 見かけの大きさ：飛行機は長さ 40m が約 3km 先、ヘリは長さ 10m が約 1km 先
+    f.scale = heli ? (FLYER_R / 1000) * 1.5 : (FLYER_R / 3000) * 2.5; // 見つけやすいよう実物より少し大きく
+  }
+  function syncSky(game, dt) {
+    const g = scenery.geos;
+    if (!g) return;
+    if (!sky2.flyers.length) {
+      for (const kind of ['plane', 'plane', 'heli']) {
+        const o = new THREE.Group();
+        const mat = new THREE.MeshLambertMaterial({ vertexColors: true, fog: false });
+        o.add(new THREE.Mesh(g[kind].body, mat));
+        let rotor = null;
+        if (kind === 'heli') {
+          rotor = new THREE.Mesh(g.rotor.body, mat);
+          rotor.position.set(0, 2.9, -0.2);
+          o.add(rotor);
+        }
+        const f = { kind, o, rotor };
+        newFlight(f);
+        f.t = -Math.random() * 20;
+        sky2.flyers.push(f);
+        sky2.group.add(o);
+      }
+      // 鳥の群れ：カラス 7 羽とハト 9 羽（白い形に色を付ける）
+      for (const [n, color, r0, h0, speed] of [[7, 0x1a1a1e, 18, 20, 0.32], [9, 0x8a8f99, 12, 10, 0.45]]) {
+        for (let i = 0; i < n; i++) {
+          const mat = new THREE.MeshLambertMaterial({ color, vertexColors: true });
+          const b = new THREE.Group();
+          b.add(new THREE.Mesh(g.birdBody.body, mat));
+          const wl = new THREE.Mesh(g.birdWingL.body, mat), wr = new THREE.Mesh(g.birdWingR.body, mat);
+          b.add(wl, wr);
+          sky2.group.add(b);
+          sky2.birds.push({ b, wl, wr, r: r0 + Math.random() * 6, h: h0 + Math.random() * 4, a: (i / n) * Math.PI * 2 + Math.random() * 0.4, speed, phase: Math.random() * 6, center: null });
+        }
+      }
+    }
+    sky2.t += dt;
+    const cam = camera.position;
+    for (const f of sky2.flyers) {
+      f.t += dt;
+      if (f.t > f.dur) newFlight(f);
+      f.o.visible = f.t >= 0;
+      if (!f.o.visible) continue;
+      const k = f.t / f.dur;
+      const az = f.from + (f.to - f.from) * k;
+      const el = f.elev * (1 - 0.3 * Math.abs(k - 0.5)); // 真ん中で少し高く
+      const dir = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+      f.o.position.copy(cam).addScaledVector(dir, FLYER_R);
+      f.o.scale.setScalar(f.scale);
+      // 進む向き（方角が増える向きの接線）に機首を向ける
+      const s = Math.sign(f.to - f.from);
+      const heading = az + (s * Math.PI) / 2;
+      f.o.rotation.set(0, -heading, 0);
+      if (f.rotor) f.rotor.rotation.y += dt * 25;
+    }
+    // 鳥：自転車の前（カメラの向く方）の上空を回る（群れの真ん中はゆっくり付いてくる）
+    const p = game.player;
+    const fwd = camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
+    for (const bd of sky2.birds) {
+      const target = new THREE.Vector3(p.x + fwd.x * 45, 0, p.y + fwd.z * 45);
+      if (!bd.center) bd.center = target.clone();
+      bd.center.lerp(target, Math.min(1, dt * 0.15));
+      bd.a += bd.speed * dt;
+      const x = bd.center.x + Math.cos(bd.a) * bd.r, z = bd.center.z + Math.sin(bd.a) * bd.r;
+      bd.b.position.set(x, bd.h + Math.sin(sky2.t * 0.7 + bd.phase) * 1.2, z);
+      bd.b.rotation.y = Math.PI - bd.a; // 円の接線の向き
+      const flap = Math.sin(sky2.t * 9 + bd.phase) * 0.6;
+      bd.wr.rotation.z = flap;
+      bd.wl.rotation.z = -flap;
+    }
+  }
+
   // 踏切：電車（ライバルの山手線とほかの路線の電車）が近ければ遮断機を下ろして灯を交互に点ける
   let crossingClock = 0;
   function syncCrossings(game, dt) {
@@ -4115,6 +4375,7 @@ export function createRenderer3D(canvas) {
         camera.lookAt(...dc.look);
       }
       sky.position.copy(camera.position);
+      syncSky(game, dt);
       placeFarTowers();
       locateGoal(game);
       locateLandmarks(game);
@@ -4125,6 +4386,6 @@ export function createRenderer3D(canvas) {
       unculled = [];
     },
   };
-  window.render3d = { renderer, scene, camera, r3d, otherTrains, riders }; // デバッグ・自動テスト用
+  window.render3d = { renderer, scene, camera, r3d, otherTrains, riders, sky2 }; // デバッグ・自動テスト用
   return r3d;
 }

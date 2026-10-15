@@ -155,7 +155,9 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ pedestrian.glb         歩行者の体の部品（頭・髪・胴体・腰・脚・靴・腕・手・傘）の 3D モデル（tools/build-pedestrian.py で作成）
 │     ├─ shops.glb              コンビニの店先と看板（店の種類ごとの色の帯。店の名前やロゴは描かない）の 3D モデル（tools/build-shops.py で作成）
 │     ├─ other_trains.glb       山手線と並んで走るほかの電車（通勤電車と新幹線。帯は路線の色にする）の 3D モデル（tools/build-other-trains.py で作成）
-│     └─ town.glb               街の小物（道路標識・カーブミラー・郵便ポスト・消火栓の標識・駐輪場・コーンとバリケード・屋上の物・歩道橋の手すり・踏切）と駅の近くの名物、バイクとスクーターの 3D モデル（tools/build-town.py で作成）
+│     ├─ town.glb               街の小物（道路標識・カーブミラー・郵便ポスト・消火栓の標識・駐輪場・コーンとバリケード・屋上の物・歩道橋の手すり・踏切）と駅の近くの名物、バイクとスクーターの 3D モデル（tools/build-town.py で作成）
+│     ├─ shibuya109.glb・qfront.glb・radio_kaikan.glb  有名な建物（SHIBUYA109・QFRONT・秋葉原ラジオ会館）の 3D モデル（tools/build-famous-buildings.py で作成）
+│     └─ scenery.glb            線路の柵と信号機・橋の欄干・川の船・飛行機とヘリコプター・鳥の 3D モデル（tools/build-scenery.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -200,6 +202,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-shops.py   コンビニの店先と看板のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-other-trains.py  ほかの路線の電車のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-town.py    街の小物・名物・踏切・バイクのモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-famous-buildings.py  有名な建物 3 つのモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-scenery.py  線路のまわり・川と橋・空を飛ぶ物のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
