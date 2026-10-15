@@ -106,6 +106,13 @@ export function trainPath(map, from, to) {
   return { path, cum, length: cum.at(-1), offsets, jumps, heights: smoothHeights(path, cum) };
 }
 
+// 点の並び path（[x, y, その点に着く区間がトンネルか, 高い所か]）から、pointAt で使える経路を作る（ほかの路線の電車にも使う）
+export function routeOf(path) {
+  const cum = [0];
+  for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
+  return { path, cum, length: cum.at(-1), heights: smoothHeights(path, cum) };
+}
+
 // 経路の点ごとの高さ m（3D版）。区間ごとの高さ（高い所なら ELEVATED_H）を、前後 RAMP_M の範囲で平均する
 function smoothHeights(path, cum) {
   const n = path.length;

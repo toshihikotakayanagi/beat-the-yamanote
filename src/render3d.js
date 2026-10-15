@@ -7,8 +7,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { signalState } from './obstacles.js';
-import { pointAt, frontDistance, carCount, ELEVATED_H } from './trainpath.js';
-import { AREA_COLORS, LINE_STYLES, cellKey, nodeKey, surfaceAt } from './map.js';
+import { pointAt, frontDistance, carCount, routeOf, ELEVATED_H } from './trainpath.js';
+import { AREA_COLORS, LINE_STYLES, CELL, cellKey, nodeKey, surfaceAt } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
 import { pedLook, pedSwing } from './pedestrians.js';
 import { carLook } from './vehicles.js';
@@ -1062,6 +1062,92 @@ function gatePose(map, x, y, heading) {
   return best ?? { angle: heading, hw: 4 };
 }
 
+// ---- コンビニの店先（Blender で作った店先と看板。tools/build-shops.py） ----
+// 地図データのコンビニ（map.shops：[x, y, 店の種類, ...]。OpenStreetMap）の建物の、道にいちばん近い壁の 1 階に付ける。
+// 看板は店の種類ごとの色の帯だけ（店の名前やロゴは描かない）。店の中と看板は光って見える
+const SHOP_MODEL_URL = 'data/models/shops.glb';
+const SHOP_MODEL_NAMES = { front: 'SF_Front', sign0: 'SF_Sign0', sign1: 'SF_Sign1', sign2: 'SF_Sign2', sign3: 'SF_Sign3', sign4: 'SF_Sign4' };
+const SHOP_W = 8; // 店先の幅 m（tools/build-shops.py の W）
+const SHOP_MIN_H = 3.8; // これより低い建物には付けない
+const shopModel = { geos: null, done: false };
+loadModelParts(SHOP_MODEL_URL, SHOP_MODEL_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {
+      front: addModelParts(new GeometryBuilder(true), parts.front, (part) => (isLight(part) ? null : part.color)).build(),
+      frontGlow: addModelParts(new GeometryBuilder(true), parts.front, (part) => (isLight(part) ? part.color : null)).build(),
+    };
+    for (let k = 0; k <= 4; k++) geos[`sign${k}`] = addModelParts(new GeometryBuilder(true), parts[`sign${k}`]).build();
+    shopModel.geos = geos;
+  })
+  .catch((e) => console.warn(`コンビニのモデルを読み込めませんでした: ${SHOP_MODEL_URL}`, e))
+  .finally(() => (shopModel.done = true));
+
+function addShops(group, map, buildingHeights) {
+  const sm = shopModel.geos;
+  const shops = map.shops ?? [];
+  if (!sm || !shops.length) return;
+  const fronts = [], signs = [[], [], [], [], []];
+  const used = new Set(); // 店先を付けた壁（建物の番号:辺の番号）
+  for (let i = 0; i < shops.length; i += 3) {
+    const x = shops[i], z = shops[i + 1], kind = shops[i + 2];
+    // 店のある建物：点を含む建物、なければ 12m 以内でいちばん近い壁の建物
+    const cands = new Set();
+    for (const dx of [-CELL, 0, CELL]) for (const dz of [-CELL, 0, CELL]) for (const b of map.cells.get(cellKey(x + dx, z + dz))?.buildings ?? []) cands.add(b);
+    let bd = null, bdD = 12;
+    for (const b of cands) {
+      if (insidePolygon(x, z, b.p)) {
+        bd = b;
+        break;
+      }
+      const ring = openRing(b.p);
+      for (let k = 0; k < ring.length; k += 2) {
+        const ax = ring[k], az = ring[k + 1], bx = ring[(k + 2) % ring.length], bz = ring[(k + 3) % ring.length];
+        const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+        const d = Math.hypot(x - ax - dx * t, z - az - dz * t);
+        if (d < bdD) (bdD = d), (bd = b);
+      }
+    }
+    if (!bd || !(buildingHeights[bd.id] >= SHOP_MIN_H)) continue;
+    // 道にいちばん近い壁（長さ 4.5m 以上）。外向きは、壁の真ん中から少し外が建物の外になる向き
+    const ring = openRing(bd.p);
+    let best = null;
+    for (let k = 0; k < ring.length; k += 2) {
+      const ax = ring[k], az = ring[k + 1], bx = ring[(k + 2) % ring.length], bz = ring[(k + 3) % ring.length];
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 4.5 || used.has(`${bd.id}:${k}`)) continue;
+      const ux = (bx - ax) / len, uz = (bz - az) / len;
+      let nx = uz, nz = -ux;
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      if (insidePolygon(mx + nx * 0.3, mz + nz * 0.3, bd.p)) (nx = -nx), (nz = -nz);
+      const road = nearestRoadPoint(map, mx + nx * 3, mz + nz * 3, false);
+      const score = (road ? road.d : 50) + 0.3 * Math.hypot(x - mx, z - mz);
+      if (!best || score < best.score) best = { score, k, ax, az, ux, uz, nx, nz, len };
+    }
+    if (!best) continue;
+    used.add(`${bd.id}:${best.k}`);
+    const w = Math.min(SHOP_W, best.len - 0.4);
+    const t = Math.max(w / 2, Math.min(best.len - w / 2, (x - best.ax) * best.ux + (z - best.az) * best.uz));
+    const m = new THREE.Matrix4()
+      .makeTranslation(best.ax + best.ux * t + best.nx * 0.04, 0, best.az + best.uz * t + best.nz * 0.04)
+      .multiply(new THREE.Matrix4().makeRotationY(faceTo(best.nx, best.nz)))
+      .multiply(new THREE.Matrix4().makeScale(1, 1, w / SHOP_W));
+    fronts.push(m);
+    signs[kind in signs ? kind : 0].push(m);
+  }
+  const instanced = (geo, material, list, name = '') => {
+    if (!list.length) return;
+    const mesh = new THREE.InstancedMesh(geo, material, list.length);
+    mesh.name = name; // デバッグ・自動テスト用
+    list.forEach((m, i) => mesh.setMatrixAt(i, m));
+    group.add(mesh);
+  };
+  instanced(sm.front, STREET_MAT, fronts, 'shopFronts');
+  instanced(sm.frontGlow, STREET_GLOW_MAT, fronts);
+  signs.forEach((list, k) => instanced(sm[`sign${k}`], STREET_GLOW_MAT, list));
+}
+
 // スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
 // スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
 function addGates(group, map, heights) {
@@ -1922,6 +2008,8 @@ function* buildWorldSteps(map, textures) {
   addTrees(group, map, roadHeights);
   addStreetFurniture(group, map, roadHeights);
   addGates(group, map, roadHeights);
+  while (!shopModel.done) yield 0.985;
+  addShops(group, map, heights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -2361,6 +2449,119 @@ function makeTrainCar(kind, pantograph) {
   return car;
 }
 
+// ---- 山手線と並んで走るほかの電車（Blender で作った通勤電車と新幹線。tools/build-other-trains.py） ----
+// 地図データの線路のうち路線の名前 n のある線路（tools/fetch-osm.mjs）を路線ごとにつないで 1 本ずつの線にし、
+// その線を路線の色の電車が行ったり来たりする（見た目だけ。勝ち負けや自転車には関わらない）。帯の色は路線の名前から決める
+const OTHER_TRAIN_URL = 'data/models/other_trains.glb';
+const OTHER_TRAIN_NAMES = { lead: 'OT_Lead', middle: 'OT_Middle', skLead: 'OT_SkLead', skMiddle: 'OT_SkMiddle' };
+// [路線の名前, 帯の色, 2 本目の帯の色（新幹線は車体の上の色）, 新幹線か]。上から順に調べる
+const LINE_LOOKS = [
+  [/東海道新幹線/, 0x1d4fa0, 0xdcdee2, true],
+  [/新幹線/, 0xe0679a, 0x1f8a5e, true], // 東北新幹線（E5 系のような緑と桃色の帯）
+  [/京浜東北/, 0x00a7db, 0x00a7db],
+  [/山手貨物|埼京|湘南新宿|赤羽/, 0x00ac9a, 0x00ac9a],
+  [/中央緩行|総武緩行/, 0xffd400, 0xffd400],
+  [/中央/, 0xf15a22, 0xf15a22],
+  [/総武本線|横須賀/, 0x1a4b9b, 0xd9c99a],
+  [/常磐/, 0x00a14b, 0x1e5bb0],
+  [/東海道|東北本線|品鶴|大崎支線/, 0xf68b1e, 0x2a9a4a],
+  [/京葉/, 0xc9242f, 0xc9242f],
+  [/りんかい/, 0x1e6ab3, 0x1e6ab3],
+  [/京急|京浜急行/, 0xd7262a, 0xd7262a],
+  [/京成/, 0x1f3d8f, 0xd7262a],
+  [/小田急/, 0x1f58b3, 0x1f58b3],
+  [/京王/, 0xd5287b, 0x26346d],
+  [/西武/, 0x2f5aa8, 0x2f5aa8],
+  [/東武/, 0x1a4b9b, 0xf68b1e],
+  [/東急|つくば/, 0xd7262a, 0xd7262a],
+];
+const OTHER_TRAIN_MIN_M = 400; // これより短い線には走らせない
+const OTHER_TRAIN_DRAW_M = 650; // カメラからこの距離より遠い電車は描かない
+let otherTrainParts = null;
+loadModelParts(OTHER_TRAIN_URL, OTHER_TRAIN_NAMES)
+  .then((parts) => (otherTrainParts = parts))
+  .catch((e) => console.warn(`ほかの電車のモデルを読み込めませんでした: ${OTHER_TRAIN_URL}`, e));
+const OTHER_TRAIN_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+const OTHER_TRAIN_GLOW = new THREE.MeshBasicMaterial({ vertexColors: true }); // 窓・前照灯・行き先表示（時間帯で明るさを変える）
+const otherTrainGeos = new Map(); // 車両の種類と帯の色 → { body, glow }
+
+function otherTrainGeometry(key, band, band2) {
+  const id = `${key}:${band}:${band2}`;
+  let g = otherTrainGeos.get(id);
+  if (g) return g;
+  const list = otherTrainParts[key];
+  const b1 = rgb(band), b2 = rgb(band2);
+  const isLight = (part) => part.material.startsWith('Light');
+  const color = (part) => (part.material === 'OT_Band' ? b1 : part.material === 'OT_Band2' ? b2 : part.color);
+  g = {
+    body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : color(part))).build(),
+    glow: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build(),
+  };
+  otherTrainGeos.set(id, g);
+  return g;
+}
+
+// 区間の地図の、ほかの路線の線（路線ごとに線路をつないだもの）：[{ route, look, name }]
+function otherTrainLines(map) {
+  const byName = new Map();
+  for (const l of map.lines ?? []) {
+    if (!l.n || l.u) continue;
+    const look = LINE_LOOKS.find(([re]) => re.test(l.n));
+    if (!look) continue;
+    if (!byName.has(l.n)) byName.set(l.n, { look, lines: [] });
+    byName.get(l.n).lines.push(l);
+  }
+  const key = (x, y) => `${Math.round(x * 2)},${Math.round(y * 2)}`;
+  const out = [];
+  for (const [name, { look, lines }] of byName) {
+    // 端の点 → その点で終わる線路
+    const ends = new Map();
+    lines.forEach((l, i) => {
+      for (const [x, y] of [[l.p[0], l.p[1]], [l.p.at(-2), l.p.at(-1)]]) {
+        const k = key(x, y);
+        if (!ends.has(k)) ends.set(k, []);
+        ends.get(k).push(i);
+      }
+    });
+    const used = new Set();
+    const pointsOf = (l, forward) => {
+      const pts = [];
+      for (let i = 0; i < l.p.length; i += 2) pts.push([l.p[i], l.p[i + 1], 0, l.e ? 1 : 0]);
+      return forward ? pts : pts.reverse();
+    };
+    const free = (k) => (ends.get(k) ?? []).filter((i) => !used.has(i));
+    for (;;) {
+      // 行き止まりの端から始める（なければ残りのどれか）
+      let start = lines.findIndex((l, i) => !used.has(i) && (free(key(l.p[0], l.p[1])).length === 1 || free(key(l.p.at(-2), l.p.at(-1))).length === 1));
+      if (start < 0) start = lines.findIndex((_, i) => !used.has(i));
+      if (start < 0) break;
+      const l0 = lines[start];
+      used.add(start);
+      const forward = free(key(l0.p[0], l0.p[1])).length === 0; // 始めの端に続きがなければ、そこから進む
+      const path = pointsOf(l0, forward);
+      // 先の端から、向きがいちばんまっすぐに続く線路をつないでいく
+      for (;;) {
+        const [x, y] = path.at(-1), [px, py] = path.at(-2);
+        const dir = Math.atan2(x - px, y - py);
+        let next = null, turn = 1;
+        for (const i of free(key(x, y))) {
+          const l = lines[i];
+          const fwd = key(l.p[0], l.p[1]) === key(x, y);
+          const pts = pointsOf(l, fwd);
+          const t = Math.abs(Math.atan2(Math.sin(Math.atan2(pts[1][0] - x, pts[1][1] - y) - dir), Math.cos(Math.atan2(pts[1][0] - x, pts[1][1] - y) - dir)));
+          if (t < turn) (turn = t), (next = [i, pts]);
+        }
+        if (!next) break;
+        used.add(next[0]);
+        path.push(...next[1].slice(1));
+      }
+      const route = routeOf(path);
+      if (route.length >= OTHER_TRAIN_MIN_M) out.push({ route, look, name });
+    }
+  }
+  return out;
+}
+
 // ---- 歩行者 ----
 // 頭・髪・胴体・腕・脚の人の形。歩行者は最大 45 人いるので、部品ごとに全員分を 1 つの InstancedMesh にまとめて描く
 // （1 人ずつ別の立体にすると描く回数が数百回増えて重い）。服などの色は部品ごとの色（setColorAt）で変える
@@ -2670,6 +2871,8 @@ export function createRenderer3D(canvas) {
   const train = [];
   const trainGroup = new THREE.Group();
   scene.add(trainGroup);
+  const otherTrains = { map: null, list: [], group: new THREE.Group() }; // ほかの路線の電車
+  scene.add(otherTrains.group);
   const agentMeshes = new Map(); // 車 → 立体（使い回す）。歩行者は crowd で描く
   const crowd = makeCrowd();
   let currentWeather = 'clear';
@@ -3103,6 +3306,59 @@ export function createRenderer3D(canvas) {
     }
   }
 
+  // ほかの路線の電車を進める。線の端から入って反対の端へ抜け、しばらく待って逆向きに走る
+  function syncOtherTrains(dt) {
+    if (!otherTrainParts || !worldMap) return;
+    if (otherTrains.map !== worldMap) {
+      otherTrains.group.clear();
+      otherTrains.map = worldMap;
+      otherTrains.list = otherTrainLines(worldMap).map(({ route, look, name }, i) => {
+        const [, band, band2, shinkansen] = look;
+        const carLen = shinkansen ? 25 : 20;
+        const n = Math.max(3, Math.min(shinkansen ? 8 : 10, Math.floor(route.length / 2 / carLen)));
+        const speed = shinkansen ? 28 : 17; // m/s（街の中なので実物よりゆっくり）
+        const lead = otherTrainGeometry(shinkansen ? 'skLead' : 'lead', band, band2);
+        const middle = otherTrainGeometry(shinkansen ? 'skMiddle' : 'middle', band, band2);
+        const cars = [];
+        for (let k = 0; k < n; k++) {
+          const g = k === 0 || k === n - 1 ? lead : middle;
+          const car = new THREE.Group();
+          const body = new THREE.Mesh(g.body, OTHER_TRAIN_MAT);
+          body.castShadow = true;
+          car.add(body, new THREE.Mesh(g.glow, OTHER_TRAIN_GLOW));
+          car.userData.back = k === n - 1; // 最後尾は先頭車を後ろ向きに
+          cars.push(car);
+          otherTrains.group.add(car);
+        }
+        // 走り始めの位置は線ごとにずらす（いっせいに走り出さないように）
+        const total = route.length + n * carLen;
+        const v = Math.sin(i * 91.7 + route.length) * 43758.5453;
+        return { name, route, cars, carLen, speed, d: (v - Math.floor(v)) * total * 1.5 - total * 0.3, dir: i % 2 ? 1 : -1, total };
+      });
+    }
+    const cam = camera.position;
+    for (const t of otherTrains.list) {
+      t.d += t.speed * dt;
+      if (t.d > t.total) {
+        t.d = -t.speed * (15 + 25 * Math.random()); // 15〜40 秒待って、逆向きに走る
+        t.dir = -t.dir;
+      }
+      const at = (s) => pointAt(t.route, t.dir > 0 ? s : t.route.length - s);
+      const mid = at(Math.max(0, Math.min(t.route.length, t.d - (t.cars.length * t.carLen) / 2)));
+      const near = Math.hypot(mid.x - cam.x, mid.y - cam.z) < OTHER_TRAIN_DRAW_M + t.cars.length * t.carLen;
+      t.cars.forEach((car, k) => {
+        const s0 = t.d - t.carLen * k, s1 = t.d - t.carLen * (k + 1);
+        car.visible = near && s1 >= 0 && s0 <= t.route.length;
+        if (!car.visible) return;
+        const head = at(s0 - 0.4), tail = at(s1 + 0.4);
+        car.position.set((head.x + tail.x) / 2, (head.h + tail.h) / 2 + Y.rail + RAIL_TOP, (head.y + tail.y) / 2);
+        car.rotation.order = 'YXZ';
+        car.rotation.y = -Math.atan2(head.x - tail.x, -(head.y - tail.y)) + (car.userData.back ? Math.PI : 0);
+        car.rotation.x = Math.atan2(head.h - tail.h, t.carLen) * (car.userData.back ? -1 : 1);
+      });
+    }
+  }
+
   function syncTrain(game) {
     const route = game.map.trainRoute;
     const show = game.inRace && route;
@@ -3326,6 +3582,7 @@ export function createRenderer3D(canvas) {
       for (const wd of worlds.values()) for (const m of wd.group?.userData.tiles?.values() ?? []) m.material.emissiveIntensity = t.glow;
       for (const { material, base } of modelGlows) material.emissiveIntensity = base * t.glow; // Blender のモデルの窓・灯り
       for (const car of train) car.traverse((m) => m.userData?.trainGlass && (m.material.emissiveIntensity = t.glow * 0.7)); // 電車の窓
+      OTHER_TRAIN_GLOW.color.setScalar(Math.min(1, 0.3 + t.glow * 0.55)); // ほかの路線の電車の窓（昼は暗いガラス）
       // 街灯：昼は消す。夜は足もとをより明るく
       LAMP_MAT.color.set(t.lamps ? 0xffd9a0 : 0x6b6e75);
       POOL_MAT.visible = t.lamps;
@@ -3406,6 +3663,7 @@ export function createRenderer3D(canvas) {
       updateSignalColors(game.obstacles);
       syncAgents(game.obstacles);
       syncTrain(game);
+      syncOtherTrains(dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
       const dc = window.render3d?.debugCamera;
@@ -3424,6 +3682,6 @@ export function createRenderer3D(canvas) {
       unculled = [];
     },
   };
-  window.render3d = { renderer, scene, camera, r3d }; // デバッグ・自動テスト用
+  window.render3d = { renderer, scene, camera, r3d, otherTrains }; // デバッグ・自動テスト用
   return r3d;
 }

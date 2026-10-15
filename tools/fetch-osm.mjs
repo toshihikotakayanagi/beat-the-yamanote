@@ -125,8 +125,13 @@ const streetQuery = (bbox) => `[out:json][timeout:90];
 );
 out;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機' };
+// コンビニ（見た目だけ）：点と建物の形。位置は外枠の真ん中
+const shopsQuery = (bbox) => `[out:json][timeout:90];
+nwr["shop"="convenience"](${bbox});
+out tags center;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -310,6 +315,8 @@ function lineKind(tags, lengthM) {
     // 山手線は路線の色で目立たせる（名前に「山手線」を含む線路）。
     // e: 1 は高い所を走る線路（橋・高架・土手）。3D版で持ち上げて描き、電車もその高さを走る
     const line = { k: yamanote ? 'yamanote' : 'rail', w: 3 };
+    // 山手線以外の本線の線路は路線の名前 n を付ける（3D版がその路線の色の電車を走らせる。「;」のあとの橋の名前などは外す）
+    if (!yamanote && tags.railway === 'rail' && tags.name && !tags.service) line.n = tags.name.split(';')[0];
     const elevated = (tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.embankment === 'yes' || tags.viaduct === 'yes';
     if (elevated && !line.u) line.e = 1;
     if (low) lowLines.add(line);
@@ -897,6 +904,30 @@ function convertStreet(osm, frame, bounds) {
   return { stops, vending };
 }
 
+// コンビニ shops: [x, y, 店の種類, ...]（見た目だけ。3D版が建物の 1 階に店先を付ける）。
+// 店の種類は看板の色分けだけに使う：1 セブン-イレブン、2 ファミリーマート、3 ローソン、4 ミニストップ、0 そのほか
+function shopKind(tags) {
+  const name = [tags.brand, tags['brand:en'], tags.name, tags['name:en']].filter(Boolean).join(' ');
+  if (/セブン|7-eleven|seven/i.test(name)) return 1;
+  if (/ファミリーマート|ファミマ|familymart/i.test(name)) return 2;
+  if (/ローソン|lawson/i.test(name)) return 3;
+  if (/ミニストップ|ministop/i.test(name)) return 4;
+  return 0;
+}
+function convertShops(osm, frame, bounds) {
+  const { toXY } = frame;
+  const shops = [];
+  for (const el of osm.elements) {
+    const c = el.type === 'node' ? el : el.center;
+    if (!c) continue;
+    const [x, y] = toXY(c.lat, c.lon);
+    if (x < bounds.minX - 20 || x > bounds.maxX + 20 || y < bounds.minY - 20 || y > bounds.maxY + 20) continue;
+    if (el.tags?.level && !/^0$|^1$/.test(el.tags.level)) continue; // 地下や上の階の店は外す
+    shops.push(x, y, shopKind(el.tags ?? {}));
+  }
+  return shops;
+}
+
 // OSM では橋になっていないが、ゲームでは橋にする道（OSM の way の番号 → 橋の高さ m と、橋にする点の範囲）。
 // upTo があれば、その番号の点までを橋にして、そこから先は普通の道として分ける（坂は 3D 版が付ける）。
 // 西日暮里駅の道灌山通り：実物は掘割の山手線の上を渡り、すぐ北の宇都宮線・常磐線などの高架の下をくぐるが、
@@ -971,6 +1002,7 @@ async function processSection(id, refresh) {
   for (const [road, height] of forcedBridges) road.e = height;
   data.trees = convertTrees(await loadOsm(id, 'trees', frame.bbox, refresh), frame, data.bounds, data.roads);
   Object.assign(data, convertStreet(await loadOsm(id, 'street', frame.bbox, refresh), frame, data.bounds));
+  data.shops = convertShops(await loadOsm(id, 'shops', frame.bbox, refresh), frame, data.bounds);
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });
@@ -978,7 +1010,7 @@ async function processSection(id, refresh) {
   await writeFile(outPath, json);
   console.log(
     `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
-      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2}`,
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3}`,
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +

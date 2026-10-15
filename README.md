@@ -152,7 +152,9 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ trees.glb              木 4 種類（広葉樹・イチョウ・桜・針葉樹）の 3D モデル（tools/build-trees.py で作成）
 │     ├─ landmarks.glb          遠くから見える目印の高い建物（スカイツリー・東京タワー・サンシャイン60・都庁・ドコモ代々木ビル）の 3D モデル（tools/build-landmarks.py で作成）
 │     ├─ street.glb             道ばたの物（街灯・自動販売機・電柱・ガードパイプ・バス停）とスタート・ゴールの門の 3D モデル（tools/build-street.py で作成）
-│     └─ pedestrian.glb         歩行者の体の部品（頭・髪・胴体・腰・脚・靴・腕・手・傘）の 3D モデル（tools/build-pedestrian.py で作成）
+│     ├─ pedestrian.glb         歩行者の体の部品（頭・髪・胴体・腰・脚・靴・腕・手・傘）の 3D モデル（tools/build-pedestrian.py で作成）
+│     ├─ shops.glb              コンビニの店先と看板（店の種類ごとの色の帯。店の名前やロゴは描かない）の 3D モデル（tools/build-shops.py で作成）
+│     └─ other_trains.glb       山手線と並んで走るほかの電車（通勤電車と新幹線。帯は路線の色にする）の 3D モデル（tools/build-other-trains.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -194,6 +196,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-landmarks.py  目印の高い建物 5 つのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-street.py  道ばたの物と門のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-pedestrian.py  歩行者の部品のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-shops.py   コンビニの店先と看板のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-other-trains.py  ほかの路線の電車のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
