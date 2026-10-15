@@ -2,7 +2,7 @@
 #
 #   "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tools/build-cars.py -- <保存先の .blend>
 #
-# 車は「CV_Sedan」「CV_Kei」「CV_Minivan」「CV_Taxi」。寸法は src/vehicles.js の CAR_TYPES と同じ
+# 車は「CV_Sedan」「CV_Kei」「CV_Minivan」「CV_Taxi」と、路線バス「CV_Bus」・トラック「CV_Truck」。寸法は src/vehicles.js の CAR_TYPES と同じ
 # （L：長さ、W：幅、body：下の車体の下と上の高さ、cabin：窓の部分の下と上の高さ、cabinBottom・cabinTop：窓の部分の下と上の前後の端）。
 # 原点は地面の上の車の真ん中。Blender の +Y が前（glb では -z、ゲームの車の前）、X は左右、Z は高さ。
 # 車体の色の材質は「CV_Paint」（ゲームで車ごとの色にする）。光る部品の材質の名前は「Light」で始める
@@ -23,8 +23,12 @@ TYPES = {
     "minivan": dict(L=4.7, W=1.78, body=(0.32, 1.0), cabin=(1.0, 1.86), cabinBottom=(-1.35, 2.25), cabinTop=(-0.95, 2.2)),
     "taxi": dict(L=4.4, W=1.7, body=(0.32, 0.98), cabin=(0.98, 1.72), cabinBottom=(-1.0, 1.95), cabinTop=(-0.65, 1.9), sign=True),
 }
-NAMES = {"sedan": "CV_Sedan", "kei": "CV_Kei", "minivan": "CV_Minivan", "taxi": "CV_Taxi"}
-PREVIEW_PAINT = {"sedan": (0.08, 0.25, 0.85), "kei": (0.85, 0.85, 0.85), "minivan": (0.75, 0.07, 0.07), "taxi": (0.015, 0.023, 0.057)}
+NAMES = {"sedan": "CV_Sedan", "kei": "CV_Kei", "minivan": "CV_Minivan", "taxi": "CV_Taxi", "bus": "CV_Bus", "truck": "CV_Truck"}
+PREVIEW_PAINT = {"sedan": (0.08, 0.25, 0.85), "kei": (0.85, 0.85, 0.85), "minivan": (0.75, 0.07, 0.07), "taxi": (0.015, 0.023, 0.057),
+                 "bus": (0.6, 0.6, 0.6), "truck": (0.05, 0.25, 0.6)}
+# 路線バスとトラック（src/vehicles.js の CAR_TYPES の bus・truck と同じ長さ・幅）
+BUS = dict(L=10.5, W=2.49, H=3.05)
+TRUCK = dict(L=7.0, W=2.2)
 
 
 def material(name, color, rough=0.5, metal=0.0, emit=None):
@@ -51,6 +55,10 @@ MAT = {
     "head": material("Light_Head", (1.0, 0.95, 0.8), emit=(1.0, 0.95, 0.8)),
     "tail": material("Light_Tail", (1.0, 0.05, 0.05), emit=(1.0, 0.05, 0.05)),
     "sign": material("Light_Sign", (1.0, 0.65, 0.07), emit=(1.0, 0.65, 0.07)),  # タクシーの屋根の行灯・方向指示器
+    "bwhite": material("CV_BusWhite", (0.85, 0.86, 0.84), rough=0.4),  # 路線バスの白い車体（車ごとの色にしない）
+    "bgreen": material("CV_BusGreen", (0.02, 0.3, 0.1), rough=0.4),  # 路線バスの緑の帯
+    "blime": material("CV_BusLime", (0.35, 0.65, 0.05), rough=0.4),  # 路線バスの黄緑の線
+    "alu": material("CV_Aluminum", (0.62, 0.64, 0.66), rough=0.35, metal=0.6),  # トラックのアルミの荷箱
 }
 MI = {k: i for i, k in enumerate(MAT)}
 export_col = bpy.data.collections.new("CV_Export")
@@ -232,21 +240,128 @@ def build(kind):
     return p.finish(NAMES[kind])
 
 
-cars = [build(k) for k in TYPES]
+def body_section(y, hw, z0, z1, r=0.15):
+    """角を少し丸めた箱の断面（下から回る 8 点）"""
+    return [Vector(v) for v in [(hw - 0.05, y, z0), (hw, y, z0 + 0.15), (hw, y, z1 - r), (hw - r, y, z1),
+                                (-hw + r, y, z1), (-hw, y, z1 - r), (-hw, y, z0 + 0.15), (-hw + 0.05, y, z0)]]
+
+
+def side_band(p, s, x, y0, y1, z0, z1, mat):
+    """車体の横 x（s は右 +1・左 -1）に貼る帯や窓"""
+    pts = [(x, y0, z0), (x, y1, z0), (x, y1, z1), (x, y0, z1)]
+    p.face(pts if s > 0 else pts[::-1], mat)
+
+
+def wheels(p, hw, ys, r, w, inset=0.12):
+    for s in (-1, 1):
+        for yy in ys:
+            arch = [(s * (hw + 0.002), yy + math.cos(a) * (r + 0.08), r + math.sin(a) * (r + 0.08)) for a in [math.pi * k / 10 for k in range(11)]]
+            p.face(arch[::-1] if s > 0 else arch, "dark")
+            p.wheel(s * (hw - inset), yy, r, w)
+
+
+def build_bus():
+    """都営バスのような路線バス：白い車体に緑の帯と黄緑の線、大きな前の窓、左側（-X）の前と真ん中のドア、行き先表示、屋根の冷房"""
+    p = Part()
+    hl, hw, H = BUS["L"] / 2, BUS["W"] / 2, BUS["H"]
+    z0 = 0.32
+    secs = [body_section(y, hw - d, z0, H - e) for y, d, e in ((hl, 0.08, 0.06), (hl - 0.1, 0, 0), (-hl + 0.1, 0, 0), (-hl, 0.06, 0.04))]
+    p.sections(secs, ["dark", "bwhite", "bwhite", "bwhite", "bwhite", "bwhite", "bwhite", "dark"])
+    for s in (-1, 1):
+        x = s * (hw + 0.004)
+        side_band(p, s, x, -hl + 0.1, hl - 0.1, 0.42, 0.78, "bgreen")
+        side_band(p, s, x, -hl + 0.1, hl - 0.1, 0.84, 0.92, "blime")
+        side_band(p, s, x, -hl + 0.5, hl - 2.2, 1.35, 2.55, "glass")  # 客席の窓
+        side_band(p, s, x, hl - 1.25, hl - 0.15, 1.15, 2.6, "glass")  # 運転席の窓
+        for yy in [y for y in (hl - 3.4, hl - 5.0, hl - 6.6, hl - 8.2) if y > -hl + 0.5]:  # 窓の柱
+            side_band(p, s, s * (hw + 0.006), yy - 0.05, yy + 0.05, 1.35, 2.55, "bwhite")
+        side_band(p, s, x, -hl + 0.3, hl - 0.3, 2.66, 2.8, "bgreen")  # 窓の上の細い帯
+    xd = -(hw + 0.008)  # 左側のドア（前と真ん中）
+    for y0, y1 in ((hl - 2.15, hl - 1.25), (-0.9, 0.35)):
+        side_band(p, -1, xd, y0, y1, 0.4, 2.6, "dark")
+        for a, b in ((y0 + 0.05, (y0 + y1) / 2 - 0.02), ((y0 + y1) / 2 + 0.02, y1 - 0.05)):
+            side_band(p, -1, xd - 0.002, a, b, 0.55, 2.45, "glass")
+    side_band(p, 1, hw + 0.006, -2.5, -0.5, 2.62, 2.84, "sign")  # 横の行き先表示
+    # 前：大きな窓、行き先表示、ライト、バンパー、ナンバー
+    yf = hl + 0.004
+    p.face([(-hw + 0.12, yf, 1.05), (hw - 0.12, yf, 1.05), (hw - 0.14, yf, 2.55), (-hw + 0.14, yf, 2.55)], "glass")
+    p.face([(-0.95, yf + 0.002, 2.62), (0.95, yf + 0.002, 2.62), (0.95, yf + 0.002, 2.88), (-0.95, yf + 0.002, 2.88)], "sign")
+    p.box(-hw + 0.05, hw - 0.05, hl - 0.05, hl + 0.1, z0, z0 + 0.35, "dark")
+    p.face([(-hw + 0.1, yf, 0.72), (hw - 0.1, yf, 0.72), (hw - 0.1, yf, 0.98), (-hw + 0.1, yf, 0.98)], "bgreen")
+    for s in (-1, 1):
+        p.box(s * (hw - 0.35) - 0.16, s * (hw - 0.35) + 0.16, hl - 0.02, hl + 0.03, 0.75, 0.93, "head")
+        p.box(s * (hw - 0.12) - 0.05, s * (hw - 0.12) + 0.05, hl - 0.02, hl + 0.03, 0.75, 0.93, "sign")
+        xa, xb = sorted((s * (hw - 0.1), s * (hw + 0.35)))
+        p.box(xa, xb, hl - 0.25, hl - 0.15, 2.0, 2.1, "dark")  # 大きなミラーの腕
+        xa, xb = sorted((s * (hw + 0.3), s * (hw + 0.38)))
+        p.box(xa, xb, hl - 0.05, hl + 0.25, 1.55, 2.1, "dark")
+    p.box(-0.17, 0.17, hl + 0.1, hl + 0.115, z0 + 0.06, z0 + 0.22, "plate")
+    # 後ろ：窓、尾灯、バンパー、ナンバー
+    yb = -hl - 0.004
+    p.face([(-hw + 0.25, yb, 1.9), (-hw + 0.25, yb, 2.6), (hw - 0.25, yb, 2.6), (hw - 0.25, yb, 1.9)], "glass")
+    for s in (-1, 1):
+        p.box(s * (hw - 0.2) - 0.1, s * (hw - 0.2) + 0.1, -hl - 0.03, -hl + 0.02, 0.6, 1.3, "tail")
+    p.box(-hw + 0.05, hw - 0.05, -hl - 0.1, -hl + 0.05, z0, z0 + 0.35, "dark")
+    p.box(-0.17, 0.17, -hl - 0.115, -hl - 0.1, 0.75, 0.91, "plate")
+    # 屋根の冷房と、タイヤ
+    p.box(-0.85, 0.85, -0.5, 2.6, H, H + 0.25, "bwhite")
+    wheels(p, hw, (hl - 2.4, -hl + 2.9), 0.48, 0.3)
+    return p.finish(NAMES["bus"])
+
+
+def build_truck():
+    """2t〜4t のアルミの箱のトラック：車ごとの色の運転台、銀色の荷箱（縦のすじ）、黒い車台"""
+    p = Part()
+    hl, hw = TRUCK["L"] / 2, TRUCK["W"] / 2
+    cab = 1.9  # 運転台の長さ
+    cw = hw - 0.08
+    secs = [body_section(y, cw - d, 0.45, top) for y, d, top in ((hl, 0.08, 2.3), (hl - 0.12, 0, 2.42), (hl - cab, 0, 2.42))]
+    p.sections(secs, ["dark", "paint", "paint", "paint", "paint", "paint", "paint", "dark"])
+    yf = hl + 0.004
+    p.face([(-cw + 0.1, yf, 1.45), (cw - 0.1, yf, 1.45), (cw - 0.14, yf - 0.02, 2.2), (-cw + 0.14, yf - 0.02, 2.2)], "glass")
+    p.box(-0.55, 0.55, hl - 0.02, hl + 0.02, 0.85, 1.25, "dark")  # グリル
+    p.box(-cw, cw, hl - 0.05, hl + 0.1, 0.45, 0.75, "dark")
+    for s in (-1, 1):
+        p.box(s * (cw - 0.3) - 0.16, s * (cw - 0.3) + 0.16, hl - 0.02, hl + 0.03, 0.85, 1.0, "head")
+        p.box(s * (cw - 0.08) - 0.05, s * (cw - 0.08) + 0.05, hl - 0.02, hl + 0.03, 0.85, 1.0, "sign")
+        side_band(p, s, s * (cw + 0.004), hl - 1.25, hl - 0.25, 1.45, 2.2, "glass")  # ドアの窓
+        side_band(p, s, s * (cw + 0.004), hl - 1.35, hl - 1.32, 0.6, 2.25, "dark")  # ドアのすきま
+        xa, xb = sorted((s * (cw + 0.05), s * (cw + 0.12)))
+        p.box(xa, xb, hl - 0.35, hl - 0.25, 1.4, 2.05, "dark")  # ミラー
+        xa, xb = sorted((s * (cw - 0.05), s * (cw + 0.1)))
+        p.box(xa, xb, hl - 0.32, hl - 0.28, 1.95, 2.0, "dark")
+    p.box(-0.17, 0.17, hl + 0.1, hl + 0.115, 0.5, 0.66, "plate")
+    # 車台と荷箱
+    yb0, yb1 = -hl, hl - cab - 0.1
+    p.box(-hw + 0.45, hw - 0.45, yb0 + 0.2, hl - 0.3, 0.55, 0.9, "dark")
+    p.box(-hw, hw, yb0, yb1, 0.95, 3.2, "alu")
+    for yy in [yb0 + 0.6 * k for k in range(1, int((yb1 - yb0) / 0.6))]:  # 荷箱の縦のすじ
+        for s in (-1, 1):
+            side_band(p, s, s * (hw + 0.006), yy - 0.03, yy + 0.03, 1.0, 3.15, "wheel")
+    for s in (-1, 1):  # 尾灯
+        p.box(s * (hw - 0.3) - 0.15, s * (hw - 0.3) + 0.15, yb0 - 0.03, yb0 + 0.02, 0.7, 0.85, "tail")
+    p.box(-0.02, 0.02, yb0 - 0.008, yb0, 1.0, 3.15, "dark")  # 後ろの扉の合わせ目
+    p.box(-hw + 0.1, hw - 0.1, yb0 - 0.05, yb0 + 0.15, 0.45, 0.6, "dark")  # 後ろのバンパー
+    p.box(-0.17, 0.17, yb0 - 0.065, yb0 - 0.05, 0.62, 0.78, "plate")
+    wheels(p, hw, (hl - 1.1, -hl + 1.9), 0.42, 0.28, inset=0.18)
+    return p.finish(NAMES["truck"])
+
+
+cars = [build(k) for k in TYPES] + [build_bus(), build_truck()]
 
 # ---- 下見用（4 台を並べ、色を付けた材質の写しで描く） ----
 g = bmesh.new()
-bmesh.ops.create_grid(g, x_segments=1, y_segments=1, size=12)
+bmesh.ops.create_grid(g, x_segments=1, y_segments=1, size=20)
 gm = bpy.data.meshes.new("CV_PreviewGround")
 g.to_mesh(gm)
 g.free()
 gm.materials.append(material("CV_PreviewGroundMat", (0.35, 0.36, 0.38)))
 preview_col.objects.link(bpy.data.objects.new("CV_PreviewGround", gm))
-for i, (kind, ob) in enumerate(zip(TYPES, cars)):
+for i, (kind, ob) in enumerate(zip(NAMES, cars)):
     pv = ob.copy()
     pv.data = ob.data.copy()
     pv.data.materials[MI["paint"]] = material(f"CV_PreviewPaint_{kind}", PREVIEW_PAINT[kind], rough=0.3, metal=0.3)
-    pv.location = ((i - 1.5) * 2.6, (i % 2) * 1.2, 0)
+    pv.location = ((i - 1.5) * 2.6, (i % 2) * 1.2, 0) if i < 4 else (-5.0 + (i - 4) * 4.5, -9.0, 0)
     preview_col.objects.link(pv)
     ob.hide_render = True
 sun = bpy.data.objects.new("CV_Sun", bpy.data.lights.new("CV_Sun", 'SUN'))
@@ -256,8 +371,8 @@ preview_col.objects.link(sun)
 cam = bpy.data.objects.new("CV_Camera", bpy.data.cameras.new("CV_Camera"))
 cam.data.lens = 35
 preview_col.objects.link(cam)
-cam.location = (7.5, 8.5, 4.2)
-cam.rotation_euler = (Vector((0, 0.5, 0.6)) - cam.location).to_track_quat('-Z', 'Y').to_euler()
+cam.location = (12.5, 10.0, 8.0)
+cam.rotation_euler = (Vector((-1.0, -3.5, 0.8)) - cam.location).to_track_quat('-Z', 'Y').to_euler()
 scene.camera = cam
 world = bpy.data.worlds.new("CV_World")
 world.use_nodes = True

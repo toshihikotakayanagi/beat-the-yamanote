@@ -766,6 +766,24 @@ function addStreetLights(group, map, heights) {
   const spots = streetLights(map, heights);
   if (!spots.length) return;
   const n = spots.length;
+  const sm = streetModel.geos;
+  if (sm) {
+    // Blender の街灯（柱・腕・灯具をまとめた形と、光る面）と足もとの明かり
+    const pole = new THREE.InstancedMesh(sm.lightPole, STREET_MAT, n);
+    const lens = new THREE.InstancedMesh(sm.lightLens, LAMP_MAT, n); // 時間帯で明るさが変わる（setAtmosphere）
+    const tipX = STREETLIGHT_ARM * Math.cos(STREETLIGHT_TILT);
+    const pool = new THREE.InstancedMesh(new THREE.CircleGeometry(5.5, 24).rotateX(-Math.PI / 2).translate(tipX + 0.25, 0, 0), POOL_MAT, n);
+    const m = new THREE.Matrix4(), rot = new THREE.Matrix4();
+    spots.forEach(([x, z, h, angle], i) => {
+      const base = new THREE.Matrix4().makeTranslation(x, h, z).multiply(rot.makeRotationY(angle));
+      pole.setMatrixAt(i, base);
+      lens.setMatrixAt(i, base);
+      pool.setMatrixAt(i, m.copy(base).multiply(rot.makeTranslation(0, Y.signal - 0.01, 0)));
+    });
+    pole.castShadow = true;
+    group.add(pole, lens, pool);
+    return;
+  }
   // 部品（ローカルの +x が道路の側）：柱・腕・灯具の箱・光る下面・足もとの明かり
   const poleGeo = new THREE.CylinderGeometry(0.08, 0.12, STREETLIGHT_H, 8).translate(0, STREETLIGHT_H / 2, 0);
   const armGeo = new THREE.CylinderGeometry(0.045, 0.05, STREETLIGHT_ARM, 6)
@@ -841,6 +859,236 @@ function addTrees(group, map, heights) {
     mesh.castShadow = mesh.receiveShadow = true;
     group.add(mesh);
   });
+}
+
+// ---- 道ばたの物（Blender で作った街灯・自動販売機・電柱・ガードパイプ・バス停と、スタート・ゴールの門。tools/build-street.py） ----
+const STREET_MODEL_URL = 'data/models/street.glb';
+const STREET_MODEL_NAMES = {
+  lightPole: 'SL_Pole', lightLens: 'SL_Lens', vending: 'VM_Body', vendingLight: 'VM_Light', utilityPole: 'UP_Pole', guard: 'GR_Pipe',
+  busSign: 'BS_Sign', busShelter: 'BS_Shelter', gatePost: 'GT_Post', gateBeam: 'GT_Beam', gateStart: 'GT_Start', gateGoal: 'GT_Goal',
+};
+const streetModel = { geos: null, done: false };
+loadModelParts(STREET_MODEL_URL, STREET_MODEL_NAMES)
+  .then((parts) => {
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) geos[key] = addModelParts(new GeometryBuilder(true), list).build();
+    streetModel.geos = geos;
+  })
+  .catch((e) => console.warn(`道ばたの物のモデルを読み込めませんでした: ${STREET_MODEL_URL}`, e))
+  .finally(() => (streetModel.done = true));
+const STREET_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+const STREET_GLOW_MAT = new THREE.MeshBasicMaterial({ vertexColors: true }); // 自動販売機の光る前の面
+
+// 電柱：幅 POLE_ROAD_W の範囲の車道（住宅地の細い道）に、POLE_SPACING m おきに道の片側に立て、柱どうしを電線で結ぶ
+const POLE_ROAD_W = [4, 8];
+const POLE_SPACING = 30;
+const POLE_WIRES = [[-0.92, 11.42], [0.3, 11.42], [0.92, 11.42], [-0.72, 10.62], [0.72, 10.62]]; // 碍子の上（柱からの横の位置・高さ）
+const WIRE_SAG = 0.45; // 電線のたるみ m
+// ガードパイプ：幅 GUARD_ROAD_W m 以上の車道の、交差点の手前 GUARD_FROM〜GUARD_TO m の両側に 4m ずつ
+const GUARD_ROAD_W = 8;
+const GUARD_FROM = 6;
+const GUARD_TO = 22;
+const GUARD_LEN = 4;
+// 門：スタートとゴールの道をまたぐ。梁の高さは tools/build-street.py の GATE_H、幕の真ん中はその下
+const GATE_BEAM_Y = 0;
+const GATE_BANNER_Y = 5.2;
+
+// 地点 (x, z) に物を置けるか：建物・車道の中、橋や高架の道の下、線路の近く、スタート・ゴールのまわりには置かない。
+// onPath が false なら歩道や遊歩道の上にも置かない（自転車が走る所に、ぶつからない物が立たないように）
+const FURNITURE_CLEAR_START = 15; // スタート・ゴールからこの距離 m までは置かない
+function freeSpot(map, heights, x, z, onPath = true) {
+  const s = surfaceAt(map, x, z);
+  if (s.kind === 'building' || s.kind === 'road' || (!onPath && s.kind === 'path')) return false;
+  if ((s.segs ?? []).some((sg) => segHeight(heights, sg, x, z) > 0.5)) return false;
+  for (const pt of [map.start, map.goal]) if (Math.hypot(pt.x - x, pt.y - z) < FURNITURE_CLEAR_START) return false;
+  return !onTrack(map, x, z, 4);
+}
+
+// 地点 (x, z) にいちばん近い道の中心線上の点（carOnly なら車道だけ）：{ x, z, d, road }
+function nearestRoadPoint(map, x, z, carOnly) {
+  let best = null;
+  for (const r of map.roads) {
+    if (carOnly && r.path) continue;
+    for (let i = 0; i + 3 < r.p.length; i += 2) {
+      const ax = r.p[i], az = r.p[i + 1], dx = r.p[i + 2] - ax, dz = r.p[i + 3] - az;
+      const l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(x - px, z - pz);
+      if (!best || d < best.d) best = { x: px, z: pz, d, road: r };
+    }
+  }
+  return best;
+}
+
+// ローカルの +x を (tx, tz) の向きに向ける回転（rotation.y）
+const faceTo = (tx, tz) => Math.atan2(-tz, tx);
+
+function addStreetFurniture(group, map, heights) {
+  const sm = streetModel.geos;
+  if (!sm) return;
+  const put = (list, x, z, h, angle) => list.push(new THREE.Matrix4().makeTranslation(x, h, z).multiply(new THREE.Matrix4().makeRotationY(angle)));
+  const poles = [], guards = [], vendings = [], signs = [], shelters = [];
+  const wire = []; // 電線の線分の端 [x, y, z, ...]
+  const isCrossing = (r, v) => (map.nodes.get(nodeKey(r.p[2 * v], r.p[2 * v + 1])) ?? []).some((n) => n.road !== r && !n.road.path);
+  for (const r of map.roads) {
+    if (r.path || r.e) continue;
+    const n = r.p.length / 2;
+    // 電柱と電線（道の左側。腕金は道を横切る向き）
+    if (r.w >= POLE_ROAD_W[0] && r.w < POLE_ROAD_W[1]) {
+      let next = POLE_SPACING / 2, walked = 0, prev = null;
+      for (let i = 0; i + 1 < n; i++) {
+        const x1 = r.p[2 * i], z1 = r.p[2 * i + 1], x2 = r.p[2 * i + 2], z2 = r.p[2 * i + 3];
+        const len = Math.hypot(x2 - x1, z2 - z1);
+        if (len < 1e-6) continue;
+        const ux = (x2 - x1) / len, uz = (z2 - z1) / len, nx = -uz, nz = ux;
+        while (next <= walked + len) {
+          const t = (next - walked) / len, off = r.w / 2 + 0.4;
+          const x = x1 + (x2 - x1) * t + nx * off, z = z1 + (z2 - z1) * t + nz * off;
+          next += POLE_SPACING;
+          if (!freeSpot(map, heights, x, z, false)) {
+            prev = null;
+            continue;
+          }
+          const angle = faceTo(-nx, -nz); // +x を道路の側へ
+          put(poles, x, z, 0, angle);
+          // 前の柱と電線で結ぶ（碍子の横の位置は道路の側が +）
+          const here = POLE_WIRES.map(([ox, oy]) => [x - nx * ox, oy, z - nz * ox]);
+          if (prev && Math.hypot(prev[0][0] - x, prev[0][2] - z) < POLE_SPACING * 1.6) {
+            here.forEach((b, k) => {
+              const a = prev[k];
+              for (let q = 0; q < 6; q++) {
+                const t0 = q / 6, t1 = (q + 1) / 6, sag = (t) => -4 * WIRE_SAG * t * (1 - t);
+                wire.push(a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0 + sag(t0), a[2] + (b[2] - a[2]) * t0);
+                wire.push(a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1 + sag(t1), a[2] + (b[2] - a[2]) * t1);
+              }
+            });
+          }
+          prev = here;
+        }
+        walked += len;
+      }
+    }
+    // ガードパイプ：交差点（ほかの車道とつながる点）の手前の両側
+    if (r.w >= GUARD_ROAD_W) {
+      const cum = [0];
+      for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(r.p[2 * i] - r.p[2 * i - 2], r.p[2 * i + 1] - r.p[2 * i - 1]));
+      const at = (d) => {
+        let i = 1;
+        while (i < n - 1 && cum[i] < d) i++;
+        const t = (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+        const ax = r.p[2 * i - 2], az = r.p[2 * i - 1], bx = r.p[2 * i], bz = r.p[2 * i + 1];
+        const l = Math.hypot(bx - ax, bz - az) || 1;
+        return [ax + (bx - ax) * t, az + (bz - az) * t, (bx - ax) / l, (bz - az) / l];
+      };
+      for (let v = 0; v < n; v++) {
+        if (!isCrossing(r, v)) continue;
+        for (const dir of [1, -1]) {
+          for (let d = GUARD_FROM + GUARD_LEN / 2; d <= GUARD_TO; d += GUARD_LEN) {
+            const dd = cum[v] + dir * d;
+            if (dd < 0 || dd > cum[n - 1]) break;
+            const [cx, cz, ux, uz] = at(dd);
+            for (const side of [-1, 1]) {
+              const off = r.w / 2 + 0.25;
+              const x = cx - uz * off * side, z = cz + ux * off * side;
+              if (!freeSpot(map, heights, x, z)) continue;
+              put(guards, x, z, 0, faceTo(uz * side, -ux * side)); // +x を道路の側へ。ガードパイプは Y（ローカルの z）に沿う
+            }
+          }
+        }
+      }
+    }
+  }
+  // 自動販売機：近くの道に前を向ける（道の上の点は道の端まで下げる）
+  const vend = map.vending ?? [];
+  for (let i = 0; i < vend.length; i += 2) {
+    let x = vend[i], z = vend[i + 1];
+    const near = nearestRoadPoint(map, x, z, false);
+    if (!near) continue;
+    let vx = x - near.x, vz = z - near.z;
+    const l = Math.hypot(vx, vz) || 1;
+    if (near.d < near.road.w / 2 + 0.5) (x = near.x + (vx / l) * (near.road.w / 2 + 0.5)), (z = near.z + (vz / l) * (near.road.w / 2 + 0.5));
+    if (!freeSpot(map, heights, x, z, false)) continue;
+    put(vendings, x, z, 0, faceTo(-vx / l, -vz / l));
+  }
+  // バス停：近くの車道の端に標識を立て、広い道なら後ろに屋根とベンチ
+  const stops = map.stops ?? [];
+  for (let i = 0; i < stops.length; i += 2) {
+    const near = nearestRoadPoint(map, stops[i], stops[i + 1], true);
+    if (!near || near.d > near.road.w / 2 + 15) continue;
+    let vx = stops[i] - near.x, vz = stops[i + 1] - near.z;
+    const l = Math.hypot(vx, vz);
+    if (l < 0.01) continue; // 道の真ん中の点は、どちら側か分からない
+    (vx /= l), (vz /= l);
+    // 道の端から外へ、歩道の外側の空いている所を探す
+    const off = [0.6, 1.5, 2.5, 3.5, 4.5].map((d) => near.road.w / 2 + d).find((d) => freeSpot(map, heights, near.x + vx * d, near.z + vz * d, false));
+    if (off == null) continue;
+    const sx = near.x + vx * off, sz = near.z + vz * off;
+    const angle = faceTo(-vx, -vz);
+    put(signs, sx, sz, 0, angle);
+    const hx = sx + vx * 1.4, hz = sz + vz * 1.4;
+    if (near.road.w >= GUARD_ROAD_W && freeSpot(map, heights, hx, hz, false) && freeSpot(map, heights, hx + vx * 0.8, hz + vz * 0.8, false)) put(shelters, hx, hz, 0, angle);
+  }
+  const instanced = (geo, material, list, shadow = true) => {
+    if (!list.length) return;
+    const mesh = new THREE.InstancedMesh(geo, material, list.length);
+    list.forEach((m, i) => mesh.setMatrixAt(i, m));
+    mesh.castShadow = shadow;
+    group.add(mesh);
+  };
+  instanced(sm.utilityPole, STREET_MAT, poles);
+  instanced(sm.guard, STREET_MAT, guards, false);
+  instanced(sm.vending, STREET_MAT, vendings);
+  instanced(sm.vendingLight, STREET_GLOW_MAT, vendings, false);
+  instanced(sm.busSign, STREET_MAT, signs);
+  instanced(sm.busShelter, STREET_MAT, shelters);
+  if (wire.length) {
+    const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(wire, 3));
+    group.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x1c1d21 })));
+  }
+}
+
+// 門を置く道の向きと道幅の半分：地点 (x, y) を通る道（交差点ならつながる道すべて）のうち、進む向き heading にいちばん沿う道
+function gatePose(map, x, y, heading) {
+  const segs = [];
+  for (const { road, v } of map.nodes.get(nodeKey(x, y)) ?? []) {
+    for (const u of [v - 1, v + 1]) if (u >= 0 && u < road.p.length / 2) segs.push([road.p[2 * u] - x, road.p[2 * u + 1] - y, road]);
+  }
+  for (const sg of surfaceAt(map, x, y).segs ?? []) segs.push([sg.x2 - sg.x1, sg.y2 - sg.y1, sg.road]);
+  let best = null, bestDot = -1;
+  for (const [dx, dy, road] of segs) {
+    const dot = Math.abs(Math.cos(Math.atan2(dx, -dy) - heading));
+    if (dot > bestDot) (bestDot = dot), (best = { angle: Math.atan2(dx, -dy), hw: road.w / 2 });
+  }
+  return best ?? { angle: heading, hw: 4 };
+}
+
+// スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
+// スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
+function addGates(group, map, heights) {
+  const sm = streetModel.geos;
+  if (!sm) return;
+  const toGoal = Math.atan2(map.goal.x - map.start.x, -(map.goal.y - map.start.y));
+  for (const [pt, banner, heading] of [[map.start, sm.gateStart, map.start.angle], [map.goal, sm.gateGoal, toGoal]]) {
+    const pose = gatePose(map, pt.x, pt.y, heading);
+    const segs = surfaceAt(map, pt.x, pt.y).segs ?? [];
+    const h = Math.max(0, ...segs.map((sg) => segHeight(heights, sg, pt.x, pt.y)));
+    const gate = new THREE.Group();
+    gate.position.set(pt.x, h, pt.y);
+    gate.rotation.y = -pose.angle;
+    const reach = pose.hw + 0.8;
+    const mesh = (geo, x, y, sx = 1) => {
+      const m = new THREE.Mesh(geo, STREET_MAT);
+      m.position.set(x, y, 0);
+      m.scale.x = sx;
+      m.castShadow = true;
+      gate.add(m);
+    };
+    mesh(sm.gatePost, -reach, 0);
+    mesh(sm.gatePost, reach, 0);
+    mesh(sm.gateBeam, 0, GATE_BEAM_Y, reach * 2);
+    mesh(banner, 0, GATE_BANNER_Y);
+    group.add(gate);
+  }
 }
 
 // 道路 r の線分のうち、地点 (x, z) にいちばん近いもの（segHeight に渡す形）
@@ -1669,9 +1917,11 @@ function* buildWorldSteps(map, textures) {
   }
   group.userData = { tiles, heights, tileOf, roadHeights };
 
+  while (!streetModel.done || !treeModel.done) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
   addStreetLights(group, map, roadHeights);
-  while (!treeModel.done) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
   addTrees(group, map, roadHeights);
+  addStreetFurniture(group, map, roadHeights);
+  addGates(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -2121,6 +2371,23 @@ const PED = {
   legSwing: 0.5, // 足の振り rad
   armSwing: 0.45,
 };
+// Blender で作った歩行者の部品（tools/build-pedestrian.py）。読み込めたら drawCrowd が部品の形を入れ替え、
+// 腰まわり（ズボンの色）・靴・手の部品を足す。部品の色は今までどおり 1 人ずつ（setColorAt）で、目や口は形の頂点の色で暗くする
+const PED_MODEL_URL = 'data/models/pedestrian.glb';
+const PED_MODEL_NAMES = {
+  head: 'PD_Head', hair: 'PD_Hair', torso: 'PD_Torso', hips: 'PD_Hips', leg: 'PD_Leg', shoe: 'PD_Shoe',
+  arm: 'PD_Arm', hand: 'PD_Hand', canopy: 'PD_Canopy', stick: 'PD_Stick',
+};
+const PED_SHOES = '#2b2c31';
+let pedModel = null; // 部品 → 形
+loadModelParts(PED_MODEL_URL, PED_MODEL_NAMES)
+  .then((parts) => {
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) geos[key] = addModelParts(new GeometryBuilder(true), list).build();
+    pedModel = geos;
+  })
+  .catch((e) => console.warn(`歩行者のモデルを読み込めませんでした: ${PED_MODEL_URL}`, e));
+
 function makeCrowd() {
   const part = (geo, n = MAX_PEDS) => {
     const m = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff }), n);
@@ -2236,11 +2503,11 @@ function addModelParts(b, list, colorOf = (part) => part.color) {
   return b;
 }
 
-// Blender で作った車 4 種類（tools/build-cars.py）。読み込めたら、車種と色ごとの形をモデルから作り直す
+// Blender で作った車 6 種類（セダン・軽自動車・ミニバン・タクシー・路線バス・トラック。tools/build-cars.py）。読み込めたら、車種と色ごとの形をモデルから作り直す
 // （読み込めるまでは下のプログラムで組み立てた形）。1 台を 2 つの立体（車体・ライト）にまとめ、
 // 材質の色は頂点の色にする（車が多いので、部品ごとに分けると描く回数が増える）。車体の色の材質は「CV_Paint」
 const CAR_MODEL_URL = 'data/models/cars.glb';
-const CAR_MODEL_NAMES = { sedan: 'CV_Sedan', kei: 'CV_Kei', minivan: 'CV_Minivan', taxi: 'CV_Taxi' };
+const CAR_MODEL_NAMES = { sedan: 'CV_Sedan', kei: 'CV_Kei', minivan: 'CV_Minivan', taxi: 'CV_Taxi', bus: 'CV_Bus', truck: 'CV_Truck' };
 let carModel = null; // 車種 → 部品の並び
 let carModelGen = 0; // 形を作り直した回数（作り直す前の形の車を入れ替える）
 loadModelParts(CAR_MODEL_URL, CAR_MODEL_NAMES)
@@ -2748,7 +3015,36 @@ export function createRenderer3D(canvas) {
   // 歩行者を部品ごとに置く。腕と足は歩いた距離に合わせて振り、雨の日は傘をさす（右手で持つ）
   const pm = { base: new THREE.Matrix4(), local: new THREE.Matrix4(), out: new THREE.Matrix4(), rot: new THREE.Matrix4() };
   const pc = new THREE.Color();
+  // 歩行者の部品の形を Blender のモデルに入れ替え、足りない部品（腰まわり・靴・手）を足す
+  function usePedModel() {
+    const g = pedModel;
+    const swap = (key, geo) => {
+      crowd[key].geometry = geo;
+      crowd[key].material.vertexColors = true;
+      crowd[key].material.needsUpdate = true;
+    };
+    swap('head', g.head);
+    swap('hair', g.hair);
+    swap('torso', g.torso);
+    swap('legL', g.leg);
+    swap('legR', g.leg);
+    swap('armL', g.arm);
+    swap('armR', g.arm);
+    swap('canopy', g.canopy);
+    swap('stick', g.stick);
+    for (const [key, geo] of [['hips', g.hips], ['shoeL', g.shoe], ['shoeR', g.shoe], ['handL', g.hand], ['handR', g.hand]]) {
+      const m = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true }), MAX_PEDS);
+      m.castShadow = true;
+      m.frustumCulled = false;
+      m.count = 0;
+      crowd[key] = m;
+      scene.add(m);
+    }
+  }
+
   function drawCrowd(peds) {
+    if (pedModel && !crowd.hips) usePedModel();
+    const model = Boolean(crowd.hips);
     const n = Math.min(MAX_PEDS, peds.length);
     const rain = currentWeather === 'rain';
     const put = (mesh, i, x, y, z, rotX = 0) => {
@@ -2772,7 +3068,20 @@ export function createRenderer3D(canvas) {
       // 傘を持つ右手は前に上げる
       put(crowd.armR, i, 0.25, PED.shoulder, 0, rain ? 0.9 : swing * PED.armSwing);
       put(crowd.head, i, 0, 1.56, 0);
-      put(crowd.hair, i, 0, 1.585, 0.015);
+      if (model) put(crowd.hair, i, 0, 1.56, 0); // Blender の髪は頭と同じ原点
+      else put(crowd.hair, i, 0, 1.585, 0.015);
+      if (model) {
+        put(crowd.hips, i, 0, PED.hip + 0.3, 0);
+        put(crowd.shoeL, i, -0.1, PED.hip, 0, swing * PED.legSwing);
+        put(crowd.shoeR, i, 0.1, PED.hip, 0, -swing * PED.legSwing);
+        put(crowd.handL, i, -0.25, PED.shoulder, 0, -swing * PED.armSwing);
+        put(crowd.handR, i, 0.25, PED.shoulder, 0, rain ? 0.9 : swing * PED.armSwing);
+        color(crowd.hips, i, look.pants);
+        color(crowd.shoeL, i, PED_SHOES);
+        color(crowd.shoeR, i, PED_SHOES);
+        color(crowd.handL, i, look.skin);
+        color(crowd.handR, i, look.skin);
+      }
       color(crowd.legL, i, look.pants);
       color(crowd.legR, i, look.pants);
       color(crowd.torso, i, look.shirt);

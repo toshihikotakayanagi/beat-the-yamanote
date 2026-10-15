@@ -117,8 +117,16 @@ const treesQuery = (bbox) => `[out:json][timeout:90];
 );
 out geom;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木' };
+// 道ばたの物（見た目だけ）：バス停と自動販売機
+const streetQuery = (bbox) => `[out:json][timeout:90];
+(
+  node["highway"="bus_stop"](${bbox});
+  node["amenity"="vending_machine"](${bbox});
+);
+out;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -868,6 +876,27 @@ function convertTrees(osm, frame, bounds, roads) {
   return trees;
 }
 
+// バス停 stops: [x, y, ...] と自動販売機 vending: [x, y, ...]（見た目だけ。3D 版が近くの道に向けて置く）。
+// 同じ停留所が上り・下りや乗り場ごとに何点もあるので、STOP_MIN_GAP_M より近いバス停は 1 つにまとめる
+const STOP_MIN_GAP_M = 12;
+function convertStreet(osm, frame, bounds) {
+  const { toXY } = frame;
+  const inBox = (x, y) => x >= bounds.minX - 20 && x <= bounds.maxX + 20 && y >= bounds.minY - 20 && y <= bounds.maxY + 20;
+  const stops = [], vending = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'node') continue;
+    const [x, y] = toXY(el.lat, el.lon);
+    if (!inBox(x, y)) continue;
+    const tags = el.tags ?? {};
+    if (tags.highway === 'bus_stop') {
+      let near = false;
+      for (let i = 0; i < stops.length && !near; i += 2) near = Math.hypot(stops[i] - x, stops[i + 1] - y) < STOP_MIN_GAP_M;
+      if (!near) stops.push(x, y);
+    } else if (tags.amenity === 'vending_machine' && tags.indoor !== 'yes' && !tags.level) vending.push(x, y);
+  }
+  return { stops, vending };
+}
+
 // OSM では橋になっていないが、ゲームでは橋にする道（OSM の way の番号 → 橋の高さ m と、橋にする点の範囲）。
 // upTo があれば、その番号の点までを橋にして、そこから先は普通の道として分ける（坂は 3D 版が付ける）。
 // 西日暮里駅の道灌山通り：実物は掘割の山手線の上を渡り、すぐ北の宇都宮線・常磐線などの高架の下をくぐるが、
@@ -941,6 +970,7 @@ async function processSection(id, refresh) {
   setBridgeHeights(data.roads, bridges, lowRoads, data.lines);
   for (const [road, height] of forcedBridges) road.e = height;
   data.trees = convertTrees(await loadOsm(id, 'trees', frame.bbox, refresh), frame, data.bounds, data.roads);
+  Object.assign(data, convertStreet(await loadOsm(id, 'street', frame.bbox, refresh), frame, data.bounds));
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });
@@ -948,7 +978,7 @@ async function processSection(id, refresh) {
   await writeFile(outPath, json);
   console.log(
     `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
-      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3}`,
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2}`,
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +

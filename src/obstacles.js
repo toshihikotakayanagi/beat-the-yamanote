@@ -115,6 +115,7 @@ function spawn(obs, map, kind, px, py, rmin, rmax) {
       speed: smin + rng() * (smax - smin),
       side: rng() < 0.5 ? -1 : 1, // 歩行者は道の左右どちらかの端を歩く
       color: CAR_COLORS[Math.floor(rng() * CAR_COLORS.length)],
+      spawnW: road.w, // 出てきた道の幅（車種を決めるのに使う。vehicles.js）
       x: 0,
       y: 0,
       angle: 0,
@@ -190,6 +191,23 @@ function place(a) {
   a.angle = Math.atan2(hx, -hy);
 }
 
+// 長い車（路線バス・トラック）の、ふつうの車より前後に長いぶんの半分 m（ふつうの車は 0）
+function longExtra(a) {
+  const c = a.kind === 'car' ? carLook(a) : null;
+  return c?.long ? c.L / 2 - LONG_CAR_END : 0;
+}
+const LONG_CAR_END = 2.3; // ふつうの車の、真ん中から前の端までの長さ（セダンの長さの半分）
+
+// 自転車とぶつかったか。長い車は、車体の向きに伸ばした範囲（前後の端の丸の真ん中を結ぶ線から radius 以内）で調べる
+function hits(a, player) {
+  const r = AGENTS[a.kind].radius;
+  const extra = longExtra(a);
+  const dx = player.x - a.x, dy = player.y - a.y;
+  if (!extra) return Math.hypot(dx, dy) < r;
+  const along = Math.max(-extra, Math.min(extra, dx * a.hx + dy * a.hy));
+  return Math.hypot(dx - a.hx * along, dy - a.hy * along) < r;
+}
+
 // 車は前に自転車がいるとき、赤・黄信号の手前で止まる
 function carShouldStop(obs, a, player) {
   const ahead = (x, y, near, far, width) => {
@@ -198,10 +216,11 @@ function carShouldStop(obs, a, player) {
     const side = Math.abs(-dx * a.hy + dy * a.hx);
     return along > near && along < far && side < width;
   };
-  if (ahead(player.x, player.y, 0, 10, 3)) return true;
+  const nose = longExtra(a); // 長い車は車体の前が前にあるぶん、早めに止まる
+  if (ahead(player.x, player.y, 0, 10 + nose, 3)) return true;
   for (const g of obs.signals) {
     if (signalState(g, obs.clock) === 'green') continue;
-    for (const [x, y] of g.nodes) if (ahead(x, y, SIGNAL_ZONE - 1, SIGNAL_ZONE + 8, a.road.w / 2 + 2)) return true;
+    for (const [x, y] of g.nodes) if (ahead(x, y, SIGNAL_ZONE - 1 + nose, SIGNAL_ZONE + 8 + nose, a.road.w / 2 + 2)) return true;
   }
   return false;
 }
@@ -230,7 +249,7 @@ export function updateObstacles(obs, map, player, dt, racing) {
   if (!racing) return events;
 
   for (const a of obs.agents) {
-    if (Math.hypot(a.x - player.x, a.y - player.y) < AGENTS[a.kind].radius) {
+    if (hits(a, player)) {
       events.push({ type: a.kind });
       break; // 1 フレームに 1 回まで
     }
@@ -324,6 +343,7 @@ function shade(hex, k) {
 // 車を真上から見た形で描く：角の丸い車体、前後の窓、屋根、ドアミラー、ライト（タクシーは屋根の行灯）
 function drawCar(ctx, a) {
   const c = carLook(a);
+  if (c.long) return drawLongCar(ctx, a, c);
   const hl = c.L / 2, hw = c.W / 2;
   const [fb, bb] = c.cabinBottom, [ft, bt] = c.cabinTop; // 窓の部分の前後（下と上）
   const glass = 'rgba(25, 30, 40, 0.92)';
@@ -378,6 +398,52 @@ function drawCar(ctx, a) {
   ctx.fillStyle = '#ff4d4d';
   ctx.fillRect(-hw + 0.1, hl - 0.16, 0.36, 0.13);
   ctx.fillRect(hw - 0.46, hl - 0.16, 0.36, 0.13);
+  ctx.restore();
+}
+
+// 路線バスとトラックを真上から見た形で描く。バス：白い屋根に冷房の箱と前後の窓。トラック：車ごとの色の運転台と銀色の荷箱
+function drawLongCar(ctx, a, c) {
+  const hl = c.L / 2, hw = c.W / 2;
+  ctx.save();
+  ctx.translate(a.x, a.y);
+  ctx.rotate(a.angle);
+  ctx.fillStyle = 'rgba(10, 12, 16, 0.55)';
+  ctx.beginPath();
+  ctx.roundRect(-hw - 0.08, -hl - 0.08, c.W + 0.16, c.L + 0.16, 0.4);
+  ctx.fill();
+  if (c.type === 'bus') {
+    ctx.fillStyle = c.color;
+    ctx.beginPath();
+    ctx.roundRect(-hw, -hl, c.W, c.L, 0.35);
+    ctx.fill();
+    ctx.fillStyle = '#2e8b57'; // 屋根の縁の緑の帯
+    ctx.fillRect(-hw, -hl + 0.6, 0.14, c.L - 1.2);
+    ctx.fillRect(hw - 0.14, -hl + 0.6, 0.14, c.L - 1.2);
+    ctx.fillStyle = 'rgba(25, 30, 40, 0.92)'; // 前と後ろの窓
+    ctx.fillRect(-hw + 0.15, -hl + 0.05, c.W - 0.3, 0.3);
+    ctx.fillRect(-hw + 0.3, hl - 0.25, c.W - 0.6, 0.2);
+    ctx.fillStyle = '#c9ccc8'; // 屋根の冷房
+    ctx.fillRect(-0.85, -2.6, 1.7, 3.1);
+  } else {
+    const cab = 1.9;
+    ctx.fillStyle = c.color;
+    ctx.beginPath();
+    ctx.roundRect(-hw + 0.08, -hl, c.W - 0.16, cab, 0.3);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(25, 30, 40, 0.92)';
+    ctx.fillRect(-hw + 0.25, -hl + 0.08, c.W - 0.5, 0.35);
+    ctx.fillStyle = '#a3a7ad'; // 荷箱
+    ctx.fillRect(-hw, -hl + cab + 0.1, c.W, c.L - cab - 0.1);
+    ctx.strokeStyle = '#8a8e95';
+    ctx.lineWidth = 0.06;
+    ctx.strokeRect(-hw + 0.1, -hl + cab + 0.2, c.W - 0.2, c.L - cab - 0.3);
+  }
+  ctx.fillStyle = '#fff6d5';
+  ctx.fillRect(-hw + 0.15, -hl + 0.02, 0.4, 0.14);
+  ctx.fillRect(hw - 0.55, -hl + 0.02, 0.4, 0.14);
+  ctx.fillStyle = '#ff4d4d';
+  ctx.fillRect(-hw + 0.1, hl - 0.15, 0.3, 0.12);
+  ctx.fillRect(hw - 0.4, hl - 0.15, 0.3, 0.12);
   ctx.restore();
 }
 

@@ -147,10 +147,12 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ okachimachi_station.glb 御徒町駅（高架の上のホームと、高架下の改札口と店）の 3D モデル（tools/build-okachimachi-station.py で作成）
 │     ├─ yamanote_train.glb     ライバルの山手線の電車（E235 系の先頭車・中間車・パンタグラフ付き中間車・最後尾の車両）の 3D モデル（tools/build-yamanote-train.py で作成）
 │     ├─ bicycle.glb            プレイヤーの自転車と乗っている人（フレーム・車輪・クランク・胴体・脚・靴を別々に動かす）の 3D モデル（tools/build-bicycle.py で作成）
-│     ├─ cars.glb               道路を走る車 4 種類（セダン・軽自動車・ミニバン・タクシー）の 3D モデル（tools/build-cars.py で作成）
+│     ├─ cars.glb               道路を走る車 6 種類（セダン・軽自動車・ミニバン・タクシー・路線バス・トラック）の 3D モデル（tools/build-cars.py で作成）
 │     ├─ signal.glb             交差点の信号機（柱・腕・車用と歩行者用の信号の箱・灯）の 3D モデル（tools/build-signal.py で作成）
 │     ├─ trees.glb              木 4 種類（広葉樹・イチョウ・桜・針葉樹）の 3D モデル（tools/build-trees.py で作成）
-│     └─ landmarks.glb          遠くから見える目印の高い建物（スカイツリー・東京タワー・サンシャイン60・都庁・ドコモ代々木ビル）の 3D モデル（tools/build-landmarks.py で作成）
+│     ├─ landmarks.glb          遠くから見える目印の高い建物（スカイツリー・東京タワー・サンシャイン60・都庁・ドコモ代々木ビル）の 3D モデル（tools/build-landmarks.py で作成）
+│     ├─ street.glb             道ばたの物（街灯・自動販売機・電柱・ガードパイプ・バス停）とスタート・ゴールの門の 3D モデル（tools/build-street.py で作成）
+│     └─ pedestrian.glb         歩行者の体の部品（頭・髪・胴体・腰・脚・靴・腕・手・傘）の 3D モデル（tools/build-pedestrian.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -186,10 +188,12 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-okachimachi-station.py  御徒町駅のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-yamanote-train.py  ライバルの山手線の電車（E235 系）のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-bicycle.py  プレイヤーの自転車と乗っている人のモデルを Blender で組み立てる（Blender で実行）
-│  ├─ build-cars.py    道路を走る車 4 種類のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-cars.py    道路を走る車 6 種類のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-signal.py  信号機のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-trees.py   木 4 種類のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-landmarks.py  目印の高い建物 5 つのモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-street.py  道ばたの物と門のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-pedestrian.py  歩行者の部品のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
