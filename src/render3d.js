@@ -2115,6 +2115,7 @@ function addCity3Props(group, map, roadHeights) {
         for (let k = 0; k < steps; k++) {
           const [cx, cz, h] = at(((k + 0.5) * len) / steps);
           if (!stations.some((st) => Math.hypot(st.x - cx, st.y - cz) < TACTILE_RADIUS)) continue;
+          if ((surfaceAt(map, cx, cz).segs ?? []).some((sg) => !sg.road.path)) continue; // 車道を渡る所（横断歩道）には敷かない
           put('tactile', cx, h + Y.arrow, cz, along(ux, uz), len / steps);
         }
       }
@@ -2183,6 +2184,114 @@ function addCity3Props(group, map, roadHeights) {
   }
 }
 
+// ---- 街の物 その 5（Blender で作ったモデル。tools/build-city4.py） ----
+// スタートの演出（門の横で旗を振る人と、3・2・1 の灯の柱）、渋谷スクランブル交差点の人の波、駅の入口。どれも見た目だけ
+const CITY4_URL = 'data/models/city4.glb';
+const CITY4_NAMES = {
+  starter: 'C4_Starter', starterArm: 'C4_StarterArm', lampPole: 'C4_LampPole',
+  lamp1: 'C4_Lamp1', lamp2: 'C4_Lamp2', lamp3: 'C4_Lamp3', lampGo: 'C4_LampGo', entrance: 'C4_Entrance',
+};
+const city4 = { geos: null, done: false };
+loadModelParts(CITY4_URL, CITY4_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city4.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 5）のモデルを読み込めませんでした: ${CITY4_URL}`, e))
+  .finally(() => (city4.done = true));
+const STARTER_SHOULDER = [0, 1.42, 0.21]; // 旗を振る人の右肩（体の原点から。tools/build-city4.py の SH）
+const SCRAMBLE = { lat: 35.6595, lon: 139.7006, half: 21, people: 48 }; // 渋谷スクランブル交差点の真ん中と、横断歩道の四隅までの半分 m
+
+// 駅名の板の絵（濃い紺に白い駅名、上に緑の帯）
+function entranceSignTexture(name) {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 96;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#1f2a44';
+  ctx.fillRect(0, 0, 512, 96);
+  ctx.fillStyle = '#2a9a4a';
+  ctx.fillRect(0, 0, 512, 10);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 56px system-ui, sans-serif';
+  ctx.fillText(name, 256, 74);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// スタートの門の横に、旗を振る人（門の右の柱の外）と灯の柱（門の左の手前。走り出す自転車の方を向く）
+function addStartShow(group) {
+  const g = city4.geos, sg = group.userData.startGate;
+  if (!g || !sg) return;
+  const { gate, reach } = sg;
+  const mk = (geo, material) => {
+    const m = new THREE.Mesh(geo, material);
+    m.castShadow = material === STREET_MAT;
+    return m;
+  };
+  const starter = new THREE.Group();
+  starter.position.set(reach + 1.3, 0, -0.8);
+  starter.rotation.y = Math.PI; // 道の真ん中の方を向く
+  starter.add(mk(g.starter.body, STREET_MAT));
+  const arm = mk(g.starterArm.body, STREET_MAT);
+  arm.position.set(...STARTER_SHOULDER);
+  starter.add(arm);
+  const pole = new THREE.Group();
+  pole.position.set(-reach - 2.2, 0, -3.5);
+  pole.rotation.y = -Math.PI / 2; // 灯を、門の手前（スタートの自転車）に向ける
+  pole.add(mk(g.lampPole.body, STREET_MAT));
+  const lamps = ['lamp1', 'lamp2', 'lamp3', 'lampGo'].map((k) => {
+    const m = mk(g[k].glow, STREET_GLOW_MAT);
+    m.visible = false;
+    pole.add(m);
+    return m;
+  });
+  gate.add(starter, pole);
+  group.userData.startShow = { arm, lamps };
+}
+
+// 駅の入口：駅のまわりの空いている地面に、近くの道の方を向けて 1 つ（駅名の板付き）
+function addStationEntrances(group, map, roadHeights) {
+  const g = city4.geos;
+  if (!g) return;
+  for (const st of (map.landmarks ?? []).filter((l) => l.k === 'station')) {
+    let placed = false;
+    for (const dist of [18, 30, 45, 60]) {
+      for (let k = 0; k < 12 && !placed; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const x = st.x + Math.cos(a) * dist, z = st.y + Math.sin(a) * dist;
+        const near = nearestRoadPoint(map, x, z, false);
+        if (!near || near.d > 12) continue;
+        const fx = (near.x - x) / (near.d || 1), fz = (near.z - z) / (near.d || 1); // 道の方
+        const corners = [[0.4, 3.2], [0.4, -3.2], [-3.0, 3.2], [-3.0, -3.2], [-1.3, 0]];
+        if (!corners.every(([u, w]) => freeSpot(map, roadHeights, x + fx * u - fz * w, z + fz * u + fx * w, false))) continue;
+        const ent = new THREE.Group();
+        ent.position.set(x, 0, z);
+        ent.rotation.y = faceTo(fx, fz);
+        const body = new THREE.Mesh(g.entrance.body, STREET_MAT);
+        body.castShadow = true;
+        ent.add(body);
+        if (g.entrance.glow) ent.add(new THREE.Mesh(g.entrance.glow, STREET_GLOW_MAT));
+        const board = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 0.8), new THREE.MeshBasicMaterial({ map: entranceSignTexture(st.n) }));
+        board.position.set(0.43, 3.7, 0);
+        board.rotation.y = Math.PI / 2; // 板の面を +x（道の方）へ
+        ent.add(board);
+        ent.name = 'entrance'; // デバッグ・自動テスト用
+        group.add(ent);
+        placed = true;
+      }
+      if (placed) break;
+    }
+  }
+}
+
 // スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
 // スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
 function addGates(group, map, heights) {
@@ -2209,6 +2318,7 @@ function addGates(group, map, heights) {
     mesh(sm.gateBeam, 0, GATE_BEAM_Y, reach * 2);
     mesh(banner, 0, GATE_BANNER_Y);
     group.add(gate);
+    if (pt === map.start) group.userData.startGate = { gate, reach }; // スタートの演出を足す（addStartShow）
   }
 }
 
@@ -3063,6 +3173,9 @@ function* buildWorldSteps(map, textures) {
   addCity2Props(group, map, roadHeights);
   while (!city3.done) yield 0.985;
   addCity3Props(group, map, roadHeights);
+  while (!city4.done) yield 0.985;
+  addStartShow(group);
+  addStationEntrances(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -4657,6 +4770,112 @@ export function createRenderer3D(canvas) {
     }
   }
 
+  // スタートの演出：カウントダウンの 3・2・1 で赤い灯が 1 つずつ点き、スタートで緑。旗はスタートから数秒振る
+  const startShow = { raceAt: null, t: 0 };
+  function syncStartShow(game, dt) {
+    const show = world?.userData.startShow;
+    startShow.t += dt;
+    if (game.state === 'racing' && startShow.raceAt === null) startShow.raceAt = startShow.t;
+    if (game.state !== 'racing') startShow.raceAt = null;
+    if (!show) return;
+    const cd = game.state === 'countdown' ? game.countdown : null;
+    const since = startShow.raceAt === null ? Infinity : startShow.t - startShow.raceAt;
+    show.lamps[0].visible = cd !== null; // 3
+    show.lamps[1].visible = cd !== null && cd <= 2; // 2
+    show.lamps[2].visible = cd !== null && cd <= 1; // 1
+    show.lamps[3].visible = since < 4; // GO
+    // 旗：カウントダウン中は高く掲げて小さくゆらし、スタートから 4 秒は大きく振る
+    const wave = since < 4 ? Math.sin(startShow.t * 9) * 0.9 : cd !== null ? Math.sin(startShow.t * 3) * 0.15 : 0;
+    show.arm.rotation.x = wave;
+  }
+
+  // 渋谷スクランブル交差点：交差点の信号が赤（車が止まる）のあいだ、四隅から人がいっせいに渡る（斜めにも）。
+  // 青のあいだは四隅で待つ。見た目だけ（人の当たり判定はない）。人の形は tools/build-city3.py の待つ人
+  const scramble = { map: null, people: [], meshes: null, group: null };
+  function syncScramble(game, dt) {
+    const g3 = city3.geos;
+    if (!g3 || !worldMap || !worldMap.origin) return;
+    if (scramble.map !== worldMap) {
+      if (scramble.meshes) for (const m of scramble.meshes) scene.remove(m);
+      scramble.map = worldMap;
+      scramble.meshes = null;
+      scramble.people = [];
+      const [cx, cz] = latLonXY(worldMap, SCRAMBLE.lat, SCRAMBLE.lon);
+      if (!inBounds(worldMap, cx, cz)) return;
+      // 交差点の向き：いちばん近い車道の向き
+      const near = nearestRoadPoint(worldMap, cx, cz, true);
+      let ux = 1, uz = 0;
+      if (near) {
+        const r = near.road;
+        let bi = 0, bd = Infinity;
+        for (let k = 0; k + 3 < r.p.length; k += 2) {
+          const d = Math.hypot((r.p[k] + r.p[k + 2]) / 2 - near.x, (r.p[k + 1] + r.p[k + 3]) / 2 - near.z);
+          if (d < bd) (bd = d), (bi = k);
+        }
+        const l = Math.hypot(r.p[bi + 2] - r.p[bi], r.p[bi + 3] - r.p[bi + 1]) || 1;
+        (ux = (r.p[bi + 2] - r.p[bi]) / l), (uz = (r.p[bi + 3] - r.p[bi + 1]) / l);
+      }
+      const hh = SCRAMBLE.half;
+      const corners = [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([a, b]) => [cx + ux * a * hh - uz * b * hh, cz + uz * a * hh + ux * b * hh]);
+      scramble.corners = corners;
+      scramble.center = [cx, cz];
+      scramble.group = null;
+      scramble.meshes = [0, 1, 2, 3].map((k) => {
+        const m = new THREE.InstancedMesh(g3[`stand${k}`].body, STREET_MAT, SCRAMBLE.people);
+        m.castShadow = true;
+        m.frustumCulled = false;
+        m.count = 0;
+        scene.add(m);
+        return m;
+      });
+      for (let i = 0; i < SCRAMBLE.people; i++) {
+        const c = i % 4;
+        scramble.people.push({ from: c, to: c, t: 1, v: i % 4, jx: (Math.random() - 0.5) * 6, jz: (Math.random() - 0.5) * 6, speed: 1.1 + Math.random() * 0.5 });
+      }
+    }
+    if (!scramble.meshes) return;
+    const obs = game.obstacles;
+    if (!scramble.group || scramble.obs !== obs) {
+      // 交差点の信号（真ん中から 60m 以内のいちばん近い信号のまとまり。区間を読み直すと作り直されるので、そのたびに探す）
+      scramble.obs = obs;
+      scramble.group = null;
+      let best = Infinity;
+      for (const sg of obs?.signals ?? []) {
+        for (const [x, y] of sg.nodes) {
+          const d = Math.hypot(x - scramble.center[0], y - scramble.center[1]);
+          if (d < best && d < 60) (best = d), (scramble.group = sg);
+        }
+      }
+    }
+    const walk = scramble.group && obs ? signalState(scramble.group, obs.clock) === 'red' : false;
+    const counts = [0, 0, 0, 0], m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1), pos = new THREE.Vector3();
+    const [cx, cz] = scramble.center;
+    for (const p of scramble.people) {
+      if (p.t >= 1 && walk && Math.random() < dt * 0.8) {
+        // 赤のあいだに、別の隅（斜めも）へ渡り始める
+        p.from = p.to;
+        p.to = (p.from + 1 + Math.floor(Math.random() * 3)) % 4;
+        p.t = 0;
+      }
+      const [ax, az] = scramble.corners[p.from], [bx, bz] = scramble.corners[p.to];
+      const len = Math.hypot(bx - ax, bz - az) || 1;
+      if (p.t < 1) p.t = Math.min(1, p.t + (p.speed * dt) / len);
+      // 隅では交差点の外側に少し下がって待つ
+      const out = (k) => [scramble.corners[k][0] + (scramble.corners[k][0] - cx) * 0.12, scramble.corners[k][1] + (scramble.corners[k][1] - cz) * 0.12];
+      const [sx, sz] = out(p.from), [ex, ez] = out(p.to);
+      const x = sx + (ex - sx) * p.t + p.jx * 0.5, z = sz + (ez - sz) * p.t + p.jz * 0.5;
+      const moving = p.t > 0 && p.t < 1;
+      const face = moving ? Math.atan2(-(ex - sx), -(ez - sz)) : Math.atan2(-(cx - x), -(cz - z));
+      q.setFromAxisAngle(up, face);
+      pos.set(x, moving ? Math.abs(Math.sin(p.t * len * 3)) * 0.04 : 0, z);
+      scramble.meshes[p.v].setMatrixAt(counts[p.v]++, m4.compose(pos, q, one));
+    }
+    scramble.meshes.forEach((m, k) => {
+      m.count = counts[k];
+      m.instanceMatrix.needsUpdate = true;
+    });
+  }
+
   // 踏切：電車（ライバルの山手線とほかの路線の電車）が近ければ遮断機を下ろして灯を交互に点ける
   let crossingClock = 0;
   function syncCrossings(game, dt) {
@@ -4988,6 +5207,8 @@ export function createRenderer3D(canvas) {
       syncOtherTrains(dt);
       syncRiders(game, dt);
       syncCrossings(game, dt);
+      syncStartShow(game, dt);
+      syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
       const dc = window.render3d?.debugCamera;
@@ -5007,6 +5228,6 @@ export function createRenderer3D(canvas) {
       unculled = [];
     },
   };
-  window.render3d = { renderer, scene, camera, r3d, otherTrains, riders, sky2 }; // デバッグ・自動テスト用
+  window.render3d = { renderer, scene, camera, r3d, otherTrains, riders, sky2, scramble }; // デバッグ・自動テスト用
   return r3d;
 }

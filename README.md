@@ -161,7 +161,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ laforet.glb・bigbox.glb・kotsu_kaikan.glb  有名な建物（ラフォーレ原宿・高田馬場 BIG BOX・東京交通会館）の 3D モデル（tools/build-city.py で作成）
 │     ├─ city.glb               歌舞伎町一番街のアーチ・ガード下の店・夜のネオン・公園の物・歩行者の持ち物の 3D モデル（tools/build-city.py で作成）
 │     ├─ city2.glb              路面電車・モノレール・新交通の車両、緊急車両、駅前の名物 その 2、店の前の物、工事現場の重機の 3D モデル（tools/build-city2.py で作成）
-│     └─ city3.glb              ホームで待つ人・路面の物（止まれ・自転車の印・マンホール・点字ブロック）・作業する車・駅前の自転車置き場の 3D モデル（tools/build-city3.py で作成）
+│     ├─ city3.glb              ホームで待つ人・路面の物（止まれ・自転車の印・マンホール・点字ブロック）・作業する車・駅前の自転車置き場の 3D モデル（tools/build-city3.py で作成）
+│     └─ city4.glb              スタートの演出（旗を振る人・3・2・1 の灯）と駅の入口の 3D モデル（tools/build-city4.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -211,6 +212,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-city.py    有名な建物 3 つと、アーチ・ガード下の店・ネオン・公園の物・歩行者の持ち物のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-city2.py   路面電車などの車両・緊急車両・名物・店の前の物・重機のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-city3.py   ホームで待つ人・路面の物・作業する車・自転車置き場のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-city4.py   スタートの演出と駅の入口のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/
