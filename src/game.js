@@ -559,6 +559,14 @@ function setSeason(season) {
   save('season', game.season);
 }
 
+// 自転車の飾り（3D版。見た目だけ）：マフラー・かごの買い物袋・花束（ロードバイクは背中のリュック）
+const ACCESSORIES = ['none', 'scarf', 'bag', 'flowers'];
+function setAccessory(accessory) {
+  game.accessory = ACCESSORIES.includes(accessory) ? accessory : 'none';
+  renderer.setAccessory?.(game.accessory);
+  save('accessory', game.accessory);
+}
+
 // 自転車の種類・服・ヘルメット（見た目だけ。速さや記録は変わらない）
 function setRiderLook(bikeType, outfit, helmet) {
   const ok = (list, id) => (list.some((x) => x.id === id) ? id : list[0].id);
@@ -612,6 +620,8 @@ function act(action, x = null) {
     setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
+  } else if (action === 'accessory') {
+    setAccessory(cycle(ACCESSORIES, game.accessory));
   } else if (action === 'season') {
     setSeason(cycle(SEASONS, game.season));
   } else if (action === 'bikeType') {
@@ -695,6 +705,8 @@ window.addEventListener('keydown', (e) => {
     act('weatherEffects');
   } else if (e.code === 'KeyF' && game.mode === '3d') {
     act('season');
+  } else if (e.code === 'KeyJ' && game.mode === '3d') {
+    act('accessory');
   } else if (s === 'ready' && (e.code === 'KeyV' || e.code === 'KeyU' || e.code === 'KeyK')) {
     act({ KeyV: 'bikeType', KeyU: 'outfit', KeyK: 'helmet' }[e.code]);
   } else if (e.code === 'KeyB') {
@@ -811,6 +823,7 @@ export async function startGame(r) {
   setAtmosphere(load('timeOfDay'), load('weather'));
   setRiderLook(load('bikeType'), load('outfit'), load('helmet'));
   setSeason(load('season'));
+  setAccessory(load('accessory'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
   if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;

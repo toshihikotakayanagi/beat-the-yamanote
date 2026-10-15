@@ -631,7 +631,7 @@ function drawHowto(ctx, game, view) {
     : [
         '矢印キー / WASD で操作　P：一時停止　R：やり直し　Esc：戻る',
         'M：音　G：ゴースト　T：時間帯　Y：天気　E：天気の影響',
-        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点　F：季節' : ''}`,
+        `V：自転車の種類　U：服　K：ヘルメット（区間選択で）　B：ベル${game.mode === '3d' ? '　C：視点　F：季節　J：飾り' : ''}`,
       ];
   drawOverlay(ctx, game, view, [
     ['遊び方', { size: 30, weight: 'bold', color: YAMANOTE_GREEN }],
@@ -680,6 +680,11 @@ function drawReady(ctx, game, view) {
       { title: `ヘルメット：${helmet.name}`, note: game.touch ? 'タップで切り替え' : 'K で切り替え', color: swatch(helmet.color), noteColor: QUIET, action: 'helmet', outlined: true },
     ],
   });
+  // 自転車の飾り（3D版）
+  if (game.mode === '3d') {
+    const acc = `自転車の飾り：${ACCESSORY_NAMES[game.accessory] ?? 'なし'}`;
+    lines.push([game.touch ? acc : `${acc}（J）`, { size: 13, color: game.accessory && game.accessory !== 'none' ? TEXT : QUIET }, 'accessory']);
+  }
   // 天気の影響：あり／なし（雨・雪で走りやすさが変わる。記録は別）
   const eff = game.weatherEffects
     ? game.effect
@@ -970,6 +975,7 @@ function shareLine(game) {
 
 const GOAL_SHOW_MS = 2200; // src/game.js の GOAL_SHOW_MS と同じ
 const SEASON_NAMES = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' };
+const ACCESSORY_NAMES = { none: 'なし', scarf: 'マフラー', bag: '買い物袋', flowers: '花束' };
 // 3D版：結果画面の前に、大きく「ゴール！」とタイム（後ろでくす玉が割れる）か、「電車が先に到着…」（後ろで電車のドアが開く）だけを出す
 function drawGoalFlash(ctx, game, view) {
   const r = game.result;
