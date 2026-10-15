@@ -159,7 +159,8 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │     ├─ shibuya109.glb・qfront.glb・radio_kaikan.glb  有名な建物（SHIBUYA109・QFRONT・秋葉原ラジオ会館）の 3D モデル（tools/build-famous-buildings.py で作成）
 │     ├─ scenery.glb            線路の柵と信号機・橋の欄干・川の船・飛行機とヘリコプター・鳥の 3D モデル（tools/build-scenery.py で作成）
 │     ├─ laforet.glb・bigbox.glb・kotsu_kaikan.glb  有名な建物（ラフォーレ原宿・高田馬場 BIG BOX・東京交通会館）の 3D モデル（tools/build-city.py で作成）
-│     └─ city.glb               歌舞伎町一番街のアーチ・ガード下の店・夜のネオン・公園の物・歩行者の持ち物の 3D モデル（tools/build-city.py で作成）
+│     ├─ city.glb               歌舞伎町一番街のアーチ・ガード下の店・夜のネオン・公園の物・歩行者の持ち物の 3D モデル（tools/build-city.py で作成）
+│     └─ city2.glb              路面電車・モノレール・新交通の車両、緊急車両、駅前の名物 その 2、店の前の物、工事現場の重機の 3D モデル（tools/build-city2.py で作成）
 ├─ tools/
 │  ├─ fetch-osm.mjs    OpenStreetMap の取得・変換スクリプト（Node.js）
 │  ├─ measure-par.js   基準タイムの計測（ブラウザのコンソールで使う）
@@ -207,6 +208,7 @@ HTML・CSS・JavaScript（ES モジュール）だけで作っており、ビル
 │  ├─ build-famous-buildings.py  有名な建物 3 つのモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-scenery.py  線路のまわり・川と橋・空を飛ぶ物のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ build-city.py    有名な建物 3 つと、アーチ・ガード下の店・ネオン・公園の物・歩行者の持ち物のモデルを Blender で組み立てる（Blender で実行）
+│  ├─ build-city2.py   路面電車などの車両・緊急車両・名物・店の前の物・重機のモデルを Blender で組み立てる（Blender で実行）
 │  ├─ export-glb.py    .blend のコレクションを glb に書き出す（Blender で実行）
 │  └─ serve.py         開発用のサーバー
 ├─ vendor/

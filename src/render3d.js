@@ -1832,6 +1832,163 @@ function addCityProps(group, map, roadHeights, buildingHeights) {
   }
 }
 
+// ---- 街の物 その 3（Blender で作ったモデル。tools/build-city2.py） ----
+// 走る路面電車・モノレール・新交通の車両、緊急車両、駅前の名物 その 2、店の前の物（商店街）、工事現場の重機。どれも見た目だけ
+const CITY2_URL = 'data/models/city2.glb';
+const CITY2_NAMES = {
+  toden: 'C2_Toden', mono: 'C2_Mono', yuri: 'C2_Yuri', police: 'C2_Police', policeLamp: 'C2_PoliceLamp', ambulance: 'C2_Ambulance',
+  ambLamp: 'C2_AmbLamp', fire: 'C2_Fire', fireLamp: 'C2_FireLamp', saigo: 'C2_Saigo', cat: 'C2_Cat', clock: 'C2_Clock', sunshine: 'C2_Sunshine',
+  noboriPole: 'C2_NoboriPole', noboriCloth: 'C2_NoboriCloth', aboard: 'C2_ABoard', bike: 'C2_Bike', yatai: 'C2_Yatai',
+  excavator: 'C2_Excavator', crane: 'C2_Crane', scaffold: 'C2_Scaffold',
+};
+const city2 = { geos: null, done: false }; // 名前 → { body, glow }
+loadModelParts(CITY2_URL, CITY2_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city2.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 3）のモデルを読み込めませんでした: ${CITY2_URL}`, e))
+  .finally(() => (city2.done = true));
+// 駅前の名物 その 2（OpenStreetMap の位置）。face は名物の前が向く方角（北が 0、時計回り rad）、gate は道をまたぐ、
+// corner は建物の角の大きな画面（画面の 2 面が西と南を向く）
+const CITY2_LANDMARKS = [
+  { key: 'saigo', lat: 35.7118569, lon: 139.7741721, face: Math.PI }, // 上野の西郷隆盛像（南を向く）
+  { key: 'cat', lat: 35.6926184, lon: 139.7007975, corner: true }, // 新宿東口の角の大きな画面と三毛猫
+  { key: 'clock', lat: 35.6432, lon: 139.71330, face: 0 }, // 恵比寿ガーデンプレイスの時計台
+  { key: 'sunshine', lat: 35.7302794, lon: 139.7167724, gate: true }, // サンシャイン60通りの入口
+];
+// 店の前の物を並べる商店街（道の名前）
+const SHOP_STREETS = /商店街|銀座|アメ横|地蔵通|一番街|センター街|竹下通|サンシャイン60通|サンシャイン通|横丁|小路|仲通/;
+const NOBORI_COLORS = [0xd8282e, 0x1f5fb0, 0xf2c200, 0x2a9a4a, 0xf08a2a, 0xe85a9a, 0xf4f4f0];
+
+function addCity2Props(group, map, roadHeights) {
+  const g = city2.geos;
+  if (!g) return;
+  const lists = {};
+  const put = (key, x, h, z, rotY, color = null) => {
+    const m = new THREE.Matrix4().makeTranslation(x, h, z).multiply(new THREE.Matrix4().makeRotationY(rotY));
+    (lists[key] ??= []).push([m, color]);
+  };
+  const hashOf = (a, b) => {
+    const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  const roadDir = (near) => {
+    const r = near.road;
+    let bi = 0, bd = Infinity;
+    for (let k = 0; k + 3 < r.p.length; k += 2) {
+      const d = Math.hypot((r.p[k] + r.p[k + 2]) / 2 - near.x, (r.p[k + 1] + r.p[k + 3]) / 2 - near.z);
+      if (d < bd) (bd = d), (bi = k);
+    }
+    return [r.p[bi + 2] - r.p[bi], r.p[bi + 3] - r.p[bi + 1]];
+  };
+  // ---- 駅前の名物 その 2 ----
+  for (const lm of CITY2_LANDMARKS) {
+    let [x, z] = latLonXY(map, lm.lat, lm.lon);
+    if (!inBounds(map, x, z)) continue;
+    let rot = lm.face != null ? turnTo(lm.face) - Math.PI / 2 : 0;
+    if (lm.gate) {
+      const near = nearestRoadPoint(map, x, z, false);
+      if (!near) continue;
+      [x, z] = [near.x, near.z];
+      rot = faceTo(...roadDir(near)) - Math.PI / 2;
+    } else if (lm.corner) rot = Math.PI; // 画面の 2 面（Blender の +X・+Y）を西と南に
+    else if (surfaceAt(map, x, z).kind === 'building') continue; // 建物の中には置かない
+    for (const [geo, material] of [[g[lm.key].body, STREET_MAT], [g[lm.key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.name = lm.key; // デバッグ・自動テスト用
+      mesh.position.set(x, 0, z);
+      mesh.rotation.y = rot;
+      mesh.castShadow = material === STREET_MAT;
+      group.add(mesh);
+    }
+  }
+  // ---- 店の前の物：商店街の道の両端に、のぼり旗・立て看板・とめた自転車、ときどき屋台 ----
+  map.roads.forEach((r, ri) => {
+    if (!r.n || !SHOP_STREETS.test(r.n) || r.e) return;
+    let walked = 0, slot = 0;
+    for (let i = 0; i + 3 < r.p.length; i += 2) {
+      const x1 = r.p[i], z1 = r.p[i + 1], x2 = r.p[i + 2], z2 = r.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 1e-6) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      for (let d = (7 - (walked % 7)) % 7; d < len; d += 7, slot++) {
+        const side = slot % 2 ? 1 : -1;
+        const nx = -uz * side, nz = ux * side; // 道の外向き
+        const off = r.w / 2 + 0.3;
+        const x = x1 + ux * d + nx * off, z = z1 + uz * d + nz * off;
+        const sf = surfaceAt(map, x, z);
+        if (sf.kind === 'building' || (sf.segs ?? []).some((sg) => !sg.road.path && sg.road !== r)) continue; // 車道や建物の中には置かない
+        if ([map.start, map.goal].some((pt) => Math.hypot(pt.x - x, pt.y - z) < FURNITURE_CLEAR_START)) continue;
+        const face = faceTo(-nx, -nz); // 道の方を向く
+        const h = hashOf(ri, slot);
+        if (slot % 37 === 18) put('yatai', x + nx * 0.8, 0, z + nz * 0.8, faceTo(ux, uz) - Math.PI / 2);
+        else if (h < 0.55) {
+          put('noboriPole', x, 0, z, faceTo(ux, uz) - Math.PI / 2);
+          put('noboriCloth', x, 0, z, faceTo(ux, uz) - Math.PI / 2, NOBORI_COLORS[Math.floor(hashOf(ri, slot + 0.5) * NOBORI_COLORS.length)]);
+        } else if (h < 0.75) put('aboard', x, 0, z, face);
+        else put('bike', x, 0, z, faceTo(ux, uz) - Math.PI / 2 + (h - 0.85));
+      }
+      walked += len;
+    }
+  });
+  // ---- 工事現場の重機：工事中の所の空いている地面に、ショベルカー・クレーン車・足場のどれか ----
+  for (let i = 0; i + 1 < (map.works?.length ?? 0); i += 2) {
+    const x = map.works[i], z = map.works[i + 1];
+    if (!freeSpot(map, roadHeights, x, z, false) || !freeSpot(map, roadHeights, x + 3, z, false) || !freeSpot(map, roadHeights, x - 3, z, false)) continue;
+    const near = nearestRoadPoint(map, x, z, true);
+    const face = near ? faceTo(near.x - x, near.z - z) : 0;
+    const h = hashOf(x, z);
+    put(h < 0.45 ? 'excavator' : h < 0.65 ? 'crane' : 'scaffold', x, 0, z, face - Math.PI / 2);
+  }
+  for (const [key, list] of Object.entries(lists)) {
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach(([m, c], i) => {
+        mesh.setMatrixAt(i, m);
+        if (c != null) mesh.setColorAt(i, new THREE.Color(c));
+      });
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT;
+      group.add(mesh);
+    }
+  }
+  // ---- 路面電車の線路（見た目だけ。道の上は道に埋めた形で、少し浮かせて描く） ----
+  const tramPieces = [];
+  for (const t of map.trams ?? []) {
+    for (let i = 0; i + 3 < t.p.length; i += 2) {
+      const x1 = t.p[i], z1 = t.p[i + 1], x2 = t.p[i + 2], z2 = t.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 0.5) continue;
+      const steps = Math.ceil(len / 4);
+      for (let k = 0; k < steps; k++) {
+        const tt = (k + 0.5) / steps;
+        const m = new THREE.Matrix4()
+          .makeTranslation(x1 + (x2 - x1) * tt, Y.rail, z1 + (z2 - z1) * tt)
+          .multiply(new THREE.Matrix4().makeRotationY(faceTo(x2 - x1, z2 - z1)))
+          .multiply(new THREE.Matrix4().makeScale(len / steps, 1, 1));
+        tramPieces.push(m);
+      }
+    }
+  }
+  if (tramPieces.length) {
+    const piece = new THREE.BoxGeometry(1, 0.03, 2.3).translate(0, 0.015, 0);
+    const rails = new THREE.BoxGeometry(1, 0.06, 0.07);
+    const railL = rails.clone().translate(0, 0.05, -0.53), railR = rails.clone().translate(0, 0.05, 0.53);
+    const bed = new THREE.InstancedMesh(piece, mat(0x3a3a3c), tramPieces.length);
+    const rl = new THREE.InstancedMesh(railL, mat(0x8a9098), tramPieces.length), rr = new THREE.InstancedMesh(railR, mat(0x8a9098), tramPieces.length);
+    tramPieces.forEach((m, i) => [bed, rl, rr].forEach((mesh) => mesh.setMatrixAt(i, m)));
+    group.add(bed, rl, rr);
+  }
+}
+
 // スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
 // スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
 function addGates(group, map, heights) {
@@ -2708,6 +2865,8 @@ function* buildWorldSteps(map, textures) {
   addRailsideAndRivers(group, map, roadHeights);
   while (!cityModel.done) yield 0.985;
   addCityProps(group, map, roadHeights, heights);
+  while (!city2.done) yield 0.985;
+  addCity2Props(group, map, roadHeights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -3154,6 +3313,10 @@ const OTHER_TRAIN_URL = 'data/models/other_trains.glb';
 const OTHER_TRAIN_NAMES = { lead: 'OT_Lead', middle: 'OT_Middle', skLead: 'OT_SkLead', skMiddle: 'OT_SkMiddle' };
 // [路線の名前, 帯の色, 2 本目の帯の色（新幹線は車体の上の色）, 新幹線か]。上から順に調べる
 const LINE_LOOKS = [
+  // 新交通・モノレール・路面電車は専用のモデル（[名前, 0, 0, false, モデル, 1 両の長さ m, 両数, 速さ m/s]。tools/build-city2.py）
+  [/ゆりかもめ|舎人ライナー/, 0, 0, false, 'yuri', 9.2, 6, 11],
+  [/モノレール/, 0, 0, false, 'mono', 16.2, 6, 15],
+  [/都電|荒川線|さくらトラム/, 0, 0, false, 'toden', 13.2, 1, 7],
   [/東海道新幹線/, 0x1d4fa0, 0xdcdee2, true],
   [/新幹線/, 0xe0679a, 0x1f8a5e, true], // 東北新幹線（E5 系のような緑と桃色の帯）
   [/京浜東北/, 0x00a7db, 0x00a7db],
@@ -3202,7 +3365,8 @@ function otherTrainGeometry(key, band, band2) {
 // 区間の地図の、ほかの路線の線（路線ごとに線路をつないだもの）：[{ route, look, name }]
 function otherTrainLines(map) {
   const byName = new Map();
-  for (const l of map.lines ?? []) {
+  // 路面電車の線路（map.trams。地面の高さ）も、同じように路線ごとにつなぐ
+  for (const l of [...(map.lines ?? []), ...(map.trams ?? []).map((t) => ({ ...t, n: t.n || '都電荒川線' }))]) {
     if (!l.n || l.u) continue;
     const look = LINE_LOOKS.find(([re]) => re.test(l.n));
     if (!look) continue;
@@ -4033,25 +4197,27 @@ export function createRenderer3D(canvas) {
 
   // ほかの路線の電車を進める。線の端から入って反対の端へ抜け、しばらく待って逆向きに走る
   function syncOtherTrains(dt) {
-    if (!otherTrainParts || !worldMap) return;
+    if (!otherTrainParts || !worldMap || !city2.done) return;
     if (otherTrains.map !== worldMap) {
       otherTrains.group.clear();
       otherTrains.map = worldMap;
       otherTrains.list = otherTrainLines(worldMap).map(({ route, look, name }, i) => {
-        const [, band, band2, shinkansen] = look;
-        const carLen = shinkansen ? 25 : 20;
-        const n = Math.max(3, Math.min(shinkansen ? 8 : 10, Math.floor(route.length / 2 / carLen)));
-        const speed = shinkansen ? 28 : 17; // m/s（街の中なので実物よりゆっくり）
-        const lead = otherTrainGeometry(shinkansen ? 'skLead' : 'lead', band, band2);
-        const middle = otherTrainGeometry(shinkansen ? 'skMiddle' : 'middle', band, band2);
+        const [, band, band2, shinkansen, special, specialLen, specialCars, specialSpeed] = look;
+        const own = special && city2.geos?.[special]; // 新交通・モノレール・路面電車
+        const carLen = own ? specialLen : shinkansen ? 25 : 20;
+        const n = own ? Math.max(1, Math.min(specialCars, Math.floor(route.length / 2 / carLen))) : Math.max(3, Math.min(shinkansen ? 8 : 10, Math.floor(route.length / 2 / carLen)));
+        const speed = own ? specialSpeed : shinkansen ? 28 : 17; // m/s（街の中なので実物よりゆっくり）
+        const lead = own || otherTrainGeometry(shinkansen ? 'skLead' : 'lead', band, band2);
+        const middle = own || otherTrainGeometry(shinkansen ? 'skMiddle' : 'middle', band, band2);
         const cars = [];
         for (let k = 0; k < n; k++) {
           const g = k === 0 || k === n - 1 ? lead : middle;
           const car = new THREE.Group();
           const body = new THREE.Mesh(g.body, OTHER_TRAIN_MAT);
           body.castShadow = true;
-          car.add(body, new THREE.Mesh(g.glow, OTHER_TRAIN_GLOW));
-          car.userData.back = k === n - 1; // 最後尾は先頭車を後ろ向きに
+          car.add(body);
+          if (g.glow) car.add(new THREE.Mesh(g.glow, OTHER_TRAIN_GLOW));
+          car.userData.back = !own && k === n - 1; // 最後尾は先頭車を後ろ向きに
           cars.push(car);
           otherTrains.group.add(car);
         }
@@ -4086,10 +4252,11 @@ export function createRenderer3D(canvas) {
 
   // ---- 道を走るほかの自転車・バイク・配達のスクーター（見た目だけ。ゲームの乱数を使わず、自転車とぶつからない） ----
   // 自転車は歩道と細い道、バイクとスクーターは車道を、道のつながりに沿って走る。自転車のまわりに出し、離れたら消す
-  const RIDERS = { cycle: 8, motor: 5 }; // 同時に走らせる数
+  const RIDERS = { cycle: 8, motor: 5, emergency: 1 }; // 同時に走らせる数（緊急車両はときどき 1 台）
+  const EMERGENCY = [['police', 'policeLamp'], ['ambulance', 'ambLamp'], ['fire', 'fireLamp']];
   const RIDER_SPAWN = [50, 170]; // 出す距離 m（自転車からの）
   const RIDER_DESPAWN = 230;
-  const riders = { list: [], pool: { cycle: [], motor: [] } };
+  const riders = { list: [], pool: { cycle: [], motor: [], emergency: [] }, emWait: 20, clock: 0 };
   const CYCLE_COLORS = [0x2f6fd0, 0xe0e0e0, 0x1b1d22, 0xd03a3a, 0x3aa060, 0xe8b830, 0xd070a0];
   function riderObject(kind) {
     const pool = riders.pool[kind];
@@ -4099,6 +4266,18 @@ export function createRenderer3D(canvas) {
     if (kind === 'cycle') {
       const c = CYCLE_COLORS[pool.length % CYCLE_COLORS.length], j = CYCLE_COLORS[(pool.length * 3 + 2) % CYCLE_COLORS.length];
       o = makeBike({ frame: c, jersey: j, helmet: CYCLE_COLORS[(pool.length + 4) % CYCLE_COLORS.length], shorts: 0x2a2f3a });
+    } else if (kind === 'emergency') {
+      // パトカー・救急車・消防車（回転灯は点滅させる）
+      const [bodyKey, lampKey] = EMERGENCY[pool.length % EMERGENCY.length];
+      const g = city2.geos;
+      if (!g) return null;
+      o = new THREE.Group();
+      const body = new THREE.Mesh(g[bodyKey].body, STREET_MAT);
+      body.castShadow = true;
+      o.add(body);
+      if (g[bodyKey].glow) o.add(new THREE.Mesh(g[bodyKey].glow, STREET_GLOW_MAT));
+      o.userData.lamp = new THREE.Mesh(g[lampKey].glow, STREET_GLOW_MAT);
+      o.add(o.userData.lamp);
     } else {
       const g = townModel.geos?.[pool.length % 2 ? 'motorbike' : 'scooter'];
       if (!g) return null;
@@ -4112,7 +4291,7 @@ export function createRenderer3D(canvas) {
     pool.push(o);
     return o;
   }
-  const riderRoad = (kind, r) => (kind === 'cycle' ? r.path || r.w < 8 : !r.path && r.w >= 5);
+  const riderRoad = (kind, r) => (kind === 'cycle' ? r.path || r.w < 8 : !r.path && r.w >= (kind === 'emergency' ? 6 : 5));
   function spawnRider(kind, map, p) {
     for (let tries = 0; tries < 15; tries++) {
       const a = Math.random() * Math.PI * 2, d = RIDER_SPAWN[0] + Math.random() * (RIDER_SPAWN[1] - RIDER_SPAWN[0]);
@@ -4120,13 +4299,14 @@ export function createRenderer3D(canvas) {
       const segs = cell?.segs.filter((sg) => riderRoad(kind, sg.road) && !sg.road.e) ?? [];
       if (!segs.length) continue;
       const sg = segs[Math.floor(Math.random() * segs.length)];
-      const r = sg.road, dir = r.o && kind === 'motor' ? r.o : Math.random() < 0.5 ? 1 : -1;
+      const r = sg.road, dir = r.o && kind !== 'cycle' ? r.o : Math.random() < 0.5 ? 1 : -1;
       const o = riderObject(kind);
       if (!o) return;
       o.userData.used = true;
       o.visible = true;
       const len = Math.hypot(sg.x2 - sg.x1, sg.y2 - sg.y1);
-      riders.list.push({ kind, o, road: r, v: dir > 0 ? sg.v : sg.v + 1, dir, s: Math.random() * len, speed: kind === 'cycle' ? 3.5 + Math.random() * 2.5 : 8 + Math.random() * 4, side: Math.random() });
+      const speed = kind === 'cycle' ? 3.5 + Math.random() * 2.5 : kind === 'emergency' ? 12 + Math.random() * 2 : 8 + Math.random() * 4;
+      riders.list.push({ kind, o, road: r, v: dir > 0 ? sg.v : sg.v + 1, dir, s: Math.random() * len, speed, side: Math.random(), life: kind === 'emergency' ? 30 : Infinity });
       return;
     }
   }
@@ -4134,14 +4314,19 @@ export function createRenderer3D(canvas) {
     const map = worldMap;
     if (!map || !game.map || game.map !== map) return;
     const p = game.player;
+    riders.clock += dt;
+    riders.emWait -= dt;
     riders.list = riders.list.filter((rd) => {
-      const far = Math.hypot(rd.o.position.x - p.x, rd.o.position.z - p.y) > RIDER_DESPAWN;
+      rd.life -= dt;
+      const far = Math.hypot(rd.o.position.x - p.x, rd.o.position.z - p.y) > RIDER_DESPAWN || rd.life < 0;
       if (far) (rd.o.userData.used = false), (rd.o.visible = false);
       return !far;
     });
-    for (const kind of ['cycle', 'motor']) {
+    for (const kind of ['cycle', 'motor', 'emergency']) {
       const n = riders.list.filter((rd) => rd.kind === kind).length;
-      if (n < RIDERS[kind]) spawnRider(kind, map, p);
+      if (n >= RIDERS[kind] || (kind === 'emergency' && riders.emWait > 0)) continue;
+      spawnRider(kind, map, p);
+      if (kind === 'emergency') riders.emWait = 45 + Math.random() * 45; // 次の緊急車両まで
     }
     for (const rd of riders.list) {
       // 道に沿って進む。道の端の点に着いたら、つながる道（同じ種類）へ。なければ引き返す
@@ -4155,7 +4340,7 @@ export function createRenderer3D(canvas) {
             if (nd.road === r || !riderRoad(rd.kind, nd.road) || nd.road.e) continue;
             for (const d of [1, -1]) {
               const u = nd.v + d;
-              if (u >= 0 && u < nd.road.p.length / 2 && !(rd.kind === 'motor' && nd.road.o && nd.road.o !== d)) opts.push([nd.road, nd.v, d]);
+              if (u >= 0 && u < nd.road.p.length / 2 && !(rd.kind !== 'cycle' && nd.road.o && nd.road.o !== d)) opts.push([nd.road, nd.v, d]);
             }
           }
           if (opts.length) [rd.road, rd.v, rd.dir] = opts[Math.floor(Math.random() * opts.length)];
@@ -4181,6 +4366,7 @@ export function createRenderer3D(canvas) {
       else {
         rd.o.position.set(x, h, z);
         rd.o.rotation.y = -angle;
+        if (rd.o.userData.lamp) rd.o.userData.lamp.visible = Math.floor(riders.clock * 4) % 2 === 0; // 回転灯の点滅
       }
     }
   }

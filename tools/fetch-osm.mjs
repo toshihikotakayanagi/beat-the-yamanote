@@ -141,8 +141,13 @@ const extrasQuery = (bbox) => `[out:json][timeout:90];
 );
 out tags center;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所' };
+// 路面電車（都電荒川線）の線路。見た目だけ（3D版が線路と走る電車を描く。走れる場所や道路の高さには使わない）
+const tramsQuery = (bbox) => `[out:json][timeout:90];
+way["railway"="tram"](${bbox});
+out geom;`;
+
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery, trams: tramsQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所', trams: '路面電車' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -179,8 +184,8 @@ async function loadOsm(id, kind, bbox, refresh) {
     } catch (e) {
       res = { ok: false, status: `つながらない: ${e.name}`, busy: true };
     }
-    // 混雑（429：回数制限、504：タイムアウト）やつながらないときは、待って次のサーバーで取り直す
-    if ((res.busy || res.status === 429 || res.status === 504) && attempt < RETRY_LIMIT) {
+    // 混雑（429：回数制限、502・503・504：サーバーの不調やタイムアウト）やつながらないときは、待って次のサーバーで取り直す
+    if ((res.busy || [429, 502, 503, 504].includes(res.status)) && attempt < RETRY_LIMIT) {
       console.log(`  混雑しています（${res.status}）。${RETRY_WAIT_MS / 1000} 秒後に取り直します（${attempt}/${RETRY_LIMIT}）`);
       await sleep(RETRY_WAIT_MS);
       continue;
@@ -326,8 +331,8 @@ function lineKind(tags, lengthM) {
     // 山手線は路線の色で目立たせる（名前に「山手線」を含む線路）。
     // e: 1 は高い所を走る線路（橋・高架・土手）。3D版で持ち上げて描き、電車もその高さを走る
     const line = { k: yamanote ? 'yamanote' : 'rail', w: 3 };
-    // 山手線以外の本線の線路は路線の名前 n を付ける（3D版がその路線の色の電車を走らせる。「;」のあとの橋の名前などは外す）
-    if (!yamanote && tags.railway === 'rail' && tags.name && !tags.service) line.n = tags.name.split(';')[0];
+    // 山手線以外の本線の線路（新交通・モノレールも）は路線の名前 n を付ける（3D版がその路線の色の電車を走らせる。「;」のあとの橋の名前などは外す）
+    if (!yamanote && /^(rail|light_rail|monorail)$/.test(tags.railway) && tags.name && !tags.service) line.n = tags.name.split(';')[0];
     const elevated = (tags.bridge && tags.bridge !== 'no') || Number(tags.layer) > 0 || tags.embankment === 'yes' || tags.viaduct === 'yes';
     if (elevated && !line.u) line.e = 1;
     if (low) lowLines.add(line);
@@ -956,6 +961,22 @@ function convertExtras(osm, frame, bounds) {
   return out;
 }
 
+// 路面電車の線路 trams: [{ n: 路線の名前, p: [x, y, ...] }]（地下・車庫の線路は外す）
+function convertTrams(osm, frame, bounds) {
+  const { toXY } = frame;
+  const box = { minX: bounds.minX - 20, minY: bounds.minY - 20, maxX: bounds.maxX + 20, maxY: bounds.maxY + 20 };
+  const trams = [];
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    if (el.type !== 'way' || !el.geometry || tags.service || (tags.tunnel && tags.tunnel !== 'no')) continue;
+    const p = simplify(el.geometry.flatMap((g) => toXY(g.lat, g.lon)), SIMPLIFY_M);
+    let inside = false;
+    for (let i = 0; i < p.length && !inside; i += 2) inside = p[i] >= box.minX && p[i] <= box.maxX && p[i + 1] >= box.minY && p[i + 1] <= box.maxY;
+    if (inside && p.length >= 4) trams.push({ n: tags.name ?? '', p });
+  }
+  return trams;
+}
+
 // OSM では橋になっていないが、ゲームでは橋にする道（OSM の way の番号 → 橋の高さ m と、橋にする点の範囲）。
 // upTo があれば、その番号の点までを橋にして、そこから先は普通の道として分ける（坂は 3D 版が付ける）。
 // 西日暮里駅の道灌山通り：実物は掘割の山手線の上を渡り、すぐ北の宇都宮線・常磐線などの高架の下をくぐるが、
@@ -1032,6 +1053,7 @@ async function processSection(id, refresh) {
   Object.assign(data, convertStreet(await loadOsm(id, 'street', frame.bbox, refresh), frame, data.bounds));
   data.shops = convertShops(await loadOsm(id, 'shops', frame.bbox, refresh), frame, data.bounds);
   Object.assign(data, convertExtras(await loadOsm(id, 'extras', frame.bbox, refresh), frame, data.bounds));
+  data.trams = convertTrams(await loadOsm(id, 'trams', frame.bbox, refresh), frame, data.bounds);
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });
@@ -1039,7 +1061,7 @@ async function processSection(id, refresh) {
   await writeFile(outPath, json);
   console.log(
     `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
-      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3} / ポスト ${data.posts.length / 2} / 消火栓 ${data.hydrants.length / 2} / 駐輪場 ${data.bikeParks.length / 2} / 工事 ${data.works.length / 2}`,
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3} / ポスト ${data.posts.length / 2} / 消火栓 ${data.hydrants.length / 2} / 駐輪場 ${data.bikeParks.length / 2} / 工事 ${data.works.length / 2} / 路面電車 ${data.trams.length}`,
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +
