@@ -9,6 +9,12 @@ const UMBRELLAS = ['#2f3a4f', '#c94f4f', '#e8eaef', '#4f7fc9', '#1f2228', '#5aa3
 
 const STRIDE_M = 0.75; // 1 歩の長さ m（足の振りの 1 往復で 2 歩）
 
+// 歩行者の種類（見た目だけ）：ふつう・スーツの会社員（かばん・ネクタイ）・制服の学生（背中のかばん）・
+// 旅行者（スーツケース）・犬の散歩。[種類, 割合]
+const ROLES = [['casual', 45], ['suit', 22], ['student', 13], ['tourist', 10], ['dog', 10]];
+const SUITS = ['#252b38', '#2f3542', '#3a3f46', '#1f2430'];
+const UNIFORMS = ['#1f2a44', '#2a2f3a'];
+
 const looks = new WeakMap(); // 歩行者 → 見た目
 const strides = new WeakMap(); // 歩行者 → { phase, x, y }
 
@@ -18,7 +24,10 @@ const pick = (list) => list[Math.floor(Math.random() * list.length)];
 export function pedLook(a) {
   let look = looks.get(a);
   if (!look) {
+    let r = Math.random() * ROLES.reduce((s, [, w]) => s + w, 0);
+    const [role] = ROLES.find(([, w]) => (r -= w) < 0) ?? ROLES[0];
     look = {
+      role,
       skin: pick(SKINS),
       shirt: pick(SHIRTS),
       pants: pick(PANTS),
@@ -26,6 +35,9 @@ export function pedLook(a) {
       umbrella: pick(UMBRELLAS),
       scale: 0.9 + Math.random() * 0.18, // 背の高さ（1.0 で約 1.65m）
     };
+    // スーツは上下そろいの暗い色、学生は紺の制服（学生は少し小さく）
+    if (role === 'suit') look.shirt = look.pants = pick(SUITS);
+    if (role === 'student') (look.shirt = pick(UNIFORMS)), (look.pants = '#2a2f3a'), (look.scale *= 0.94);
     looks.set(a, look);
   }
   return look;

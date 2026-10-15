@@ -1631,6 +1631,207 @@ function addRailsideAndRivers(group, map, roadHeights) {
   }
 }
 
+// ---- 街の小物 その 2（Blender で作ったモデル。tools/build-city.py） ----
+// 歌舞伎町一番街のアーチ、ガード下の店（有楽町・新橋・神田・御徒町の高架の下）、繁華街の夜のネオン、公園の物、歩行者の持ち物。
+// どれも見た目だけ（自転車とはぶつからない）
+const CITY_URL = 'data/models/city.glb';
+const CITY_NAMES = {
+  kabukicho: 'CT_Kabukicho', guard0: 'CT_Guard0', guard1: 'CT_Guard1', guard2: 'CT_Guard2', neonV: 'CT_NeonV', neonBand: 'CT_NeonBand',
+  bench: 'CT_Bench', play: 'CT_Play', fountain: 'CT_Fountain', toilet: 'CT_Toilet',
+  briefcase: 'CT_Briefcase', backpack: 'CT_Backpack', suitcase: 'CT_Suitcase', dog: 'CT_Dog', tie: 'CT_Tie',
+};
+const cityModel = { geos: null, done: false }; // 名前 → { body, glow }
+loadModelParts(CITY_URL, CITY_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    cityModel.geos = geos;
+  })
+  .catch((e) => console.warn(`街の小物（その 2）のモデルを読み込めませんでした: ${CITY_URL}`, e))
+  .finally(() => (cityModel.done = true));
+// 夜のネオン（時間帯で明るさを変える。昼は少し暗く）
+const NEON_MAT = new THREE.MeshBasicMaterial({ vertexColors: true });
+const NEON_COLORS = [0xff3fa4, 0x3fe0ff, 0xffe03f, 0xff8a3f, 0x6aff6a, 0xb06bff, 0xff3a3a, 0xf4f4f4];
+// 繁華街（この中の高さ 12m 以上の建物に、縦の看板と光る帯を付ける）：緯度・経度と半径 m
+const NEON_DISTRICTS = [
+  { lat: 35.6945, lon: 139.7025, r: 230 }, // 新宿・歌舞伎町
+  { lat: 35.6994, lon: 139.771, r: 200 }, // 秋葉原の電気街
+  { lat: 35.731, lon: 139.7145, r: 200 }, // 池袋の東口
+  { lat: 35.661, lon: 139.6985, r: 170 }, // 渋谷のセンター街
+  { lat: 35.6665, lon: 139.757, r: 150 }, // 新橋
+  { lat: 35.7095, lon: 139.7745, r: 150 }, // 上野・アメ横
+];
+const GUARD_STATIONS = /^(有楽町|新橋|神田|御徒町)駅$/; // ガード下の店を並べる駅（のまわり GUARD_RADIUS m）
+const GUARD_RADIUS = 380;
+const KABUKICHO_ARCH = { lat: 35.6938, lon: 139.70102 }; // 歌舞伎町一番街のアーチ（靖国通りの入口）
+
+function addCityProps(group, map, roadHeights, buildingHeights) {
+  const g = cityModel.geos;
+  if (!g) return;
+  const lists = {}; // 名前 → [行列, 色]
+  const put = (key, x, h, z, rotY, sz = 1, color = null) => {
+    const m = new THREE.Matrix4().makeTranslation(x, h, z).multiply(new THREE.Matrix4().makeRotationY(rotY));
+    if (sz !== 1) m.multiply(new THREE.Matrix4().makeScale(1, 1, sz));
+    (lists[key] ??= []).push([m, color]);
+  };
+  const hashOf = (a, b) => {
+    const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  // ---- 歌舞伎町一番街のアーチ（いちばん近い道をまたぐ） ----
+  {
+    const [x, z] = latLonXY(map, KABUKICHO_ARCH.lat, KABUKICHO_ARCH.lon);
+    const near = inBounds(map, x, z) && nearestRoadPoint(map, x, z, false);
+    if (near) {
+      const r = near.road;
+      let bi = 0, bd = Infinity;
+      for (let k = 0; k + 3 < r.p.length; k += 2) {
+        const d = Math.hypot((r.p[k] + r.p[k + 2]) / 2 - near.x, (r.p[k + 1] + r.p[k + 3]) / 2 - near.z);
+        if (d < bd) (bd = d), (bi = k);
+      }
+      const rot = faceTo(r.p[bi + 2] - r.p[bi], r.p[bi + 3] - r.p[bi + 1]) - Math.PI / 2;
+      for (const [geo, material] of [[g.kabukicho.body, STREET_MAT], [g.kabukicho.glow, STREET_GLOW_MAT]]) {
+        const mesh = new THREE.Mesh(geo, material);
+        mesh.name = 'kabukicho'; // デバッグ・自動テスト用
+        mesh.position.set(near.x, 0, near.z);
+        mesh.rotation.y = rot;
+        mesh.castShadow = material === STREET_MAT;
+        group.add(mesh);
+      }
+    }
+  }
+  // ---- ガード下の店：決めた駅のまわりの高架の線路の外側に、4m ずつ ----
+  const guardStations = (map.landmarks ?? []).filter((l) => l.k === 'station' && GUARD_STATIONS.test(l.n));
+  if (guardStations.length) {
+    const elevated = map.lines.filter((l) => l.e && !l.u && l.k !== 'river');
+    const nearOther = (x, z, d, self) =>
+      elevated.some((l) => {
+        if (l === self) return false;
+        for (let i = 0; i + 3 < l.p.length; i += 2) {
+          const ax = l.p[i], az = l.p[i + 1], dx = l.p[i + 2] - ax, dz = l.p[i + 3] - az, l2 = dx * dx + dz * dz || 1;
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+          if (Math.hypot(x - ax - dx * t, z - az - dz * t) < d) return true;
+        }
+        return false;
+      });
+    let n = 0;
+    for (const l of elevated) {
+      for (let i = 0; i + 3 < l.p.length; i += 2) {
+        const x1 = l.p[i], z1 = l.p[i + 1], x2 = l.p[i + 2], z2 = l.p[i + 3];
+        const len = Math.hypot(x2 - x1, z2 - z1);
+        if (len < 1) continue;
+        const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+        const steps = Math.floor(len / 4);
+        for (let k = 0; k < steps; k++) {
+          const t = (k + 0.5) / steps;
+          const mx = x1 + (x2 - x1) * t, mz = z1 + (z2 - z1) * t;
+          if (!guardStations.some((st) => Math.hypot(st.x - mx, st.y - mz) < GUARD_RADIUS)) continue;
+          for (const side of [-1, 1]) {
+            const nx = -uz * side, nz = ux * side;
+            const fx = mx + nx * 3.4, fz = mz + nz * 3.4;
+            if (nearOther(fx, fz, 3.0, l) || surfaceAt(map, fx, fz).kind !== 'ground') continue;
+            put(`guard${n++ % 3}`, fx, 0, fz, faceTo(nx, nz), len / steps / 4);
+          }
+        }
+      }
+    }
+  }
+  // ---- 夜のネオン：繁華街の建物の、道に近い壁に縦の看板と光る帯 ----
+  const districts = NEON_DISTRICTS.map((d) => [...latLonXY(map, d.lat, d.lon), d.r]);
+  map.buildings.forEach((bd, i) => {
+    const h = buildingHeights[i];
+    if (!(h >= 12)) return;
+    const cx = (bd.minX + bd.maxX) / 2, cz = (bd.minY + bd.maxY) / 2;
+    if (!districts.some(([x, z, r]) => Math.hypot(x - cx, z - cz) < r)) return;
+    const ring = openRing(bd.p);
+    let best = null;
+    for (let k = 0; k < ring.length; k += 2) {
+      const ax = ring[k], az = ring[k + 1], bx = ring[(k + 2) % ring.length], bz = ring[(k + 3) % ring.length];
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 5) continue;
+      const ux = (bx - ax) / len, uz = (bz - az) / len;
+      let nx = uz, nz = -ux;
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      if (insidePolygon(mx + nx * 0.3, mz + nz * 0.3, bd.p)) (nx = -nx), (nz = -nz);
+      const road = nearestRoadPoint(map, mx + nx * 3, mz + nz * 3, false);
+      const score = road ? road.d : 99;
+      if (!best || score < best.score) best = { score, ax, az, ux, uz, nx, nz, len };
+    }
+    if (!best || best.score > 12) return;
+    const color = (k) => NEON_COLORS[Math.floor(hashOf(i, k) * NEON_COLORS.length)];
+    const rot = faceTo(best.nx, best.nz);
+    const at = (t, d = 0.05) => [best.ax + best.ux * best.len * t + best.nx * d, best.az + best.uz * best.len * t + best.nz * d];
+    for (const [t, k] of best.len > 12 ? [[0.15, 1], [0.85, 2]] : [[0.2, 1]]) {
+      const [x, z] = at(t);
+      put('neonV', x, Math.min(4, h - 7.5), z, rot, 1, color(k));
+    }
+    if (h >= 15) {
+      const [x, z] = at(0.5, 0.06);
+      for (let j = 1; j <= Math.min(4, Math.floor(h / 3.6) - 1); j++) {
+        if (hashOf(i, j + 10) < 0.45) continue;
+        put('neonBand', x, 3.0 + 3.6 * j, z, rot, best.len * 0.8, color(j + 3));
+      }
+    }
+  });
+  // ---- 公園の物：公園の中の空いている所に、ベンチ・遊具・噴水・トイレ ----
+  (map.areas ?? []).forEach((a, ai) => {
+    if (a.k !== 'park') return;
+    const ring = a.r[0];
+    const area = Math.abs(polygonArea(openRing(ring)));
+    if (area < 1200) return;
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (let k = 0; k < ring.length; k += 2) (x0 = Math.min(x0, ring[k])), (x1 = Math.max(x1, ring[k])), (z0 = Math.min(z0, ring[k + 1])), (z1 = Math.max(z1, ring[k + 1]));
+    const placed = [];
+    let tries = 0;
+    const spot = (clear) => {
+      for (; tries < 400; tries++) {
+        const x = x0 + (x1 - x0) * hashOf(ai, tries * 2 + 1), z = z0 + (z1 - z0) * hashOf(ai + 0.5, tries * 2 + 2);
+        if (!insidePolygon(x, z, ring) || onTrack(map, x, z, 6)) continue;
+        // 物の真ん中とまわり（clear m 先の 4 点）が、公園の中の空いている地面（道や建物でない）
+        const around = [[0, 0], [clear, 0], [-clear, 0], [0, clear], [0, -clear]];
+        if (around.some(([dx, dz]) => !insidePolygon(x + dx, z + dz, ring) || surfaceAt(map, x + dx, z + dz).kind !== 'ground')) continue;
+        if (placed.some(([px, pz, pc]) => Math.hypot(px - x, pz - z) < pc + clear)) continue;
+        if ([map.start, map.goal].some((pt) => Math.hypot(pt.x - x, pt.y - z) < FURNITURE_CLEAR_START)) continue;
+        placed.push([x, z, clear]);
+        tries++;
+        return [x, z];
+      }
+      return null;
+    };
+    const want = [];
+    if (area > 9000) want.push(['fountain', 4]);
+    if (area > 2500) want.push(['play', 4]);
+    if (area > 4000) want.push(['toilet', 4]);
+    for (let k = 0; k < Math.min(8, Math.floor(area / 900)); k++) want.push(['bench', 1.5]);
+    for (const [key, clear] of want) {
+      const sp = spot(clear);
+      if (!sp) break;
+      // ベンチとトイレは近くの道（園内の道）の方を向ける
+      const near = key === 'bench' || key === 'toilet' ? nearestRoadPoint(map, sp[0], sp[1], false) : null;
+      const rot = near ? faceTo(near.x - sp[0], near.z - sp[1]) : hashOf(ai, placed.length) * Math.PI * 2;
+      put(key, sp[0], 0, sp[1], rot);
+    }
+  });
+  for (const [key, list] of Object.entries(lists)) {
+    const parts = key.startsWith('neon') ? [[g[key].glow, NEON_MAT]] : [[g[key].body, STREET_MAT], [g[key].glow, STREET_GLOW_MAT]];
+    for (const [geo, material] of parts) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach(([m, c], i) => {
+        mesh.setMatrixAt(i, m);
+        if (c != null) mesh.setColorAt(i, new THREE.Color(c));
+      });
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT;
+      group.add(mesh);
+    }
+  }
+}
+
 // スタートとゴールの門：道をまたぐ 2 本の柱と梁、「START」「GOAL」の横断幕（道の向きに、前後どちらからも読める）。
 // スタートはスタートの向き、ゴールはスタートからゴールへの向きに沿う道をまたぐ
 function addGates(group, map, heights) {
@@ -1916,6 +2117,10 @@ const MODELS = [
   { url: 'data/models/shibuya109.glb', lat: 35.6596063, lon: 139.6988671, heading: 180, clear: [-11.8, -7.8, -2.7, 1.3] }, // SHIBUYA109
   { url: 'data/models/qfront.glb', lat: 35.6598686, lon: 139.7003755, heading: 180, clear: [-3.3, 0.7, -0.3, 3.7] }, // QFRONT（大きな画面）
   { url: 'data/models/radio_kaikan.glb', lat: 35.6979554, lon: 139.7719352, heading: 180, clear: [-0.7, 3.3, -10.1, -6.1] }, // 秋葉原ラジオ会館
+  // tools/build-city.py
+  { url: 'data/models/laforet.glb', lat: 35.6690199, lon: 139.7054851, heading: 180, clear: [-8.8, -4.8, 8.3, 12.3] }, // ラフォーレ原宿
+  { url: 'data/models/bigbox.glb', lat: 35.7126811, lon: 139.7042381, heading: 180, clear: [3.0, 7.0, -10.9, -6.9] }, // 高田馬場 BIG BOX
+  { url: 'data/models/kotsu_kaikan.glb', lat: 35.6749559, lon: 139.7642788, heading: 180, clear: [2.8, 6.8, -0.4, 3.6] }, // 東京交通会館
   { url: 'data/models/tokyo_station.glb', lat: 35.681367, lon: 139.766054, heading: 287.14 },
   { url: 'data/models/takanawa_gateway.glb', lat: 35.635739, lon: 139.740657, heading: 289.2, clear: [-52, 110, -15, 32] },
   { url: 'data/models/ueno_station.glb', lat: 35.712253, lon: 139.776149, heading: 137.4, clear: [-56, 56, -30, 30] },
@@ -2501,6 +2706,8 @@ function* buildWorldSteps(map, textures) {
   addTownProps(group, map, roadHeights, heights);
   while (!scenery.done) yield 0.985;
   addRailsideAndRivers(group, map, roadHeights);
+  while (!cityModel.done) yield 0.985;
+  addCityProps(group, map, roadHeights, heights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -3736,8 +3943,23 @@ export function createRenderer3D(canvas) {
     }
   }
 
+  // 歩行者の持ち物（スーツのかばんとネクタイ・学生の背中のかばん・旅行者のスーツケース・散歩の犬）を足す
+  const PED_ITEMS = { briefcase: 'suit', tie: 'suit', backpack: 'student', suitcase: 'tourist', dog: 'dog' };
+  const HIDE = new THREE.Matrix4().makeScale(0, 0, 0);
+  function usePedItems() {
+    for (const key of Object.keys(PED_ITEMS)) {
+      const m = new THREE.InstancedMesh(cityModel.geos[key].body, new THREE.MeshLambertMaterial({ vertexColors: true }), MAX_PEDS);
+      m.castShadow = true;
+      m.frustumCulled = false;
+      m.count = 0;
+      crowd[key] = m;
+      scene.add(m);
+    }
+  }
+
   function drawCrowd(peds) {
     if (pedModel && !crowd.hips) usePedModel();
+    if (crowd.hips && cityModel.geos && !crowd.dog) usePedItems();
     const model = Boolean(crowd.hips);
     const n = Math.min(MAX_PEDS, peds.length);
     const rain = currentWeather === 'rain';
@@ -3775,6 +3997,18 @@ export function createRenderer3D(canvas) {
         color(crowd.shoeR, i, PED_SHOES);
         color(crowd.handL, i, look.skin);
         color(crowd.handR, i, look.skin);
+      }
+      if (crowd.dog) {
+        // 持ち物：その種類の人だけ（ほかの人は大きさ 0 で隠す）。かばんは左手（右手は雨の日の傘）
+        for (const [key, role] of Object.entries(PED_ITEMS)) {
+          if (look.role !== role) {
+            crowd[key].setMatrixAt(i, HIDE);
+            continue;
+          }
+          if (key === 'briefcase') put(crowd[key], i, -0.25, PED.shoulder, 0, -swing * PED.armSwing);
+          else if (key === 'tie' || key === 'backpack') put(crowd[key], i, 0, PED.hip + 0.3, 0);
+          else put(crowd[key], i, 0, 0, 0);
+        }
       }
       color(crowd.legL, i, look.pants);
       color(crowd.legR, i, look.pants);
@@ -4284,6 +4518,7 @@ export function createRenderer3D(canvas) {
       for (const { material, base } of modelGlows) material.emissiveIntensity = base * t.glow; // Blender のモデルの窓・灯り
       for (const car of train) car.traverse((m) => m.userData?.trainGlass && (m.material.emissiveIntensity = t.glow * 0.7)); // 電車の窓
       OTHER_TRAIN_GLOW.color.setScalar(Math.min(1, 0.3 + t.glow * 0.55)); // ほかの路線の電車の窓（昼は暗いガラス）
+      NEON_MAT.color.setScalar(t.lamps ? 1 : 0.5); // 繁華街のネオン（昼は少し暗く）
       // 街灯：昼は消す。夜は足もとをより明るく
       LAMP_MAT.color.set(t.lamps ? 0xffd9a0 : 0x6b6e75);
       POOL_MAT.visible = t.lamps;
