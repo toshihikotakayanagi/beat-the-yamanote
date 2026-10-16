@@ -237,6 +237,16 @@ function drawStatus(ctx, game) {
   text(ctx, `残り ${game.distance.toFixed(0)} m`, x + 12, y + 60, { size: 15, weight: 'bold', color: PLAYER_YELLOW, maxWidth: w - 20 });
   // 歩道・道路外は遅いので色で知らせる
   text(ctx, where, x + 12, y + 79, { size: 12, color: kind === 'road' ? QUIET : '#ffc93c', maxWidth: w - 20 });
+  // ゴーストとの差（同じ所を通った時刻の差。ゴーストと違う道を走っているときは出さない）
+  if (game.ghost && game.ghostGap != null && game.state === 'racing') {
+    const g = game.ghostGap, ahead = g < 0;
+    const label = Math.abs(g) < 0.05 ? 'ゴーストと同じ' : `ゴースト ${ahead ? '−' : '+'}${Math.abs(g).toFixed(1)} 秒`;
+    ctx.fillStyle = 'rgba(20, 22, 26, 0.72)';
+    ctx.beginPath();
+    ctx.roundRect(x, y + h + 6, w, 26, 8);
+    ctx.fill();
+    text(ctx, label, x + 12, y + h + 24, { size: 14, weight: 'bold', color: ahead ? '#7ee07e' : '#ff8a7a', maxWidth: w - 20 });
+  }
 }
 
 // ペナルティや逆走の知らせ（画面の上寄り中央）
@@ -740,6 +750,11 @@ function drawReady(ctx, game, view) {
     lines.push({ height: 34, draw: (y, h) => drawPrepareBar(ctx, game, view, y, h) });
   } else {
     lines.push([`電車より先に${section.toName}駅へ！ 制限時間 ${formatTime(game.train.limit)}`, { size: 15, color: QUIET }]);
+    // この区間の目標（★ はできたもの）と、走ったことのある道の数
+    const done = game.goalsDone(section.id), ri = game.roadsInfo(section);
+    const stars = game.goals.map((g) => (done.has(g.id) ? '★' : '☆')).join('');
+    const todo = game.goals.find((g) => !done.has(g.id));
+    lines.push([`目標 ${stars}${todo ? `　次：${todo.name}` : '　すべて達成！'}　走った道 ${ri.known}${ri.total ? ` / ${ri.total}` : ''} 本`, { size: 13, color: todo ? QUIET : '#ffd84a' }]);
     if (game.ghost) {
       const label = `ゴースト（ベスト ${formatTime(game.ghost.time)} の走り）：${game.showGhost ? '表示する' : '表示しない'}`;
       lines.push([game.touch ? label : `${label}（G）`, { size: 14, color: game.showGhost ? TEXT : QUIET }, 'ghost']);
@@ -1096,6 +1111,16 @@ function drawResult(ctx, game, view) {
   // 止まった回数は、ルート地図の下の凡例（drawIncidentLegend）に出す。一度も止まらなければここで知らせる
   const s = r.stats;
   if (s.red + s.car + s.ped === 0) lines.push(['信号無視・衝突なし', { size: 14, color: YAMANOTE_GREEN }]);
+  // 目標（★ は一度でもできたもの。NEW は今回初めて）
+  if (r.goals) {
+    const t = r.goals.map((g) => `${g.ever ? '★' : '☆'} ${g.name}${g.newly ? '（NEW）' : ''}`).join('　');
+    lines.push([t, { size: 13, color: r.goals.some((g) => g.newly) ? '#ffd84a' : QUIET }]);
+  }
+  // 走った道
+  if (r.roadsTotal) {
+    const news = r.newRoads?.length ? `　初めて：${r.newRoads.slice(0, 3).join('・')}${r.newRoads.length > 3 ? ` ほか ${r.newRoads.length - 3} 本` : ''}` : '';
+    lines.push([`走った道 ${r.roadsKnown} / ${r.roadsTotal} 本${news}`, { size: 13, color: r.newRoads?.length ? '#7ec8ff' : QUIET }]);
+  }
   lines.push({ height: Math.round(Math.max(110, Math.min(220, view.h * 0.3))), draw: (y, h) => drawRouteMap(ctx, game, view, y, h) });
   lines.push({ height: 14, draw: (y, h) => drawRouteLegend(ctx, game, view, y, h) });
   if (r.incidents?.length) lines.push({ height: 13, draw: (y, h) => drawIncidentLegend(ctx, game, view, y, h) });

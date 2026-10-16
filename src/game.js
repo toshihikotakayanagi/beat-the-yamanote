@@ -163,6 +163,62 @@ function dropStaleRecords() {
   }
   return dropped;
 }
+// ---- ゴーストとの差（レース中）：今いる所をゴーストが通った時刻と、今の時刻の差 秒（マイナスならゴーストより速い） ----
+// ゴーストの記録（0.1 秒ごとの位置）から、今の位置にいちばん近い点を、前回の点のまわりで探す（コースを戻っても追いかけられるよう広めに）
+const GAP_SEARCH = 150; // 前後に探す点の数（15 秒ぶん）
+const GAP_NEAR_M = 25; // ゴーストの通った道からこれより離れていたら、差は出さない（別の道を走っている）
+function updateGhostGap(dt) {
+  const g = game.ghost;
+  game.ghostGapTimer = (game.ghostGapTimer ?? 0) - dt;
+  if (!g || game.state !== 'racing' || game.ghostGapTimer > 0) return;
+  game.ghostGapTimer = 0.25;
+  const p = game.player, n = g.p.length / 3;
+  const center = game.ghostGapIdx ?? 0;
+  let best = -1, bd = Infinity;
+  for (let i = Math.max(0, center - GAP_SEARCH); i < Math.min(n, center + GAP_SEARCH); i++) {
+    const d = (g.p[3 * i] - p.x) ** 2 + (g.p[3 * i + 1] - p.y) ** 2;
+    if (d < bd) (bd = d), (best = i);
+  }
+  if (best < 0 || Math.sqrt(bd) > GAP_NEAR_M) {
+    game.ghostGap = null;
+    return;
+  }
+  game.ghostGapIdx = best;
+  const gap = game.time - best * g.dt;
+  game.ghostGap = game.ghostGap == null ? gap : game.ghostGap + (gap - game.ghostGap) * 0.5;
+}
+
+// ---- 走った道：区間ごとに、名前のある道（通り・坂・橋など）のうち走ったことのある道を覚える ----
+const roadsKey = (sectionId) => `roads:${sectionId}`;
+function knownRoads(sectionId) {
+  try {
+    return new Set(JSON.parse(load(roadsKey(sectionId)) ?? '[]'));
+  } catch {
+    return new Set();
+  }
+}
+// 区間の名前のある道の数（同じ名前は 1 本と数える。「通り」などの名前だけ）
+const namedRoads = (map) => new Set(map.roads.filter((r) => r.n).map((r) => r.n));
+
+// ---- 区間ごとの目標：勝つ・信号無視なし・ぶつからない・金メダル。一度できたら ★ が付く（天気・難易度に関係なく区間ごと） ----
+const GOALS = [
+  { id: 'win', name: '電車に勝つ', done: (r) => r.win },
+  { id: 'clean', name: '信号無視なし', done: (r) => r.win && r.stats.red === 0 },
+  { id: 'safe', name: '人や車にぶつからない', done: (r) => r.win && r.stats.car + r.stats.ped === 0 },
+  { id: 'gold', name: '金メダル', done: (r) => r.medal?.medal?.id === 'gold' },
+];
+const goalsKey = (sectionId) => `goals:${sectionId}`;
+function goalsDone(sectionId) {
+  return new Set((load(goalsKey(sectionId)) ?? '').split(',').filter(Boolean));
+}
+game.goals = GOALS; // 区間選択の画面に ★ を出す（hud.js）
+game.goalsDone = goalsDone;
+game.roadsInfo = (section) => {
+  const known = knownRoads(section.id);
+  const total = game.map && game.section === section ? namedRoads(game.map).size : null;
+  return { known: known.size, total };
+};
+
 function loadGhost() {
   game.ghost = game.section ? parseGhost(load(ghostKey(game.section.id))) : null;
 }
@@ -287,6 +343,9 @@ function reset() {
   game.startDistance = distanceToGoal();
   game.distance = game.startDistance;
   game.recorder = createRecorder();
+  game.ghostGap = null;
+  game.ghostGapIdx = 0;
+  game.roadsThisRun = new Set();
   game.state = 'ready';
   setPaused(false);
   audio.stopBgm();
@@ -333,6 +392,22 @@ function finish(win) {
   r.next = win ? next ?? (last ? game.sections[0] : null) : null;
   // 最後の区間に勝ち、全区間をクリアしていれば 1 周達成
   r.lapComplete = win && last && game.sections.every((s) => game.cleared.has(s.id));
+  // 走った道：今回初めて走った道と、これまでに走った道の数
+  const known = knownRoads(game.section.id);
+  r.newRoads = [...game.roadsThisRun].filter((n) => !known.has(n));
+  for (const n of r.newRoads) known.add(n);
+  save(roadsKey(game.section.id), JSON.stringify([...known]));
+  r.roadsKnown = known.size;
+  r.roadsTotal = namedRoads(game.map).size;
+  // 目標：今回できたもの（初めてなら newly）
+  const done = goalsDone(game.section.id);
+  r.goals = GOALS.map((g) => {
+    const ok = g.done(r);
+    const newly = ok && !done.has(g.id);
+    if (ok) done.add(g.id);
+    return { name: g.name, ok, newly, ever: done.has(g.id) };
+  });
+  save(goalsKey(game.section.id), [...done].join(','));
   game.result = r;
   game.state = 'result';
   if (r.next) prefetchSection(game.sections.indexOf(r.next));
@@ -412,6 +487,8 @@ function update(dt) {
     updatePhysics(dt);
     game.time += dt;
     record(game.recorder, game.time, game.player);
+    updateGhostGap(dt);
+    if (game.surface.road?.n) game.roadsThisRun.add(game.surface.road.n); // 走った道（名前のある道）
     audio.setTension(game.train.limit - game.time < 20); // 残り 20 秒で音楽のテンポを上げる
   }
 
