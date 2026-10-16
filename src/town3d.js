@@ -1,9 +1,9 @@
-// 3D版の街の物（その 6〜14）：季節と天気の飾り・動物・縁日・移動販売・船・電車の開いたドア・表彰台・タイトルのミニチュア・
+// 3D版の街の物（その 6〜15）：季節と天気の飾り・動物・縁日・移動販売・船・電車の開いたドア・表彰台・タイトルのミニチュア・
 // 花火・富士山・大きな車・公園や配達の人・アーケード・大型ビジョン・自転車の飾り・寺社・交番・首都高・夜の店・乗客・雲と虹・
 // 東京湾の船・駅員さん・学校・ガソリンスタンド・駐車場・銭湯・噴水・シェアサイクル・撮り鉄・航空障害灯・掲示板・病院・郵便局・
 // 銀行・自動ドア・はとバス・宅配便・稲光・音符・墓地・屋上の看板と給水塔・立体駐車場・ペットショップと花屋・消防署・お散歩カート・
-// 盆踊り・建設中のビル・ロータリー・川沿いの桜・ランニング大会・選挙カー・屋台村・カモと白鳥・打ち水・窓ふきのゴンドラ・傘の花・名所のライトアップ・イルミネーション・屋形船の夜の灯など。
-// どれも見た目だけ。モデルは tools/build-city5.py〜build-city13.py で作る。
+// 盆踊り・建設中のビル・ロータリー・川沿いの桜・ランニング大会・選挙カー・屋台村・カモと白鳥・打ち水・窓ふきのゴンドラ・傘の花・名所のライトアップ・イルミネーション・屋形船の夜の灯・鳩に餌をやる人・太極拳・屋上のビアガーデン・霜など。
+// どれも見た目だけ。モデルは tools/build-city5.py〜build-city14.py で作る。
 // 置く処理（add…Props）は src/render3d.js の区間の立体を作る手順から、動かす処理は createRenderer3D の中から呼ぶ。
 // 共通の部品（材質・形を作る道具・置ける場所の判定など）は src/render3d.js から読み込む（お互いに読み込み合うので、
 // このファイルのいちばん外側では、render3d.js の const や class を使わない。関数の中で使うのはよい）
@@ -2431,7 +2431,164 @@ function addCity13Props(group, map, roadHeights, buildingHeights) {
   group.userData.taken = taken;
 }
 
+
+// ---- 街の物 その 15（Blender で作ったモデル。tools/build-city14.py） ----
+// 駅前で鳩に餌をやる人・公園の太極拳（昼）・ビルの屋上のビアガーデン（夏の夕方と夜）・冬の霜（晴れた昼）。どれも見た目だけ
+const CITY14_URL = 'data/models/city14.glb';
+const CITY14_NAMES = { pigeonFeeder: 'C14_PigeonFeeder', taichiA: 'C14_TaichiA', taichiB: 'C14_TaichiB', beerGarden: 'C14_BeerGarden', frost: 'C14_Frost' };
+const city14 = { geos: null, done: false };
+loadModelParts(CITY14_URL, CITY14_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city14.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 15）のモデルを読み込めませんでした: ${CITY14_URL}`, e))
+  .finally(() => (city14.done = true));
+const FROST_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false, emissive: 0x6a7480 }); // 少し光らせて、日陰でも白く見える
+
+function addCity14Props(group, map, roadHeights, buildingHeights) {
+  const g = city14.geos;
+  if (!g) return;
+  const rnd = seededRng(`${map.id ?? 'city'}-14`);
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const lists = new Map();
+  const tmpQ = new THREE.Quaternion(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3(), Y_UP = new THREE.Vector3(0, 1, 0);
+  const put = (where, key, x, h, z, rotY, sc = 1) => {
+    const m = new THREE.Matrix4().compose(tmpP.set(x, h, z), tmpQ.setFromAxisAngle(Y_UP, rotY), tmpS.set(sc, sc, sc));
+    const id = `${where}|${key}`;
+    if (!lists.has(id)) lists.set(id, []);
+    lists.get(id).push(m);
+  };
+  const free = (x, z, onPath = true) => inBounds(map, x, z) && freeSpot(map, roadHeights, x, z, onPath);
+  const taken = [...(group.userData.taken ?? [])];
+  const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + r);
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station' && inBounds(map, l.x, l.y));
+  const seasonal = group.userData.seasonal ?? {};
+  const groundY = (x, z) => (surfaceAt(map, x, z).kind === 'path' ? Y.path : Y.area);
+  // 昼だけの物（太極拳）と、夏の夕方と夜だけの物（ビアガーデン）・冬の晴れた昼だけの物（霜）
+  const dayGroup = new THREE.Group(), summerNight = new THREE.Group(), winterDay = new THREE.Group();
+  group.add(dayGroup);
+  (seasonal.summer ?? group).add(summerNight);
+  (seasonal.winter ?? group).add(winterDay);
+  Object.assign(group.userData, { dayGroup, summerNight, winterDay });
+
+  // ---- 鳩に餌をやる人：駅のまわりの歩道に 1〜2 人 ----
+  for (const st of stations) {
+    let n = 0;
+    for (let k = 0; k < 40 && n < 2; k++) {
+      const a = rnd() * Math.PI * 2, d = 15 + rnd() * 45;
+      const x = st.x + Math.cos(a) * d, z = st.y + Math.sin(a) * d;
+      const near = nearestRoadPoint(map, x, z, true);
+      if (!near) continue;
+      const fx = (near.x - x) / (near.d || 1), fz = (near.z - z) / (near.d || 1); // 車道の方を向く
+      const pts = [[0, 0], [1, 0], [-1, 0], [0, 2.2], [1.2, 1.5], [-1.2, 1.5]];
+      if (!pts.every(([u, w]) => free(x - fz * u + fx * w, z + fx * u + fz * w)) || !clear(x, z, 2.5)) continue;
+      put('static', 'pigeonFeeder', x, groundY(x, z), z, along(fx, fz));
+      taken.push([x, z, 2.5]);
+      n++;
+    }
+  }
+
+  // ---- 太極拳（昼）：大きい公園の空いた所に、6 人。2 つの型をゆっくり切り替える（syncCity14） ----
+  const parks = (map.areas ?? []).filter((a) => a.k === 'park' && a.r?.[0]?.length >= 6).sort((a, b) => Math.abs(polygonArea(b.r[0])) - Math.abs(polygonArea(a.r[0])));
+  const taichi = [];
+  for (const a of parks.slice(0, 3)) {
+    if (taichi.length >= 2) break;
+    const ring = a.r[0];
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) (minX = Math.min(minX, ring[i])), (maxX = Math.max(maxX, ring[i])), (minZ = Math.min(minZ, ring[i + 1])), (maxZ = Math.max(maxZ, ring[i + 1]));
+    for (let k = 0; k < 40; k++) {
+      const x = minX + rnd() * (maxX - minX), z = minZ + rnd() * (maxZ - minZ);
+      const pts = [[0, 0], [2.4, 1.6], [-2.4, 1.6], [2.4, -1.6], [-2.4, -1.6]];
+      if (!pts.every(([u, w]) => insidePolygon(x + u, z + w, ring) && free(x + u, z + w, false)) || !clear(x, z, 4)) continue;
+      const o = new THREE.Group();
+      o.position.set(x, Y.area, z);
+      o.rotation.y = rnd() * Math.PI * 2;
+      const A = new THREE.Mesh(g.taichiA.body, STREET_MAT), B = new THREE.Mesh(g.taichiB.body, STREET_MAT);
+      A.castShadow = B.castShadow = true;
+      B.visible = false;
+      o.add(A, B);
+      o.name = 'taichi'; // デバッグ・自動テスト用
+      dayGroup.add(o);
+      taichi.push({ A, B, ph: rnd() * 8 });
+      taken.push([x, z, 4]);
+      break;
+    }
+  }
+  group.userData.taichi = taichi;
+
+  // ---- ビアガーデン（夏の夕方と夜）：駅の近くの、平らで広い屋上（高さ 12〜35m）に 1〜2 つ ----
+  let gardens = 0;
+  for (const b of map.buildings) {
+    if (gardens >= 2) break;
+    const h = buildingHeights?.[b.id] ?? 0;
+    if (h < 12 || h > 35) continue;
+    const cx = (b.minX + b.maxX) / 2, cz = (b.minY + b.maxY) / 2;
+    if (!inBounds(map, cx, cz) || !stations.some((st) => Math.hypot(st.x - cx, st.y - cz) < 250) || !insidePolygon(cx, cz, b.p)) continue;
+    const near = nearestRoadPoint(map, cx, cz, true);
+    const fx = near ? (near.x - cx) / (near.d || 1) : 1, fz = near ? (near.z - cz) / (near.d || 1) : 0;
+    const corners = [[1, 1], [1, -1], [-1, 1], [-1, -1]].map(([u, w]) => [cx - fz * u * 6.5 + fx * w * 4.5, cz + fx * u * 6.5 + fz * w * 4.5]);
+    if (!corners.every(([x, z]) => insidePolygon(x, z, b.p)) || rnd() > 0.5) continue;
+    put('summerNight', 'beerGarden', cx, h, cz, along(fx, fz));
+    gardens++;
+  }
+
+  // ---- 霜（冬の晴れた昼）：公園と草地の上に、白い模様を散らす ----
+  let frosts = 0;
+  for (const a of map.areas ?? []) {
+    if (!['park', 'grass'].includes(a.k) || frosts >= 260) continue;
+    const ring = a.r?.[0];
+    if (!ring || ring.length < 6) continue;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) (minX = Math.min(minX, ring[i])), (maxX = Math.max(maxX, ring[i])), (minZ = Math.min(minZ, ring[i + 1])), (maxZ = Math.max(maxZ, ring[i + 1]));
+    const n = Math.min(40, Math.floor(((maxX - minX) * (maxZ - minZ)) / 60));
+    for (let k = 0; k < n && frosts < 260; k++) {
+      const x = minX + rnd() * (maxX - minX), z = minZ + rnd() * (maxZ - minZ);
+      if (!insidePolygon(x, z, ring) || !free(x, z, false)) continue;
+      put('winterDay', 'frost', x, Y.area + 0.015, z, rnd() * 6.28, 0.8 + rnd() * 1.2);
+      frosts++;
+    }
+  }
+
+  const parents = { static: group, summerNight, winterDay };
+  for (const [id, list] of lists) {
+    const [where, key] = id.split('|');
+    const parent = parents[where] ?? group;
+    for (const [geo, material] of [[g[key].body, key === 'frost' ? FROST_MAT : STREET_MAT], [g[key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT;
+      parent.add(mesh);
+    }
+  }
+  group.userData.taken = taken;
+}
+
+// 毎回の動き：昼だけの物・夏の夜だけの物・冬の晴れた昼だけの物の出し分けと、太極拳の型の切り替え（4 秒ごと）
+function syncCity14(ud, t, time, weather) {
+  if (!ud) return;
+  if (ud.dayGroup) ud.dayGroup.visible = time === 'day' && weather !== 'rain';
+  if (ud.summerNight) ud.summerNight.visible = time !== 'day';
+  if (ud.winterDay) ud.winterDay.visible = time === 'day' && weather === 'clear';
+  for (const tc of ud.taichi ?? []) {
+    const b = Math.floor((t + tc.ph) / 4) % 2 === 1;
+    tc.A.visible = !b;
+    tc.B.visible = b;
+  }
+}
+
 export {
+  STEAM_TEX,
+  addCity14Props,
+  syncCity14,
+  city14,
   addCity13Props,
   city13,
   BEAM_MAT,

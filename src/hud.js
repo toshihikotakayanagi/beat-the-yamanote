@@ -112,11 +112,12 @@ function drawWeather(ctx, game, view) {
     const x = Math.sin(i * 127.1 + k * 311.7) * 43758.5453;
     return x - Math.floor(x);
   };
+  const share = { high: 1, mid: 0.6, low: 0.35 }[game.quality] ?? 1; // 軽さの設定で、雨粒と雪を減らす
   if (game.weather === 'rain') {
     ctx.strokeStyle = 'rgba(190, 205, 230, 0.35)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 0; i < RAIN_DROPS; i++) {
+    for (let i = 0; i < RAIN_DROPS * share; i++) {
       const speed = 900 + hash(i, 1) * 500; // px/秒
       const x = (hash(i, 2) * (view.w + 200) + t * speed * 0.18) % (view.w + 200) - 100;
       const y = (hash(i, 3) * view.h + t * speed) % (view.h + 40) - 20;
@@ -128,7 +129,7 @@ function drawWeather(ctx, game, view) {
   } else if (game.weather === 'snow') {
     ctx.fillStyle = 'rgba(245, 248, 255, 0.8)';
     ctx.beginPath();
-    for (let i = 0; i < SNOW_FLAKES; i++) {
+    for (let i = 0; i < SNOW_FLAKES * share; i++) {
       const speed = 40 + hash(i, 1) * 50;
       const sway = Math.sin(t * (0.6 + hash(i, 5)) + i) * 18;
       const x = (hash(i, 2) * view.w + sway + view.w) % view.w;

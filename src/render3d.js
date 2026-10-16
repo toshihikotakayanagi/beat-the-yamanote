@@ -13,8 +13,12 @@ import { PLAYER_CONFIG } from './player.js';
 import { pedLook, pedSwing } from './pedestrians.js';
 import { carLook } from './vehicles.js';
 import { signalPose, LAMPS } from './signals.js';
-// 街の物 その 6〜14（src/town3d.js。こちらの共通の部品を使うので、お互いに読み込み合う）
+// 街の物 その 6〜15（src/town3d.js。こちらの共通の部品を使うので、お互いに読み込み合う）
 import {
+  STEAM_TEX,
+  addCity14Props,
+  syncCity14,
+  city14,
   addCity13Props,
   city13,
   BEAM_MAT,
@@ -3370,6 +3374,9 @@ function* buildWorldSteps(map, textures) {
   while (!city13.done) yield 0.985;
   timed('addCity13Props', () => addCity13Props(group, map, roadHeights, heights));
   yield 0.985;
+  while (!city14.done) yield 0.985;
+  timed('addCity14Props', () => addCity14Props(group, map, roadHeights, heights));
+  yield 0.985;
   timed('addStations', () => addStations(group, map, textures));
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
   timed('addModels', () => addModels(group, models));
@@ -4292,7 +4299,8 @@ export function createRenderer3D(canvas) {
   const GHOST_LOOKS = { white: { color: 'white', opacity: 0.45 }, glow: { color: 0x3aa8ff, opacity: 0.7, glow: true }, green: { color: 0x9acd32, opacity: 0.5 }, mine: { color: 'mine', opacity: 0.45 } };
   let ghostLook = 'white';
   // hide：隠す飾り（数が多くて、なくても遊ぶのに困らない物の名前）、far：描く距離 m、particles：舞う物の割合
-  const DECOR_MID = ['grave', 'stoneWall', 'electionBoard', 'noticeBoard', 'parkStall', 'waterTank', 'obstLight', 'cat0', 'cat1', 'cat2', 'benchSitter', 'treeLights', 'fairBulbs', 'pumpkins', 'koinobori', 'tetsubo', 'jungleGym', 'soccerGoal'];
+  // 光を重ねる飾り（足し算で重ねるので、重なると描く量が増える）は「軽い」から隠す
+  const DECOR_MID = ['upBeam', 'uplight', 'lightArch', 'umbrella0', 'umbrella1', 'grave', 'stoneWall', 'electionBoard', 'noticeBoard', 'parkStall', 'waterTank', 'obstLight', 'cat0', 'cat1', 'cat2', 'benchSitter', 'treeLights', 'fairBulbs', 'pumpkins', 'koinobori', 'tetsubo', 'jungleGym', 'soccerGoal'];
   const DECOR_LOW = [...DECOR_MID, 'adBillboard', 'adBoard', 'crow', 'crowFlyA', 'crowFlyB', 'pigeon', 'pigeonFlyA', 'pigeonFlyB', 'cyclePort', 'arcadeRoof', 'arcadePost', 'izakaya', 'parkedCars', 'taxiQueue', 'hwyPier', 'autoDoors', 'petShop', 'florist', 'tanabata', 'furin'];
   const QUALITY = {
     // cullSmall・cullMedium：小物・中くらいの物を描く距離 m（遠くの小物を描かない）
@@ -4365,6 +4373,16 @@ export function createRenderer3D(canvas) {
   }
 
   let quality = QUALITY.high;
+  // 影：「ふつう」の晴れた昼と夕方だけ。夜や雨・雪の日は影がほとんど見えないので、影を描く手間（毎回もう 1 回描く）を省く。
+  // 夜や雨では castShadow は変えず（変えるとすべての材質を作り直すので、そのあいだ画面が止まる）、影の地図を描き直すのをやめて、
+  // 影の濃さを 0 にする。castShadow を変えるのは、軽さの設定を変えたときだけ
+  let shadowAtmosphere = true;
+  function updateShadows() {
+    if (!shadows) return;
+    sun.castShadow = quality.shadows;
+    renderer.shadowMap.autoUpdate = shadowAtmosphere;
+    sun.shadow.intensity = shadowAtmosphere ? 1 : 0;
+  }
   let fogFarBase = FOG_FAR; // 天気で決まる霧の遠さ（軽さの設定で、これより近くにすることがある）
   let lastDpr = window.devicePixelRatio || 1;
   let fps = 60; // 画面の滑らかさ（1 秒に描く回数。なめらかにした値）
@@ -6298,6 +6316,49 @@ export function createRenderer3D(canvas) {
     }
   }
 
+  // 白い息：冬（雪の日と、夕方・夜）は、自転車の人の口のあたりから白い息が出て、後ろへ流れて消える
+  const BREATH_N = 10;
+  const breath = { sprites: null, next: 0, at: 0 };
+  function syncBreath(game, dt) {
+    if (!breath.sprites) {
+      breath.sprites = Array.from({ length: BREATH_N }, () => {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: STEAM_TEX, transparent: true, depthWrite: false, opacity: 0 }));
+        sp.visible = false;
+        sp.name = 'breath'; // デバッグ・自動テスト用
+        scene.add(sp);
+        return { sp, life: 0, vx: 0, vz: 0 };
+      });
+    }
+    const cold = currentSeason === 'winter' && (currentWeather === 'snow' || currentTime !== 'day') && cameraMode !== 'first';
+    breath.at -= dt;
+    if (cold && breath.at <= 0 && game.state !== 'title') {
+      breath.at = 0.9 + (game.player.speed > 4 ? -0.4 : 0); // こいでいると息が速い
+      const b = breath.sprites[breath.next];
+      breath.next = (breath.next + 1) % BREATH_N;
+      const p = game.player, fx = Math.sin(p.angle), fz = -Math.cos(p.angle);
+      // 口の前：前かがみのロードバイクは前寄りで低く、背すじを立てて乗る自転車は真上寄りで高い
+      const [ahead, up] = player.userData.type === 'road' || !player.userData.type ? [0.45, 1.6] : [0.3, 1.72];
+      b.sp.position.set(p.x + fx * ahead, bikeH + up, p.y + fz * ahead);
+      b.life = 1.2;
+      b.vx = -fx * Math.max(0.6, p.speed * 0.7); // 走ると後ろへ流れる
+      b.vz = -fz * Math.max(0.6, p.speed * 0.7);
+    }
+    for (const b of breath.sprites) {
+      if (b.life <= 0) {
+        b.sp.visible = false;
+        continue;
+      }
+      b.life -= dt;
+      const k = 1 - b.life / 1.2;
+      b.sp.visible = true;
+      b.sp.position.x += b.vx * dt;
+      b.sp.position.z += b.vz * dt;
+      b.sp.position.y += 0.15 * dt;
+      b.sp.scale.setScalar(0.45 + k * 0.9);
+      b.sp.material.opacity = 0.95 * (1 - k);
+    }
+  }
+
   // ---- 負けたときの演出：先に着いた電車のドアが、ホームの側で開き、乗客が降りてくる。カメラはホームから電車を見る ----
   const loseShow = { at: null, t: 0, people: [], meshes: null, side: 1 };
   function syncLoseShow(game, dt) {
@@ -6978,7 +7039,7 @@ export function createRenderer3D(canvas) {
     // 軽さ（high：ふつう / mid：軽い / low：とても軽い）。画面の細かさ・影・道を行き来する人や車の数を減らす
     setQuality(q) {
       quality = QUALITY[q] ?? QUALITY.high;
-      if (shadows) sun.castShadow = quality.shadows;
+      updateShadows();
       // 描く距離（霧もそれに合わせて近くに）
       camera.far = quality.far;
       camera.updateProjectionMatrix();
@@ -6997,6 +7058,8 @@ export function createRenderer3D(canvas) {
       const t = TIMES[time] ?? TIMES.evening, w = WEATHERS[weather] ?? WEATHERS.clear;
       currentWeather = weather; // 雨の日は歩行者が傘をさす
       currentTime = TIMES[time] ? time : 'evening'; // 夏の花火・富士山
+      shadowAtmosphere = currentTime !== 'night' && weather === 'clear';
+      updateShadows();
       if (prevWeather && prevWeather !== 'clear' && weather === 'clear') rainbow.at = c7.t; // 雨や雪がやんだら虹（天気の切り替えは 雨→雪→晴れ の順）
       prevWeather = weather;
       const gray = new THREE.Color(0x8a8f99);
@@ -7177,9 +7240,12 @@ export function createRenderer3D(canvas) {
       // 街の物 その 14：冬の夜のイルミネーション、ライトアップの光のゆらぎ、屋形船の灯と水面の光（夕方と夜だけ）
       const lit = currentTime !== 'day';
       if (world?.userData.winterNight) world.userData.winterNight.visible = lit;
-      YAKATA_NIGHT_MAT.visible = REFLECT_MAT.visible = lit;
+      YAKATA_NIGHT_MAT.visible = lit;
+      REFLECT_MAT.visible = lit && quality === QUALITY.high; // 水面の光は「ふつう」のときだけ
       REFLECT_MAT.opacity = 0.25 + 0.12 * Math.sin(c12.t * 2.3) + 0.05 * Math.sin(c12.t * 5.1); // 水面でゆらぐ
       BEAM_MAT.opacity = currentTime === 'night' ? 0.2 : 0.14;
+      syncCity14(world?.userData, c12.t, currentTime, currentWeather);
+      syncBreath(game, dt);
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する

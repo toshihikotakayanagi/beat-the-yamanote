@@ -945,7 +945,8 @@ export async function startGame(r) {
   setSeason(load('season'));
   setAccessory(load('accessory'));
   setGhostLook(load('ghostLook'));
-  setQuality(load('quality'));
+  // 軽さ：まだ選んでいなければ、スマホ・タブレット（タッチの端末）は「軽い」から始める
+  setQuality(load('quality') ?? (window.matchMedia('(pointer: coarse)').matches ? 'mid' : 'high'));
   game.showGhost = load('showGhost') !== '0';
   game.mode = renderer.mode ?? '2d';
   if (cameraButton && renderer.cameraName) cameraButton.textContent = `視点：${renderer.cameraName}`;
