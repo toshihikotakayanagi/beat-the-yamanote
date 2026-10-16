@@ -2620,6 +2620,7 @@ function addCity5Props(group, map, roadHeights) {
       if (q.h > 0.3 || !inBounds(map, q.x, q.z)) continue;
       const s = 0.6 + rnd() * 1.1;
       put('rain', 'puddle', q.x, (sg.r.path ? Y.path + 0.02 : Y.signal + 0.006), q.z, rnd() * 6.28, s, 1, s);
+      (group.userData.puddles ??= []).push([q.x, q.z, s * 0.85]); // 水しぶき（syncSplash）
     }
     for (let k = 0; k < SNOW_PILES; k++) {
       const sg = pickSeg();
@@ -3879,6 +3880,217 @@ function addCity9Props(group, map, roadHeights) {
   group.userData.taken = taken;
 }
 
+// ---- 街の物 その 11（Blender で作ったモデル。tools/build-city10.py） ----
+// 墓地（墓石と石の塀。地図の墓地の面）・屋上の広告看板と給水塔・立体駐車場・ペットショップと花屋・消防署（OpenStreetMap の位置）。
+// お散歩カートと自転車の警察官は道を進み（syncRiders）、消防署からはときどき消防車が出る（syncCity10）。落ち葉も。どれも見た目だけ
+const CITY10_URL = 'data/models/city10.glb';
+const CITY10_NAMES = {
+  grave: 'C10_Grave', stoneWall: 'C10_StoneWall', billboard: 'C10_Billboard', waterTank: 'C10_WaterTank', parkTower: 'C10_ParkTower',
+  petShop: 'C10_PetShop', florist: 'C10_Florist', fireStation: 'C10_FireStation', daycareCart: 'C10_DaycareCart', leaf: 'C10_Leaf',
+};
+const city10 = { geos: null, done: false };
+loadModelParts(CITY10_URL, CITY10_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city10.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 11）のモデルを読み込めませんでした: ${CITY10_URL}`, e))
+  .finally(() => (city10.done = true));
+const GRAVES_MAX = 500; // 1 区間の墓石の数の上限
+
+// 屋上の広告看板の画（架空の広告 4 種類）
+const AD_TEXTURES = [
+  ['#d8302a', '#fff', 'カレー', 'ヤマテ亭'],
+  ['#1f4aa8', '#fff', '東京ソーダ', 'すっきり新発売'],
+  ['#1e2028', '#f2c230', '今夜9時', 'ドラマ「山手線」'],
+  ['#f2c230', '#1e2028', '家電のマルミ', '駅前店'],
+].map(([bg, fg, big, small]) => {
+  const cv = document.createElement('canvas');
+  cv.width = 512;
+  cv.height = 192;
+  const x = cv.getContext('2d');
+  x.fillStyle = bg;
+  x.fillRect(0, 0, 512, 192);
+  x.fillStyle = fg;
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.font = 'bold 84px sans-serif';
+  x.fillText(big, 256, 82, 480);
+  x.font = 'bold 36px sans-serif';
+  x.fillText(small, 256, 156, 480);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.MeshLambertMaterial({ map: t, emissive: 0xffffff, emissiveMap: t, emissiveIntensity: 0.25 });
+});
+
+function addCity10Props(group, map, roadHeights, buildingHeights) {
+  const g = city10.geos;
+  if (!g) return;
+  const rnd = seededRng(`${map.id ?? 'city'}-10`);
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const lists = new Map();
+  const tmpQ = new THREE.Quaternion(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3(), Y_UP = new THREE.Vector3(0, 1, 0);
+  const put = (key, x, h, z, rotY, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Matrix4().compose(tmpP.set(x, h, z), tmpQ.setFromAxisAngle(Y_UP, rotY), tmpS.set(sx, sy, sz));
+    if (!lists.has(key)) lists.set(key, []);
+    lists.get(key).push(m);
+  };
+  const free = (x, z, onPath = true) => inBounds(map, x, z) && freeSpot(map, roadHeights, x, z, onPath);
+  const taken = [...(group.userData.taken ?? [])];
+  const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + r);
+
+  // ---- 墓地：墓地の面の中に墓石を並べ、道に近い辺に石の塀 ----
+  let graves = 0;
+  for (const a of map.areas ?? []) {
+    if (a.k !== 'cemetery' || graves >= GRAVES_MAX) continue;
+    const ring = a.r?.[0];
+    if (!ring || ring.length < 6) continue;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) (minX = Math.min(minX, ring[i])), (maxX = Math.max(maxX, ring[i])), (minZ = Math.min(minZ, ring[i + 1])), (maxZ = Math.max(maxZ, ring[i + 1]));
+    // 列の向き：いちばん長い辺に合わせる
+    let ux = 1, uz = 0, best = 0;
+    for (let i = 0; i + 3 < ring.length; i += 2) {
+      const l = Math.hypot(ring[i + 2] - ring[i], ring[i + 3] - ring[i + 1]);
+      if (l > best) (best = l), (ux = (ring[i + 2] - ring[i]) / l), (uz = (ring[i + 3] - ring[i + 1]) / l);
+    }
+    const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2, R = Math.hypot(maxX - minX, maxZ - minZ) / 2;
+    for (let i = -R; i <= R && graves < GRAVES_MAX; i += 1.8) {
+      for (let j = -R; j <= R && graves < GRAVES_MAX; j += 2.6) {
+        const x = cx + ux * i - uz * j, z = cz + uz * i + ux * j;
+        if (!insidePolygon(x, z, ring) || !free(x, z, false) || !free(x + ux * 0.7, z + uz * 0.7, false) || !free(x - ux * 0.7, z - uz * 0.7, false)) continue;
+        put('grave', x, Y.area, z, along(-uz, ux) + (rnd() - 0.5) * 0.06);
+        graves++;
+      }
+    }
+    // 塀：道から 6m 以内の辺に、内側へ 0.4m 入れて 4m ずつ
+    for (let i = 0; i + 3 < ring.length; i += 2) {
+      const x1 = ring[i], z1 = ring[i + 1], x2 = ring[i + 2], z2 = ring[i + 3];
+      const l = Math.hypot(x2 - x1, z2 - z1);
+      if (l < 4) continue;
+      const ex = (x2 - x1) / l, ez = (z2 - z1) / l;
+      let nx = -ez, nz = ex;
+      if (!insidePolygon((x1 + x2) / 2 + nx * 0.5, (z1 + z2) / 2 + nz * 0.5, ring)) (nx = -nx), (nz = -nz); // 内向き
+      const near = nearestRoadPoint(map, (x1 + x2) / 2 - nx * 3, (z1 + z2) / 2 - nz * 3, false);
+      if (!near || near.d > 6) continue;
+      const n = Math.floor(l / 4);
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) * (l / n);
+        const x = x1 + ex * t + nx * 0.4, z = z1 + ez * t + nz * 0.4;
+        if (free(x, z, false)) put('stoneWall', x, Y.area, z, faceTo(ex, ez), l / n / 4, 1, 1);
+      }
+    }
+  }
+
+  // ---- 屋上：中くらいの高さのビルの屋上に、広告看板（道の方を向く）か給水塔 ----
+  const boards = [];
+  let roofs = 0;
+  for (const b of map.buildings) {
+    if (roofs >= 24) break;
+    const h = buildingHeights?.[b.id] ?? 0;
+    if (h < 12 || h > 40 || rnd() > 0.05) continue;
+    const area = Math.abs(polygonArea(b.p));
+    if (area < 200 || area > 2000) continue;
+    const cx = (b.minX + b.maxX) / 2, cz = (b.minY + b.maxY) / 2;
+    if (!insidePolygon(cx, cz, b.p) || !inBounds(map, cx, cz)) continue;
+    // 置く物の大きさが屋上からはみ出さないか（四隅を確かめる）
+    const near = nearestRoadPoint(map, cx, cz, true);
+    const fx = near ? (near.x - cx) / (near.d || 1) : 1, fz = near ? (near.z - cz) / (near.d || 1) : 0;
+    const billboard = rnd() < 0.6;
+    const half = billboard ? [5, 1.5] : [1.6, 1.6];
+    const corners = [[1, 1], [1, -1], [-1, 1], [-1, -1]].map(([a, c]) => [cx - fz * a * half[0] + fx * c * half[1], cz + fx * a * half[0] + fz * c * half[1]]);
+    if (!corners.every(([x, z]) => insidePolygon(x, z, b.p))) continue;
+    if (billboard) {
+      put('billboard', cx, h, cz, along(fx, fz));
+      boards.push({ x: cx, z: cz, h, fx, fz });
+    } else put('waterTank', cx, h, cz, rnd() * 6);
+    roofs++;
+  }
+  boards.forEach((bd, k) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(9.6, 3.6), AD_TEXTURES[k % AD_TEXTURES.length]);
+    m.position.set(bd.x + bd.fx * 0.27, bd.h + 4.0, bd.z + bd.fz * 0.27);
+    m.rotation.y = Math.atan2(bd.fx, bd.fz); // 画の面（+z）を道の方へ
+    m.name = 'adBoard'; // デバッグ・自動テスト用
+    group.add(m);
+  });
+
+  // ---- 立体駐車場：駅から 60〜180m の空いた地面に 1 つ（入口の前に、出入りする車。syncCity10） ----
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station' && inBounds(map, l.x, l.y));
+  const towers = [];
+  for (const st of stations) {
+    if (towers.length >= 2) break;
+    for (let k = 0; k < 40; k++) {
+      const a = rnd() * Math.PI * 2, d = 60 + rnd() * 120;
+      const x = st.x + Math.cos(a) * d, z = st.y + Math.sin(a) * d;
+      const near = nearestRoadPoint(map, x, z, true);
+      if (!near || near.d < 6 || near.d > 12 || near.road.e) continue;
+      const fx = (near.x - x) / near.d, fz = (near.z - z) / near.d;
+      const pts = [[0, 0], [3, 3.5], [-3, 3.5], [3, -3.5], [-3, -3.5], [0, 5]];
+      if (!pts.every(([u, w]) => free(x - fz * u + fx * w, z + fx * u + fz * w, false)) || !clear(x, z, 6)) continue;
+      put('parkTower', x, Y.area, z, along(fx, fz));
+      const cg = carGeometry({ type: towers.length % 2 ? 'minivan' : 'sedan', color: towers.length % 2 ? '#f4f4f0' : '#3a5a8a' });
+      const car = new THREE.Group();
+      const body = new THREE.Mesh(cg.body, CAR_BODY_MAT);
+      body.castShadow = true;
+      car.add(body, new THREE.Mesh(cg.lights, CAR_LIGHT_MAT));
+      car.name = 'towerCar'; // デバッグ・自動テスト用
+      group.add(car);
+      towers.push({ car, x: x + fx * 0.3, z: z + fz * 0.3, rot: along(fx, fz), phase: rnd() * 30 });
+      taken.push([x, z, 6]);
+      break;
+    }
+  }
+  group.userData.towers = towers;
+
+  // ---- ペットショップと花屋：商店街の道か駅のまわりの、道に向いた壁に（それぞれ 3 つまで） ----
+  const shopRoads = map.roads.filter((r) => r.n && SHOP_STREETS.test(r.n) && !r.e);
+  const cands = [];
+  for (const r of shopRoads) for (let i = 0; i + 1 < r.p.length; i += 4) cands.push([r.p[i], r.p[i + 1]]);
+  for (const st of stations) for (let k = 0; k < 8; k++) cands.push([st.x + Math.cos(k) * (60 + k * 15), st.y + Math.sin(k) * (60 + k * 15)]);
+  const usedB = new Set();
+  let pets = 0, flowers = 0;
+  for (const [x, z] of cands.sort(() => rnd() - 0.5)) {
+    if (pets >= 3 && flowers >= 3) break;
+    const w = streetWall(map, roadHeights, x, z);
+    if (!w || usedB.has(w.b) || !clear(w.mx, w.mz, 4)) continue;
+    const key = pets <= flowers ? 'petShop' : 'florist';
+    usedB.add(w.b);
+    put(key, w.mx + w.nx * 0.12, 0, w.mz + w.nz * 0.12, along(w.nx, w.nz));
+    taken.push([w.mx, w.mz, 4]);
+    key === 'petShop' ? pets++ : flowers++;
+  }
+
+  // ---- 消防署：建物の道に向いた壁に車庫。開いた車庫の前の道から、ときどき消防車が出る（syncCity10） ----
+  const fires = [];
+  const FS = map.services?.fireStations ?? [];
+  for (let i = 0; i + 1 < FS.length; i += 2) {
+    const w = streetWall(map, roadHeights, FS[i], FS[i + 1], 12.5);
+    if (!w || !clear(w.mx, w.mz, 7)) continue;
+    put('fireStation', w.mx + w.nx * 0.12, 0, w.mz + w.nz * 0.12, along(w.nx, w.nz));
+    // 開いた車庫（壁に沿って -2.9m）の前
+    const ex = -w.nz, ez = w.nx; // 壁に沿う向き（店先の +x と同じ回し方）
+    fires.push({ x: w.mx + w.nx * 3 - ex * 2.9, z: w.mz + w.nz * 3 - ez * 2.9, wait: 8 + rnd() * 20 });
+    taken.push([w.mx, w.mz, 7]);
+  }
+  group.userData.fireStations = fires;
+
+  for (const [key, list] of lists) {
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key === 'billboard' ? 'adBillboard' : key; // デバッグ・自動テスト用（屋上の物 その 2 の看板と区別）
+      mesh.castShadow = material === STREET_MAT && key !== 'grave';
+      group.add(mesh);
+    }
+  }
+  group.userData.taken = taken;
+}
+
 // 駅の入口：駅のまわりの空いている地面に、近くの道の方を向けて 1 つ（駅名の板付き）
 function addStationEntrances(group, map, roadHeights) {
   const g = city4.geos;
@@ -4815,6 +5027,8 @@ function* buildWorldSteps(map, textures) {
   addCity8Props(group, map, roadHeights, heights);
   while (!city9.done) yield 0.985;
   addCity9Props(group, map, roadHeights);
+  while (!city10.done) yield 0.985;
+  addCity10Props(group, map, roadHeights, heights);
   yield 0.985;
   addStations(group, map, textures);
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -6274,10 +6488,12 @@ export function createRenderer3D(canvas) {
   // 同時に走らせる数（緊急車両はときどき 1 台）。dog は犬の散歩、vendor は石焼いも・古紙回収の軽トラ、mikoshi は縁日の近くのおみこし
   // big は観光バス・タンクローリー・引っ越し・ゴミ収集車・宣伝トラック、jogger・stroller・courier は歩道の人、cargo は自転車便
   // pupil は学校の近くの下校する子ども、bather は銭湯の近くの湯おけを持つ人
-  const RIDERS = { cycle: 8, motor: 5, emergency: 1, dog: 3, vendor: 1, mikoshi: 1, big: 2, jogger: 2, stroller: 1, courier: 1, cargo: 1, pupil: 2, bather: 1 };
-  const ON_FOOT = new Set(['cycle', 'dog', 'mikoshi', 'jogger', 'stroller', 'courier', 'cargo', 'pupil', 'bather']); // 一方通行を気にしない
+  // police は白い自転車で見回りをするおまわりさん、daycare は保育園のお散歩カート
+  const RIDERS = { cycle: 8, motor: 5, emergency: 1, dog: 3, vendor: 1, mikoshi: 1, big: 2, jogger: 2, stroller: 1, courier: 1, cargo: 1, pupil: 2, bather: 1, police: 1, daycare: 1 };
+  const ON_FOOT = new Set(['cycle', 'dog', 'mikoshi', 'jogger', 'stroller', 'courier', 'cargo', 'pupil', 'bather', 'police', 'daycare']); // 一方通行を気にしない
+  const BIKERS = new Set(['cycle', 'police']); // 自転車の形で、ペダルをこぐ
   const BIG_CARS = ['openBus', 'tanker', 'mover', 'garbage', 'adTruck'];
-  const WALKERS = new Set(['dog', 'jogger', 'stroller', 'courier', 'pupil', 'bather']); // 歩道の端を歩く
+  const WALKERS = new Set(['dog', 'jogger', 'stroller', 'courier', 'pupil', 'bather', 'daycare']); // 歩道の端を歩く
   // 施設の近くにだけ出す人（自転車から 300m 以内の施設のまわり 60m）
   const NEAR_PLACE = { pupil: 'schools', bather: 'baths' };
   const EMERGENCY = [['police', 'policeLamp'], ['ambulance', 'ambLamp'], ['fire', 'fireLamp']];
@@ -6290,7 +6506,18 @@ export function createRenderer3D(canvas) {
     const free = pool.find((o) => !o.userData.used);
     if (free) return free;
     let o;
-    if (kind === 'cycle') {
+    if (kind === 'police') {
+      o = makeBike({ frame: 0xf4f4f4, jersey: 0x24345a, shorts: 0x24345a, helmet: 0xf4f4f4 }, 1, 'city'); // 白い自転車・紺の制服・白いヘルメット
+    } else if (kind === 'daycare') {
+      const g = city10.geos;
+      if (!g) return null;
+      o = new THREE.Group();
+      const body = new THREE.Mesh(g.daycareCart.body, STREET_MAT);
+      body.castShadow = true;
+      o.add(body);
+      o.userData.bob = 0.012;
+      o.userData.body = body;
+    } else if (kind === 'cycle') {
       const c = CYCLE_COLORS[pool.length % CYCLE_COLORS.length], j = CYCLE_COLORS[(pool.length * 3 + 2) % CYCLE_COLORS.length];
       o = makeBike({ frame: c, jersey: j, helmet: CYCLE_COLORS[(pool.length + 4) % CYCLE_COLORS.length], shorts: 0x2a2f3a });
     } else if (kind === 'pupil' || kind === 'bather') {
@@ -6360,7 +6587,7 @@ export function createRenderer3D(canvas) {
     return o;
   }
   const riderRoad = (kind, r) =>
-    kind === 'cycle' || kind === 'cargo' || WALKERS.has(kind)
+    BIKERS.has(kind) || kind === 'cargo' || WALKERS.has(kind)
       ? r.path || r.w < 8
       : kind === 'big'
         ? !r.path && r.w >= 7
@@ -6396,7 +6623,7 @@ export function createRenderer3D(canvas) {
       o.visible = true;
       const len = Math.hypot(sg.x2 - sg.x1, sg.y2 - sg.y1);
       const speed = {
-        cycle: 3.5 + Math.random() * 2.5, emergency: 12 + Math.random() * 2, dog: 1.1 + Math.random() * 0.3, vendor: 2.2 + Math.random() * 0.6, mikoshi: 0.7,
+        cycle: 3.5 + Math.random() * 2.5, police: 3.2, daycare: 0.7, emergency: 12 + Math.random() * 2, dog: 1.1 + Math.random() * 0.3, vendor: 2.2 + Math.random() * 0.6, mikoshi: 0.7,
         big: 7 + Math.random() * 2, jogger: 2.6 + Math.random() * 0.6, stroller: 1.0, courier: 1.2, cargo: 4 + Math.random(), pupil: 1.0, bather: 0.9,
       }[kind] ?? 8 + Math.random() * 4;
       riders.list.push({ kind, o, road: r, v: dir > 0 ? sg.v : sg.v + 1, dir, s: Math.random() * len, speed, side: Math.random(), life: kind === 'emergency' ? 30 : Infinity });
@@ -6413,6 +6640,7 @@ export function createRenderer3D(canvas) {
       rd.life -= dt;
       const far = Math.hypot(rd.o.position.x - p.x, rd.o.position.z - p.y) > RIDER_DESPAWN || rd.life < 0;
       if (far) (rd.o.userData.used = false), (rd.o.visible = false);
+      if (far && rd.o.userData.dispose) scene.remove(rd.o); // 出動した消防車は使い回さない
       return !far;
     });
     for (const kind of Object.keys(RIDERS)) {
@@ -6450,12 +6678,12 @@ export function createRenderer3D(canvas) {
       const len = Math.hypot(x2 - x1, z2 - z1) || 1;
       const hx = (x2 - x1) / len, hz = (z2 - z1) / len;
       // 左側通行：進む向きの左に寄る（自転車は道の端、バイクは車線の真ん中）
-      const off = r.path ? (rd.side - 0.5) * r.w * 0.5 : rd.kind === 'cycle' || rd.kind === 'cargo' || WALKERS.has(rd.kind) ? r.w * 0.4 : rd.kind === 'mikoshi' ? 0 : r.w * 0.28;
+      const off = r.path ? (rd.side - 0.5) * r.w * 0.5 : BIKERS.has(rd.kind) || rd.kind === 'cargo' || WALKERS.has(rd.kind) ? r.w * 0.4 : rd.kind === 'mikoshi' ? 0 : r.w * 0.28;
       const x = x1 + hx * rd.s + hz * off, z = z1 + hz * rd.s - hx * off;
       const t = rd.s / len;
       const h = rd.dir > 0 ? roadHeightAt(roadH(), r, rd.v, t) : roadHeightAt(roadH(), r, nv, 1 - t);
       const angle = Math.atan2(hx, -hz);
-      if (rd.kind === 'cycle') animateBike(rd.o, { x, y: z, angle }, rd.speed, dt, h);
+      if (BIKERS.has(rd.kind)) animateBike(rd.o, { x, y: z, angle }, rd.speed, dt, h);
       else {
         const step = rd.kind === 'mikoshi' ? 3.2 : rd.kind === 'jogger' ? 9 : 7; // 上下に揺れる速さ（歩く・走る・担ぐ）
         const bob = rd.o.userData.bob ? Math.abs(Math.sin(riders.clock * step + rd.side * 10)) * rd.o.userData.bob : 0;
@@ -7250,6 +7478,257 @@ export function createRenderer3D(canvas) {
         notes.splice(i, 1);
       }
     }
+  }
+
+  // ---- 街の物 その 11 の動き：立体駐車場の車・消防車の出動・落ち葉・陽炎・水しぶきとタイヤの跡・リプレイ ----
+  const c10 = { t: 0 };
+  function syncCity10(game, dt) {
+    c10.t += dt;
+    const ud = world?.userData;
+    // 立体駐車場：車が入口の前に来て止まり、中へ入って上がり（見えなくなり）、しばらくして別の車が来る（1 回 30 秒）
+    for (const tw of ud?.towers ?? []) {
+      const u = ((c10.t + tw.phase) % 30) / 30;
+      const fx = -Math.sin(tw.rot), fz = -Math.cos(tw.rot); // 塔の前（道の方）
+      let out = 0, up = 0;
+      if (u < 0.25) out = 9 * (1 - u / 0.25); // 道から入口の前まで来る
+      else if (u < 0.4) out = 0; // 止まる
+      else if (u < 0.55) out = -3.2 * ((u - 0.4) / 0.15); // 中へ入る
+      else (out = -3.2), (up = (u - 0.55) * 30);
+      tw.car.visible = up < 3;
+      tw.car.position.set(tw.x + fx * (3.6 + out), Y.area + up, tw.z + fz * (3.6 + out));
+      tw.car.rotation.y = tw.rot + Math.PI; // 塔の方を向いて入る
+    }
+    // 消防車：自転車が 250m 以内の消防署から、40〜80 秒に 1 回、サイレンを鳴らして出る
+    const p = game.player;
+    for (const fs of ud?.fireStations ?? []) {
+      if (game.state !== 'racing') continue;
+      fs.wait -= dt;
+      if (fs.wait > 0 || Math.hypot(fs.x - p.x, fs.z - p.y) > 250) continue;
+      fs.wait = 40 + Math.random() * 40;
+      if (dispatchFireTruck(fs)) window.dispatchEvent(new CustomEvent('siren', { detail: { d: Math.hypot(fs.x - p.x, fs.z - p.y) } }));
+    }
+    syncLeaves(game, dt);
+    syncHeatHaze();
+    syncSplash(game, dt);
+    syncTireTracks(game, dt);
+  }
+
+  // 消防署の前のいちばん近い車道に、消防車を走らせる（自転車のまわりを走るほかの乗り物と同じ動き。syncRiders）
+  function dispatchFireTruck(fs) {
+    const g = city2.geos;
+    if (!g?.fire || !worldMap) return false;
+    const near = nearestRoadPoint(worldMap, fs.x, fs.z, true);
+    if (!near || near.road.e || near.d > 20) return false;
+    const r = near.road;
+    let v = 0, bd = Infinity;
+    for (let i = 0; i + 1 < r.p.length / 2; i++) {
+      const d = Math.hypot(r.p[2 * i] - near.x, r.p[2 * i + 1] - near.z);
+      if (d < bd) (bd = d), (v = i);
+    }
+    const o = new THREE.Group();
+    const body = new THREE.Mesh(g.fire.body, STREET_MAT);
+    body.castShadow = true;
+    o.add(body);
+    if (g.fire.glow) o.add(new THREE.Mesh(g.fire.glow, STREET_GLOW_MAT));
+    o.userData.lamp = new THREE.Mesh(g.fireLamp.glow, STREET_GLOW_MAT);
+    o.add(o.userData.lamp);
+    o.userData.used = true;
+    o.userData.dispose = true; // 消えたら捨てる（使い回さない）
+    o.name = 'fireTruck'; // デバッグ・自動テスト用
+    scene.add(o);
+    const dir = r.o || (v + 1 < r.p.length / 2 ? 1 : -1);
+    riders.list.push({ kind: 'fireOut', o, road: r, v: Math.max(0, Math.min(r.p.length / 2 - 2, v)), dir, s: 0, speed: 9, side: 0.5, life: 40 });
+    return true;
+  }
+
+  // 落ち葉：秋だけ、カメラのまわりに舞い、地面に落ちると少し転がってから、また上から舞う（桜の花びらと同じ箱）
+  const LEAVES = 260;
+  const leaves = { mesh: null, data: null };
+  const LEAF_COLORS = [0xc8642a, 0xe0a030, 0xb04a2a, 0xf2c62e, 0x8a5a2a];
+  function syncLeaves(game, dt) {
+    if (!leaves.mesh) {
+      if (!city10.geos) return;
+      leaves.mesh = new THREE.InstancedMesh(city10.geos.leaf.body, new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }), LEAVES);
+      leaves.mesh.frustumCulled = false;
+      leaves.mesh.name = 'leaves'; // デバッグ・自動テスト用
+      const col = new THREE.Color();
+      for (let i = 0; i < LEAVES; i++) leaves.mesh.setColorAt(i, col.setHex(LEAF_COLORS[i % LEAF_COLORS.length]));
+      scene.add(leaves.mesh);
+      leaves.data = new Float32Array(LEAVES * 5); // x, y, z, 揺れの位相, 地面にいる時間
+      const c = camera.position;
+      for (let i = 0; i < LEAVES; i++) leaves.data.set([c.x + (Math.random() - 0.5) * 2 * PETAL_BOX, Math.random() * 12, c.z + (Math.random() - 0.5) * 2 * PETAL_BOX, Math.random() * 6.28, 0], i * 5);
+    }
+    leaves.mesh.visible = currentSeason === 'autumn' && currentWeather !== 'snow';
+    if (!leaves.mesh.visible) return;
+    const c = camera.position, D = leaves.data;
+    const wrap = (v, cc, half) => cc + ((((v - cc + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
+    for (let i = 0; i < LEAVES; i++) {
+      const j = i * 5, ph = D[j + 3];
+      const ground = bikeH + 0.12;
+      if (D[j + 1] > ground) {
+        D[j] += (Math.sin(c10.t * 1.2 + ph) * 0.7 + 0.5) * dt;
+        D[j + 1] -= (0.9 + 0.4 * Math.sin(ph * 3)) * dt;
+        D[j + 2] += Math.cos(c10.t * 0.9 + ph) * 0.5 * dt;
+        bEuler.set(c10.t * 2.4 + ph, c10.t * 1.6 + ph * 2, ph);
+      } else {
+        // 地面：風で少し転がり、しばらくするとまた上から
+        D[j + 1] = ground;
+        D[j + 4] += dt;
+        D[j] += 0.6 * dt * Math.max(0, 1 - D[j + 4] / 3);
+        bEuler.set(-Math.PI / 2, ph, Math.sin(c10.t * 6 + ph) * 0.3 * Math.max(0, 1 - D[j + 4] / 3));
+        if (D[j + 4] > 6 + (ph % 3)) (D[j + 1] = c.y + 8 + Math.random() * 4), (D[j + 4] = 0);
+      }
+      D[j] = wrap(D[j], c.x, PETAL_BOX);
+      D[j + 2] = wrap(D[j + 2], c.z, PETAL_BOX);
+      if (D[j + 1] > c.y + 14) D[j + 1] = c.y + 2;
+      bq.setFromEuler(bEuler);
+      leaves.mesh.setMatrixAt(i, bm4.compose(bPos.set(D[j], D[j + 1], D[j + 2]), bq, bOne.set(1.6, 1.6, 1.6)));
+    }
+    bOne.set(1, 1, 1);
+    leaves.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // 陽炎：夏の晴れた昼に、遠くの路面の近くがゆらゆら揺れて見える（カメラのまわりの低い輪に、揺れる縞の画）
+  const haze = { mesh: null, tex: null };
+  function syncHeatHaze() {
+    if (!haze.mesh) {
+      const cv = document.createElement('canvas');
+      cv.width = 256;
+      cv.height = 32;
+      const x = cv.getContext('2d');
+      for (let k = 0; k < 256; k++) {
+        const a = 0.22 + 0.14 * Math.sin(k * 0.31) * Math.sin(k * 0.07);
+        const gr = x.createLinearGradient(0, 0, 0, 32);
+        gr.addColorStop(0, 'rgba(255,255,255,0)');
+        gr.addColorStop(0.6, `rgba(250,246,236,${a})`);
+        gr.addColorStop(1, `rgba(250,246,236,${a * 1.6})`);
+        x.fillStyle = gr;
+        x.fillRect(k, 0, 1, 32);
+      }
+      haze.tex = new THREE.CanvasTexture(cv);
+      haze.tex.wrapS = THREE.RepeatWrapping;
+      haze.tex.repeat.set(6, 1);
+      haze.mesh = new THREE.Mesh(new THREE.CylinderGeometry(150, 150, 3.5, 48, 1, true), new THREE.MeshBasicMaterial({ map: haze.tex, transparent: true, depthWrite: false, fog: false, side: THREE.BackSide }));
+      haze.mesh.name = 'heatHaze'; // デバッグ・自動テスト用
+      scene.add(haze.mesh);
+    }
+    haze.mesh.visible = currentSeason === 'summer' && currentTime === 'day' && currentWeather === 'clear';
+    if (!haze.mesh.visible) return;
+    haze.mesh.position.set(camera.position.x, bikeH + 1.4 + Math.sin(c10.t * 2.3) * 0.08, camera.position.z);
+    haze.tex.offset.x = (c10.t * 0.03) % 1;
+    haze.mesh.scale.set(1, 1 + 0.15 * Math.sin(c10.t * 3.1), 1);
+  }
+
+  // 水しぶき：雨の日に水たまりを走ると、車輪のまわりから水の粒が飛ぶ
+  const SPLASH_N = 120;
+  const splash = { mesh: null, data: null, next: 0, emitAt: 0 };
+  function syncSplash(game, dt) {
+    if (!splash.mesh) {
+      splash.mesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.06, 0), new THREE.MeshLambertMaterial({ color: 0xd8e8f8, transparent: true, opacity: 0.8 }), SPLASH_N);
+      splash.mesh.frustumCulled = false;
+      splash.mesh.count = SPLASH_N;
+      splash.mesh.name = 'splash'; // デバッグ・自動テスト用
+      scene.add(splash.mesh);
+      splash.data = new Float32Array(SPLASH_N * 7); // 位置・速さ・残りの時間
+    }
+    const p = game.player, D = splash.data;
+    const puddles = world?.userData.puddles ?? [];
+    const inPuddle = currentWeather === 'rain' && p.speed > 2 && puddles.some(([x, z, r]) => Math.abs(x - p.x) < r && Math.abs(z - p.y) < r && Math.hypot(x - p.x, z - p.y) < r);
+    if (inPuddle && c10.t > splash.emitAt) {
+      splash.emitAt = c10.t + 0.08;
+      const fx = Math.sin(p.angle), fz = -Math.cos(p.angle);
+      for (let k = 0; k < 12; k++) {
+        const j = splash.next * 7;
+        splash.next = (splash.next + 1) % SPLASH_N;
+        const s = Math.random() < 0.5 ? -1 : 1, back = Math.random() < 0.5 ? 0.52 : -0.53; // 前か後ろの車輪
+        D.set([p.x - fx * back + fz * s * 0.05, bikeH + 0.15, p.y - fz * back - fx * s * 0.05, -fz * s * (0.8 + Math.random()) - fx * Math.random() * 0.6, 1.2 + Math.random() * 1.2, fx * s * (0.8 + Math.random()) - fz * Math.random() * 0.6, 0.7], j);
+      }
+    }
+    for (let i = 0; i < SPLASH_N; i++) {
+      const j = i * 7;
+      if (D[j + 6] > 0) {
+        D[j + 6] -= dt;
+        D[j + 4] -= 9.8 * dt;
+        D[j] += D[j + 3] * dt;
+        D[j + 1] = Math.max(bikeH + 0.1, D[j + 1] + D[j + 4] * dt);
+        D[j + 2] += D[j + 5] * dt;
+      }
+      bPos.set(D[j], D[j + 1], D[j + 2]);
+      splash.mesh.setMatrixAt(i, bm4.compose(bPos, bq.identity(), D[j + 6] > 0 ? bOne.set(1, 1, 1) : bOne.set(0, 0, 0)));
+    }
+    bOne.set(1, 1, 1);
+    splash.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // タイヤの跡：雨の日、濡れた路面に自転車の通った跡が細く残り、8 秒ほどで消える
+  const TRACKS = 320, TRACK_STEP = 0.35;
+  const tracks = { mesh: null, data: null, next: 0, last: null };
+  function syncTireTracks(game, dt) {
+    if (!tracks.mesh) {
+      const geo = new THREE.PlaneGeometry(0.11, TRACK_STEP + 0.04); // 実物より少し太く（遠くからも見えるよう）
+      geo.rotateX(-Math.PI / 2);
+      // 色は、濡れた路面の水が切れて明るく見える跡
+      tracks.mesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0x8a94a4, transparent: true, opacity: 0.45, depthWrite: false, fog: true, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }), TRACKS);
+      tracks.mesh.frustumCulled = false;
+      tracks.mesh.renderOrder = 1;
+      tracks.mesh.name = 'tireTracks'; // デバッグ・自動テスト用
+      scene.add(tracks.mesh);
+      tracks.data = new Float32Array(TRACKS * 5); // x, y, z, 向き, 残りの時間
+    }
+    const p = game.player, D = tracks.data;
+    const wet = currentWeather === 'rain' && game.state === 'racing';
+    if (wet && Math.abs(p.speed) > 0.5) {
+      if (!tracks.last || Math.hypot(p.x - tracks.last[0], p.y - tracks.last[1]) > TRACK_STEP) {
+        const j = tracks.next * 5;
+        tracks.next = (tracks.next + 1) % TRACKS;
+        D.set([p.x, bikeH + Y.signal + 0.05, p.y, p.angle, 8], j); // 路面（歩道の敷石など）の少し上
+        tracks.last = [p.x, p.y];
+      }
+    } else tracks.last = null;
+    for (let i = 0; i < TRACKS; i++) {
+      const j = i * 5;
+      if (D[j + 4] > 0) D[j + 4] -= dt;
+      const k = Math.max(0, Math.min(1, D[j + 4] / 3)); // 消える前の 3 秒で細くなる
+      bEuler.set(0, -D[j + 3], 0);
+      bq.setFromEuler(bEuler);
+      tracks.mesh.setMatrixAt(i, bm4.compose(bPos.set(D[j], D[j + 1], D[j + 2]), bq, bOne.set(k, 1, k > 0 ? 1 : 0)));
+    }
+    bOne.set(1, 1, 1);
+    tracks.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // リプレイ：ゴールしたあと、今回の走り（ghost.js の記録：0.1 秒ごとの x, y, 向き）を 2 倍の速さで、
+  // 横・上・前・ぐるっと回るカメラを 3.5 秒ごとに切り替えて見せる
+  const REPLAY_SPEED = 2, REPLAY_SHOT = 3.5;
+  const replayCam = new THREE.Vector3(), replayLook = new THREE.Vector3();
+  function syncReplay(game, dt) {
+    const rp = game.replay, track = game.result?.track;
+    if (!rp || !track || track.length < 6) return false;
+    rp.t += dt * REPLAY_SPEED;
+    const n = track.length / 3, f = Math.min(n - 1, rp.t / 0.1), i = Math.floor(f), j = Math.min(n - 1, i + 1), u = f - i;
+    if (i >= n - 1) rp.done = true;
+    let da = track[3 * j + 2] - track[3 * i + 2];
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    const pose = { x: track[3 * i] + (track[3 * j] - track[3 * i]) * u, y: track[3 * i + 1] + (track[3 * j + 1] - track[3 * i + 1]) * u, angle: track[3 * i + 2] + da * u };
+    const speed = Math.hypot(track[3 * j] - track[3 * i], track[3 * j + 1] - track[3 * i + 1]) / 0.1;
+    const h = groundHeight(roadH(), surfaceAt(worldMap, pose.x, pose.y).segs, pose.x, pose.y, bikeH);
+    bikeH = h;
+    animateBike(player, pose, speed, dt * REPLAY_SPEED, h);
+    player.visible = true;
+    ghost.visible = false;
+    // カメラ
+    const fx = Math.sin(pose.angle), fz = -Math.cos(pose.angle);
+    const shot = Math.floor(rp.t / (REPLAY_SHOT * REPLAY_SPEED)) % 4, k = (rp.t / (REPLAY_SHOT * REPLAY_SPEED)) % 1;
+    if (shot === 0) replayCam.set(pose.x - fz * 5 - fx * 2, h + 1.4, pose.y + fx * 5 - fz * 2); // 横
+    else if (shot === 1) replayCam.set(pose.x - fx * 14, h + 18, pose.y - fz * 14); // 上
+    else if (shot === 2) replayCam.set(pose.x + fx * 7 + fz * 1.5, h + 1.2, pose.y + fz * 7 - fx * 1.5); // 前から
+    else {
+      const a = k * Math.PI * 1.2; // ぐるっと回る
+      replayCam.set(pose.x + Math.cos(a) * 7, h + 3, pose.y + Math.sin(a) * 7);
+    }
+    camera.position.copy(replayCam);
+    camera.lookAt(replayLook.set(pose.x, h + 1.0, pose.y));
+    return true;
   }
 
   // ---- 負けたときの演出：先に着いた電車のドアが、ホームの側で開き、乗客が降りてくる。カメラはホームから電車を見る ----
@@ -8111,6 +8590,7 @@ export function createRenderer3D(canvas) {
       syncCity7(game, dt);
       syncCity8(game, dt);
       syncCity9(game, dt);
+      syncCity10(game, dt);
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
@@ -8119,6 +8599,7 @@ export function createRenderer3D(canvas) {
         camera.position.set(...dc.pos);
         camera.lookAt(...dc.look);
       }
+      if (game.replay) syncReplay(game, dt); // ゴール後のリプレイ（自転車とカメラを上書き）
       sky.position.copy(camera.position);
       syncSky(game, dt);
       placeFarTowers();

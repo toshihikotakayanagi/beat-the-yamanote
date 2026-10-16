@@ -154,13 +154,18 @@ const servicesQuery = (bbox) => `[out:json][timeout:90];
 nwr["amenity"~"^(hospital|post_office|bank)$"](${bbox});
 out tags center;`;
 
+// 消防署（見た目だけ。3D版が近くの建物の道に向いた壁に車庫を付け、ときどき消防車が出る）
+const fireQuery = (bbox) => `[out:json][timeout:90];
+nwr["amenity"="fire_station"](${bbox});
+out tags center;`;
+
 // 路面電車（都電荒川線）の線路。見た目だけ（3D版が線路と走る電車を描く。走れる場所や道路の高さには使わない）
 const tramsQuery = (bbox) => `[out:json][timeout:90];
 way["railway"="tram"](${bbox});
 out geom;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery, trams: tramsQuery, facilities: facilitiesQuery, services: servicesQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所', trams: '路面電車', facilities: '学校・ガソリンスタンド・銭湯・駐車場・シェアサイクル・噴水', services: '病院・郵便局・銀行' };
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery, trams: tramsQuery, facilities: facilitiesQuery, services: servicesQuery, fire: fireQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所', trams: '路面電車', facilities: '学校・ガソリンスタンド・銭湯・駐車場・シェアサイクル・噴水', services: '病院・郵便局・銀行', fire: '消防署' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -1016,6 +1021,20 @@ function convertServices(osm, frame, bounds) {
   return out;
 }
 
+// 点の並び [x, y, ...]（地下や上の階の物は外す）
+function convertPoints(osm, frame, bounds) {
+  const out = [];
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    const c = el.type === 'node' ? el : el.center;
+    if (!c || (tags.level && !/^0$|^1$/.test(tags.level))) continue;
+    const [x, y] = frame.toXY(c.lat, c.lon);
+    if (x < bounds.minX - 20 || x > bounds.maxX + 20 || y < bounds.minY - 20 || y > bounds.maxY + 20) continue;
+    out.push(Math.round(x * 10) / 10, Math.round(y * 10) / 10);
+  }
+  return out;
+}
+
 // 路面電車の線路 trams: [{ n: 路線の名前, p: [x, y, ...] }]（地下・車庫の線路は外す）
 function convertTrams(osm, frame, bounds) {
   const { toXY } = frame;
@@ -1111,6 +1130,7 @@ async function processSection(id, refresh) {
   data.trams = convertTrams(await loadOsm(id, 'trams', frame.bbox, refresh), frame, data.bounds);
   data.facilities = convertFacilities(await loadOsm(id, 'facilities', frame.bbox, refresh), frame, data.bounds);
   data.services = convertServices(await loadOsm(id, 'services', frame.bbox, refresh), frame, data.bounds);
+  data.services.fireStations = convertPoints(await loadOsm(id, 'fire', frame.bbox, refresh), frame, data.bounds);
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });

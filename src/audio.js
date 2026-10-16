@@ -401,6 +401,16 @@ export function thunder(far = 0.5) {
   src.start(t);
 }
 
+// 消防車のサイレン：ウーと上がって下がる音を 2 回（d：自転車からの距離 m。遠いほど小さい）
+export function siren(d = 100) {
+  if (!ready()) return;
+  const t = ctx.currentTime, vol = Math.max(0.02, 0.12 * (1 - d / 300));
+  for (const s of [0, 1.6]) {
+    tone(620, t + s, 0.8, { type: 'sawtooth', vol, attack: 0.15, slideTo: 980 });
+    tone(980, t + s + 0.8, 0.8, { type: 'sawtooth', vol, attack: 0.05, slideTo: 620 });
+  }
+}
+
 export function ringBell() {
   if (!ready()) return;
   const t = ctx.currentTime;

@@ -1036,8 +1036,26 @@ function drawGoalFlash(ctx, game, view) {
   ctx.restore();
 }
 
+// リプレイ中：結果画面の代わりに、上に小さく「リプレイ」と戻り方だけを出す
+function drawReplayBanner(ctx, game, view) {
+  const t = `リプレイ（2 倍速）　${game.touch ? 'タップ' : 'どれかのキー'}で結果に戻る`;
+  ctx.save();
+  ctx.font = 'bold 16px sans-serif';
+  const w = ctx.measureText(t).width + 32;
+  ctx.fillStyle = 'rgba(20, 22, 26, 0.72)';
+  ctx.beginPath();
+  ctx.roundRect(view.w / 2 - w / 2, 96, w, 34, 10);
+  ctx.fill();
+  ctx.restore();
+  text(ctx, t, view.w / 2, 119, { size: 16, weight: 'bold', align: 'center', color: '#ffffff' });
+}
+
 function drawResult(ctx, game, view) {
   const r = game.result;
+  if (game.replay) {
+    if (!game.replay.done) return drawReplayBanner(ctx, game, view);
+    game.replay = null; // 最後まで見たら結果画面に戻る
+  }
   if (performance.now() < r.shownAt) return drawGoalFlash(ctx, game, view);
   const lines = r.win
     ? [
@@ -1074,6 +1092,7 @@ function drawResult(ctx, game, view) {
   } else {
     lines.push([`${tapOrSpace(game)}でもう一度`, { size: 18, weight: 'bold' }, 'retry']);
   }
+  if (game.mode === '3d' && r.track?.length >= 6) lines.push([game.touch ? 'リプレイを見る' : 'X リプレイを見る', { size: 15, color: QUIET }, 'replay']);
   lines.push(shareLine(game));
   lines.push([game.touch ? '区間選択へ' : 'Esc 区間選択へ', { size: 15, color: QUIET }, 'menu']);
   drawOverlay(ctx, game, view, lines);

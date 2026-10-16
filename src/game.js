@@ -637,6 +637,9 @@ function act(action, x = null) {
     setAtmosphere(cycle(TIMES_OF_DAY, game.timeOfDay), game.weather);
   } else if (action === 'weather') {
     setAtmosphere(game.timeOfDay, cycle(WEATHERS, game.weather));
+  } else if (action === 'replay') {
+    // ゴール後のリプレイ（3D版）。どれかのキーかタップで結果画面に戻る
+    if (s === 'result' && game.result?.track?.length >= 6) game.replay = { t: 0, done: false };
   } else if (action === 'ghostLook') {
     setGhostLook(cycle(GHOST_LOOKS, game.ghostLook));
   } else if (action === 'quality') {
@@ -700,6 +703,12 @@ function onPrimary() {
 window.addEventListener('keydown', (e) => {
   audio.unlock(); // 音はユーザーの操作があってから鳴らせる
   if (game.state === 'loading') return;
+  if (game.replay) {
+    // リプレイ中は、どのキーでも結果画面に戻る
+    e.preventDefault();
+    if (!e.repeat) game.replay = null;
+    return;
+  }
   const s = game.state;
   // 一時停止中は、再開・やり直し・区間選択へ・音だけを受け付ける
   if (game.paused) {
@@ -734,6 +743,8 @@ window.addEventListener('keydown', (e) => {
     act('ghostLook');
   } else if (e.code === 'KeyQ' && game.mode === '3d') {
     act('quality');
+  } else if (e.code === 'KeyX' && s === 'result' && game.mode === '3d') {
+    act('replay');
   } else if (s === 'ready' && (e.code === 'KeyV' || e.code === 'KeyU' || e.code === 'KeyK')) {
     act({ KeyV: 'bikeType', KeyU: 'outfit', KeyK: 'helmet' }[e.code]);
   } else if (e.code === 'KeyB') {
@@ -764,6 +775,7 @@ canvas.addEventListener('pointerdown', (e) => {
   audio.unlock();
   if (e.pointerType === 'touch') game.touch = true;
   if (game.state === 'loading') return;
+  if (game.replay) return void (game.replay = null); // リプレイ中のタップは結果画面に戻る
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   // 升目や区間選択の環状マップは横の範囲も見る。1 行の文字は横幅いっぱいが対象
@@ -846,6 +858,7 @@ export async function startGame(r) {
   renderer = r;
   // 3D版の稲光から少し遅れて雷の音（far が大きいほど遠くて小さい）
   window.addEventListener('thunder', (e) => audio.thunder(e.detail?.far ?? 0.5));
+  window.addEventListener('siren', (e) => audio.siren(e.detail?.d ?? 100)); // 消防車の出動
   window.addEventListener('resize', resize);
   resize();
   setMuted(load('muted') === '1');
