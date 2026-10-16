@@ -2348,6 +2348,7 @@ function addGoalShow(group) {
   const col = new THREE.Color();
   for (let i = 0; i < CONFETTI_N; i++) confetti.setColorAt(i, col.setHex(CONFETTI_COLORS[i % CONFETTI_COLORS.length]));
   confetti.frustumCulled = false;
+  confetti.userData.keepUnculled = true;
   confetti.visible = false;
   confetti.name = 'goalConfetti'; // デバッグ・自動テスト用
   gate.add(ball, confetti);
@@ -2489,6 +2490,7 @@ function addCity5Props(group, map, roadHeights) {
       meshes[kind] = ['', 'FlyA', 'FlyB'].map((pose) => {
         const m = new THREE.InstancedMesh(g[kind + pose].body, STREET_MAT, n);
         m.frustumCulled = false;
+        m.userData.keepUnculled = true;
         m.castShadow = true;
         m.name = kind + pose; // デバッグ・自動テスト用
         group.add(m);
@@ -3797,6 +3799,7 @@ function addCity9Props(group, map, roadHeights) {
       bases.push({ m: base, x: c.x, z: c.z, open: 0 });
     }
     doors.frustumCulled = false;
+    doors.userData.keepUnculled = true;
     doors.name = 'autoDoors'; // デバッグ・自動テスト用
     group.add(doors);
     group.userData.autoDoors = { mesh: doors, bases };
@@ -4086,6 +4089,233 @@ function addCity10Props(group, map, roadHeights, buildingHeights) {
       mesh.name = key === 'billboard' ? 'adBillboard' : key; // デバッグ・自動テスト用（屋上の物 その 2 の看板と区別）
       mesh.castShadow = material === STREET_MAT && key !== 'grave';
       group.add(mesh);
+    }
+  }
+  group.userData.taken = taken;
+}
+
+// ---- 街の物 その 12（Blender で作ったモデル。tools/build-city11.py） ----
+// 盆踊り（夏の夕方と夜、大きな公園）・建設中のビルとタワークレーン・駅前ロータリー・川沿いの桜並木（春）・ランニング大会・選挙カー。
+// 記念写真（勝ったときの結果画面）も。どれも見た目だけ
+const CITY11_URL = 'data/models/city11.glb';
+const CITY11_NAMES = {
+  yagura: 'C11_Yagura', bonLanterns: 'C11_BonLanterns', dancer0: 'C11_Dancer0', dancer1: 'C11_Dancer1',
+  construction: 'C11_Construction', craneMast: 'C11_CraneMast', craneTop: 'C11_CraneTop', busShelter: 'C11_BusShelter', roundabout: 'C11_Roundabout',
+  riverSakura: 'C11_RiverSakura', bonbori: 'C11_Bonbori', runner0: 'C11_Runner0', runner1: 'C11_Runner1', runner2: 'C11_Runner2', runner3: 'C11_Runner3',
+  waterStation: 'C11_WaterStation', electionVan: 'C11_ElectionVan', waver: 'C11_Waver',
+};
+const city11 = { geos: null, done: false };
+loadModelParts(CITY11_URL, CITY11_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    city11.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 12）のモデルを読み込めませんでした: ${CITY11_URL}`, e))
+  .finally(() => (city11.done = true));
+const BON_DANCERS = 24; // 盆踊りの輪の人数
+const MARATHON_RUNNERS = 40; // ランニング大会のランナーの数
+
+function addCity11Props(group, map, roadHeights, buildingHeights) {
+  const g = city11.geos;
+  if (!g) return;
+  const rnd = seededRng(`${map.id ?? 'city'}-11`);
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const lists = new Map();
+  const tmpQ = new THREE.Quaternion(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3(), Y_UP = new THREE.Vector3(0, 1, 0);
+  const put = (where, key, x, h, z, rotY, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Matrix4().compose(tmpP.set(x, h, z), tmpQ.setFromAxisAngle(Y_UP, rotY), tmpS.set(sx, sy, sz));
+    const id = `${where}|${key}`;
+    if (!lists.has(id)) lists.set(id, []);
+    lists.get(id).push(m);
+  };
+  const free = (x, z, onPath = true) => inBounds(map, x, z) && freeSpot(map, roadHeights, x, z, onPath);
+  const taken = [...(group.userData.taken ?? [])];
+  const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + r);
+  const seasonal = group.userData.seasonal ?? {};
+  const night = group.userData.nightProps;
+  // 夏の夕方と夜だけ（盆踊り）：季節の「夏」の中の、夜の物
+  const bonGroup = new THREE.Group();
+  (seasonal.summer ?? group).add(bonGroup);
+  group.userData.bonGroup = bonGroup;
+
+  // ---- 盆踊り：いちばん大きい公園の、空いた広い所に、やぐらと提灯の線、まわりを輪になって踊る人（syncCity11） ----
+  const parks = (map.areas ?? []).filter((a) => a.k === 'park' && a.r?.[0]?.length >= 6).map((a) => ({ ring: a.r[0], area: Math.abs(polygonArea(a.r[0])) })).sort((a, b) => b.area - a.area);
+  const bon = [];
+  for (const pk of parks.slice(0, 4)) {
+    if (bon.length) break;
+    const ring = pk.ring;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) (minX = Math.min(minX, ring[i])), (maxX = Math.max(maxX, ring[i])), (minZ = Math.min(minZ, ring[i + 1])), (maxZ = Math.max(maxZ, ring[i + 1]));
+    for (let k = 0; k < 60; k++) {
+      const x = minX + rnd() * (maxX - minX), z = minZ + rnd() * (maxZ - minZ);
+      const pts = [[0, 0], ...Array.from({ length: 12 }, (_, i) => [Math.cos((i * Math.PI) / 6) * 9, Math.sin((i * Math.PI) / 6) * 9])];
+      if (!pts.every(([u, w]) => insidePolygon(x + u, z + w, ring) && free(x + u, z + w, false)) || !clear(x, z, 10)) continue;
+      const o = new THREE.Group();
+      o.position.set(x, Y.area, z);
+      const yagura = new THREE.Mesh(g.yagura.body, STREET_MAT);
+      yagura.castShadow = true;
+      o.add(yagura);
+      for (let i = 0; i < 4; i++) {
+        const l = new THREE.Group();
+        l.position.set(0, 5.6, 0);
+        l.rotation.y = (i * Math.PI) / 2 + Math.PI / 4;
+        l.add(new THREE.Mesh(g.bonLanterns.body, STREET_MAT), new THREE.Mesh(g.bonLanterns.glow, STREET_GLOW_MAT));
+        o.add(l);
+      }
+      const dancers = [0, 1].map((v) => {
+        const m = new THREE.InstancedMesh(g[`dancer${v}`].body, STREET_MAT, BON_DANCERS / 2);
+        m.frustumCulled = false;
+        m.castShadow = true;
+        o.add(m);
+        return m;
+      });
+      o.name = 'bonOdori'; // デバッグ・自動テスト用
+      bonGroup.add(o);
+      bon.push({ dancers, R: 6.5 });
+      taken.push([x, z, 10]);
+      break;
+    }
+  }
+  group.userData.bon = bon;
+
+  // ---- 建設中のビル：工事中の所の近くの、空いた広い地面に 1 つ。上でタワークレーンの腕が回る（syncCity11） ----
+  const cranes = [];
+  const works = map.works ?? [];
+  for (let i = 0; i + 1 < works.length && cranes.length < 1; i += 2) {
+    for (let k = 0; k < 20; k++) {
+      const x = works[i] + (rnd() - 0.5) * 60, z = works[i + 1] + (rnd() - 0.5) * 60;
+      const pts = [[0, 0], [8.5, 8.5], [-8.5, 8.5], [8.5, -8.5], [-8.5, -8.5], [12, 0]];
+      if (!pts.every(([u, w]) => free(x + u, z + w, false)) || !clear(x, z, 12)) continue;
+      put('static', 'construction', x, Y.area, z, rnd() * Math.PI);
+      put('static', 'craneMast', x + 11, Y.area, z, 0);
+      const top = new THREE.Group();
+      top.position.set(x + 11, Y.area + 34, z);
+      const arm = new THREE.Mesh(g.craneTop.body, STREET_MAT);
+      arm.castShadow = true;
+      top.add(arm);
+      top.name = 'craneTop'; // デバッグ・自動テスト用
+      group.add(top);
+      cranes.push({ top, phase: rnd() * 10 });
+      taken.push([x, z, 12]);
+      break;
+    }
+  }
+  group.userData.cranes = cranes;
+
+  // ---- 駅前ロータリー：駅のまわりの空いた所（駅前広場の歩道でもよい）に真ん中の島。入らなければ小さくする。
+  // 島からいちばん近い車道の、駅の側の端に乗り場の屋根（1 区間に 1 つ） ----
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station' && inBounds(map, l.x, l.y));
+  let roundabout = false;
+  for (const st of stations) {
+    if (roundabout) break;
+    for (const sc of [1, 0.75, 0.55, 0.4]) {
+      if (roundabout) break;
+      const R = 9 * sc;
+      for (let k = 0; k < 48 && !roundabout; k++) {
+        const a = (k / 48) * Math.PI * 2 * 3, d = 25 + (k % 5) * 20;
+        const x = st.x + Math.cos(a) * d, z = st.y + Math.sin(a) * d;
+        const ring = [[0, 0], ...Array.from({ length: 8 }, (_, i) => [Math.cos((i * Math.PI) / 4) * R, Math.sin((i * Math.PI) / 4) * R])];
+        if (!ring.every(([u, w]) => free(x + u, z + w)) || !clear(x, z, R + 1)) continue;
+        const near = nearestRoadPoint(map, x, z, true);
+        if (!near || near.d > R + 20 || near.road.w < 6) continue;
+        put('static', 'roundabout', x, surfaceAt(map, x, z).kind === 'path' ? Y.path : Y.area, z, 0, sc, 1, sc);
+        taken.push([x, z, R + 1]);
+        roundabout = true;
+        const [dx, dz] = roadDirAt(near.road, near.x, near.z);
+        let nx = -dz, nz = dx;
+        if ((st.x - near.x) * nx + (st.y - near.z) * nz < 0) (nx = -nx), (nz = -nz);
+        // 道に沿って前後にずらしながら、屋根（長さ 13m）が入る所を探す
+        shelter: for (const side of [1, -1]) {
+          for (const shift of [0, 8, -8, 16, -16, 24, -24]) {
+            const ox = nx * side, oz = nz * side;
+            const sx = near.x + dx * shift + ox * (near.road.w / 2 + 1.8), sz = near.z + dz * shift + oz * (near.road.w / 2 + 1.8);
+            if (![[0, 0], [5.5, 0], [-5.5, 0], [0, 1.2]].every(([u, w]) => free(sx + dx * u + ox * w, sz + dz * u + oz * w)) || !clear(sx, sz, 3)) continue;
+            put('static', 'busShelter', sx, surfaceAt(map, sx, sz).kind === 'path' ? Y.path : Y.area, sz, along(-ox, -oz));
+            taken.push([sx, sz, 6]);
+            break shelter;
+          }
+        }
+      }
+    }
+  }
+
+  // ---- 川沿いの桜並木（春）：川の岸に沿って 18m おきに、川へ張り出す桜。夜はぼんぼりが灯る ----
+  let sakura = 0;
+  for (const l of map.lines) {
+    if (l.k !== 'river' || l.w < 6 || sakura >= 60) continue;
+    let next = 9, walked = 0;
+    for (let i = 0; i + 3 < l.p.length && sakura < 60; i += 2) {
+      const x1 = l.p[i], z1 = l.p[i + 1], x2 = l.p[i + 2], z2 = l.p[i + 3];
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      if (len < 1e-6) continue;
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      while (next <= walked + len && sakura < 60) {
+        const t = (next - walked) / len;
+        next += 18;
+        for (const s of [1, -1]) {
+          const nx = -uz * s, nz = ux * s; // 岸の外向き
+          const x = x1 + (x2 - x1) * t + nx * (l.w / 2 + 2.5), z = z1 + (z2 - z1) * t + nz * (l.w / 2 + 2.5);
+          if (!free(x, z, false) || !clear(x, z, 3)) continue;
+          put('spring', 'riverSakura', x, Y.area, z, faceTo(-nx, -nz)); // +X（張り出す側）を川へ
+          if (sakura % 2 === 0) put('springNight', 'bonbori', x + ux * 4, Y.area, z + uz * 4, 0);
+          sakura++;
+        }
+      }
+      walked += len;
+    }
+  }
+
+  // ---- ランニング大会：区間の大きな車道の 1 本に沿って、ランナーの列が走る（ときどき。syncCity11）。途中に給水所 ----
+  // （動かす InstancedMesh は区間の立体の直下に置かない：少しずつ見せる仕組み reveal が直下の物の frustumCulled を戻すため）
+  const marathonGroup = new THREE.Group();
+  group.add(marathonGroup);
+  group.userData.marathonGroup = marathonGroup;
+  const course = map.roads.filter((r) => !r.e && !r.path && r.w >= 12 && r.p.length >= 6).sort((a, b) => b.p.length - a.p.length)[0];
+  if (course) {
+    const cum = [0];
+    for (let i = 0; i + 3 < course.p.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(course.p[i + 2] - course.p[i], course.p[i + 3] - course.p[i + 1]));
+    const len = cum[cum.length - 1];
+    if (len > 200) {
+      const meshes = [0, 1, 2, 3].map((v) => {
+        const m = new THREE.InstancedMesh(g[`runner${v}`].body, STREET_MAT, MARATHON_RUNNERS);
+        m.frustumCulled = false;
+        m.castShadow = true;
+        m.count = 0;
+        m.name = 'runners'; // デバッグ・自動テスト用
+        marathonGroup.add(m);
+        return m;
+      });
+      const runners = Array.from({ length: MARATHON_RUNNERS }, (_, k) => ({ v: k % 4, off: -k * 2.2 - rnd() * 1.5, lane: (rnd() - 0.5) * 3, speed: 3.2 + rnd() * 0.8, ph: rnd() * 6 }));
+      group.userData.marathon = { p: course.p, cum, len, w: course.w, meshes, runners, t: -rnd() * 60 };
+      // 給水所：コースの真ん中あたりの、進む向きの左の道ばた
+      let i = 0;
+      while (i + 2 < cum.length && cum[i + 1] < len / 2) i++;
+      const t = (len / 2 - cum[i]) / (cum[i + 1] - cum[i] || 1);
+      const ax = course.p[2 * i], az = course.p[2 * i + 1], bx = course.p[2 * i + 2], bz = course.p[2 * i + 3];
+      const l = Math.hypot(bx - ax, bz - az) || 1, ux = (bx - ax) / l, uz = (bz - az) / l;
+      const wx = ax + (bx - ax) * t + uz * (course.w / 2 + 1.3), wz = az + (bz - az) * t - ux * (course.w / 2 + 1.3);
+      if (free(wx, wz) && clear(wx, wz, 3)) put('marathon', 'waterStation', wx, surfaceAt(map, wx, wz).kind === 'path' ? Y.path : Y.area, wz, along(-uz, ux));
+    }
+  }
+  const springNight = new THREE.Group();
+  (seasonal.spring ?? group).add(springNight);
+  group.userData.springNight = springNight;
+  const parents = { static: group, spring: seasonal.spring ?? group, springNight, marathon: marathonGroup };
+  for (const [id, list] of lists) {
+    const [where, key] = id.split('|');
+    const parent = parents[where] ?? group;
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, STREET_GLOW_MAT]]) {
+      if (!geo) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT;
+      parent.add(mesh);
     }
   }
   group.userData.taken = taken;
@@ -4994,45 +5224,74 @@ function* buildWorldSteps(map, textures) {
   }
   group.userData = { tiles, heights, tileOf, roadHeights };
 
+  // 街の物は 1 種類ずつ足し、あいだで次の画面に譲る（まとめて足すと、そのあいだ画面が止まる）。かかった時間 ms を記録する
+  const buildTimes = (group.userData.buildTimes = {});
+  const timed = (name, fn) => {
+    const t0 = performance.now();
+    fn();
+    buildTimes[name] = Math.round((performance.now() - t0) * 10) / 10;
+  };
   while (!streetModel.done || !treeModel.done) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
-  addStreetLights(group, map, roadHeights);
-  addTrees(group, map, roadHeights);
-  addStreetFurniture(group, map, roadHeights);
-  addGates(group, map, roadHeights);
-  while (!shopModel.done) yield 0.985;
-  addShops(group, map, heights);
-  while (!townModel.done) yield 0.985;
-  addTownProps(group, map, roadHeights, heights);
-  while (!scenery.done) yield 0.985;
-  addRailsideAndRivers(group, map, roadHeights);
-  while (!cityModel.done) yield 0.985;
-  addCityProps(group, map, roadHeights, heights);
-  while (!city2.done) yield 0.985;
-  addCity2Props(group, map, roadHeights);
-  while (!city3.done) yield 0.985;
-  addCity3Props(group, map, roadHeights);
-  while (!city4.done) yield 0.985;
-  addStartShow(group);
-  while (!goalModel.done) yield 0.985;
-  addGoalShow(group);
-  while (!city5.done) yield 0.985;
-  addCity5Props(group, map, roadHeights);
-  addStationEntrances(group, map, roadHeights);
-  while (!city6.done) yield 0.985;
-  addCity6Props(group, map, roadHeights, heights);
-  while (!city7.done) yield 0.985;
-  addCity7Props(group, map, roadHeights, heights);
-  addGoalStaff(group);
-  while (!city8.done) yield 0.985;
-  addCity8Props(group, map, roadHeights, heights);
-  while (!city9.done) yield 0.985;
-  addCity9Props(group, map, roadHeights);
-  while (!city10.done) yield 0.985;
-  addCity10Props(group, map, roadHeights, heights);
+  timed('addStreetLights', () => addStreetLights(group, map, roadHeights));
   yield 0.985;
-  addStations(group, map, textures);
+  timed('addTrees', () => addTrees(group, map, roadHeights));
+  yield 0.985;
+  timed('addStreetFurniture', () => addStreetFurniture(group, map, roadHeights));
+  yield 0.985;
+  timed('addGates', () => addGates(group, map, roadHeights));
+  yield 0.985;
+  while (!shopModel.done) yield 0.985;
+  timed('addShops', () => addShops(group, map, heights));
+  yield 0.985;
+  while (!townModel.done) yield 0.985;
+  timed('addTownProps', () => addTownProps(group, map, roadHeights, heights));
+  yield 0.985;
+  while (!scenery.done) yield 0.985;
+  timed('addRailsideAndRivers', () => addRailsideAndRivers(group, map, roadHeights));
+  yield 0.985;
+  while (!cityModel.done) yield 0.985;
+  timed('addCityProps', () => addCityProps(group, map, roadHeights, heights));
+  yield 0.985;
+  while (!city2.done) yield 0.985;
+  timed('addCity2Props', () => addCity2Props(group, map, roadHeights));
+  yield 0.985;
+  while (!city3.done) yield 0.985;
+  timed('addCity3Props', () => addCity3Props(group, map, roadHeights));
+  yield 0.985;
+  while (!city4.done) yield 0.985;
+  timed('addStartShow', () => addStartShow(group));
+  yield 0.985;
+  while (!goalModel.done) yield 0.985;
+  timed('addGoalShow', () => addGoalShow(group));
+  yield 0.985;
+  while (!city5.done) yield 0.985;
+  timed('addCity5Props', () => addCity5Props(group, map, roadHeights));
+  yield 0.985;
+  timed('addStationEntrances', () => addStationEntrances(group, map, roadHeights));
+  yield 0.985;
+  while (!city6.done) yield 0.985;
+  timed('addCity6Props', () => addCity6Props(group, map, roadHeights, heights));
+  yield 0.985;
+  while (!city7.done) yield 0.985;
+  timed('addCity7Props', () => addCity7Props(group, map, roadHeights, heights));
+  yield 0.985;
+  timed('addGoalStaff', () => addGoalStaff(group));
+  yield 0.985;
+  while (!city8.done) yield 0.985;
+  timed('addCity8Props', () => addCity8Props(group, map, roadHeights, heights));
+  yield 0.985;
+  while (!city9.done) yield 0.985;
+  timed('addCity9Props', () => addCity9Props(group, map, roadHeights));
+  yield 0.985;
+  while (!city10.done) yield 0.985;
+  timed('addCity10Props', () => addCity10Props(group, map, roadHeights, heights));
+  yield 0.985;
+  while (!city11.done) yield 0.985;
+  timed('addCity11Props', () => addCity11Props(group, map, roadHeights, heights));
+  yield 0.985;
+  timed('addStations', () => addStations(group, map, textures));
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
-  addModels(group, models);
+  timed('addModels', () => addModels(group, models));
 
   // ゴール：地面の輪と、遠くから見える光の柱
   const g = map.goal;
@@ -5951,12 +6210,81 @@ export function createRenderer3D(canvas) {
   // ゴーストの見た目（setGhostLook）と、軽さの設定（setQuality）
   const GHOST_LOOKS = { white: { color: 'white', opacity: 0.45 }, glow: { color: 0x3aa8ff, opacity: 0.7, glow: true }, green: { color: 0x9acd32, opacity: 0.5 }, mine: { color: 'mine', opacity: 0.45 } };
   let ghostLook = 'white';
+  // hide：隠す飾り（数が多くて、なくても遊ぶのに困らない物の名前）、far：描く距離 m、particles：舞う物の割合
+  const DECOR_MID = ['grave', 'stoneWall', 'electionBoard', 'noticeBoard', 'parkStall', 'waterTank', 'obstLight', 'cat0', 'cat1', 'cat2', 'benchSitter', 'treeLights', 'fairBulbs', 'pumpkins', 'koinobori', 'tetsubo', 'jungleGym', 'soccerGoal'];
+  const DECOR_LOW = [...DECOR_MID, 'adBillboard', 'adBoard', 'crow', 'crowFlyA', 'crowFlyB', 'pigeon', 'pigeonFlyA', 'pigeonFlyB', 'cyclePort', 'arcadeRoof', 'arcadePost', 'izakaya', 'parkedCars', 'taxiQueue', 'hwyPier', 'autoDoors', 'petShop', 'florist', 'tanabata', 'furin'];
   const QUALITY = {
-    high: { pixel: 1, maxPixel: 3, shadows: true, riders: 1 },
-    mid: { pixel: 1, maxPixel: 1, shadows: false, riders: 0.5 },
-    low: { pixel: 0.7, maxPixel: 1, shadows: false, riders: 0.25 },
+    // cullSmall・cullMedium：小物・中くらいの物を描く距離 m（遠くの小物を描かない）
+    high: { pixel: 1, maxPixel: 3, shadows: true, riders: 1, hide: [], far: FOG_FAR + 50, particles: 1, cullSmall: 170, cullMedium: 330 },
+    mid: { pixel: 1, maxPixel: 1, shadows: false, riders: 0.5, hide: DECOR_MID, far: FOG_FAR + 50, particles: 0.5, cullSmall: 120, cullMedium: 260 },
+    low: { pixel: 0.7, maxPixel: 1, shadows: false, riders: 0.25, hide: DECOR_LOW, far: 300, particles: 0.25, cullSmall: 80, cullMedium: 200 },
   };
+  // 遠くの小物を描かない：区間全体に散らばる小物（電柱・ガードパイプ・点字ブロック・墓石など）は、1 つの InstancedMesh に
+  // 区間のぶん全部が入っているので、画面の外でも遠くでも描いてしまう。カメラから一定の距離の物だけを並べ直して描く。
+  // 大きさ（形の半径）で距離を変える。動かす物（鳥・自動ドア）は対象外。カメラが CULL_MOVE m 動くたびに並べ直す
+  const CULL_SKIP = new Set(['crow', 'crowFlyA', 'crowFlyB', 'pigeon', 'pigeonFlyA', 'pigeonFlyB', 'autoDoors', 'goalConfetti']);
+  const CULL_MOVE = 15;
+  const cull = { list: [], group: null, at: null, far: 0 };
+  function setupDistanceCull(group) {
+    cull.list = [];
+    cull.group = group;
+    cull.at = null;
+    if (!group) return;
+    group.traverse((o) => {
+      if (!o.isInstancedMesh || o.count < 30 || CULL_SKIP.has(o.name) || o.userData.cull) return;
+      const geo = o.geometry;
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      const size = geo.boundingSphere.radius;
+      if (size > 14) return; // 大きな物（建物のまとまりなど）は対象外
+      const n = o.count, mats = o.instanceMatrix.array.slice(0, n * 16), cols = o.instanceColor ? o.instanceColor.array.slice(0, n * 3) : null;
+      const centers = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) (centers[2 * i] = mats[16 * i + 12]), (centers[2 * i + 1] = mats[16 * i + 14]);
+      o.userData.cull = { n, mats, cols, centers, small: size < 2.5 };
+      cull.list.push(o);
+    });
+  }
+  function updateDistanceCull(force) {
+    if (!cull.list.length) return;
+    const c = camera.position;
+    if (!force && cull.at && Math.hypot(c.x - cull.at[0], c.z - cull.at[1]) < CULL_MOVE) return;
+    cull.at = [c.x, c.z];
+    for (const o of cull.list) {
+      const d = o.userData.cull, R = d.small ? quality.cullSmall : quality.cullMedium, R2 = R * R;
+      const M = o.instanceMatrix.array, C = o.instanceColor?.array;
+      let k = 0;
+      for (let i = 0; i < d.n; i++) {
+        const dx = d.centers[2 * i] - c.x, dz = d.centers[2 * i + 1] - c.z;
+        if (dx * dx + dz * dz > R2) continue;
+        if (k !== i) {
+          M.set(d.mats.subarray(16 * i, 16 * i + 16), 16 * k);
+          if (C && d.cols) C.set(d.cols.subarray(3 * i, 3 * i + 3), 3 * k);
+        }
+        k++;
+      }
+      o.count = k;
+      o.instanceMatrix.needsUpdate = true;
+      if (o.instanceColor) o.instanceColor.needsUpdate = true;
+      o.boundingSphere = null; // 画面の外かどうかの判定用の球を、並べ直した物で作り直させる
+    }
+  }
+
+  // 区間の立体に、軽さの設定の「隠す飾り」を当てる（作り終えたときと、設定を変えたとき）。
+  // visible は少しずつ見せる仕組み（reveal）と季節・天気の出し分けが使うので、隠すのは描く層（layers）を 1 にして行う
+  const HIDDEN_LAYER = 1;
+  function applyQualityTo(group) {
+    if (!group) return;
+    const hide = new Set(quality.hide);
+    group.traverse((o) => {
+      if (!o.name || o === group) return;
+      const hidden = hide.has(o.name);
+      if (o.userData.qualityHidden === hidden || (o.userData.qualityHidden === undefined && !hidden)) return;
+      o.userData.qualityHidden = hidden;
+      o.traverse((c) => c.layers.set(hidden ? HIDDEN_LAYER : 0));
+    });
+  }
+
   let quality = QUALITY.high;
+  let fogFarBase = FOG_FAR; // 天気で決まる霧の遠さ（軽さの設定で、これより近くにすることがある）
   let lastDpr = window.devicePixelRatio || 1;
   let fps = 60; // 画面の滑らかさ（1 秒に描く回数。なめらかにした値）
   scene.add(player, ghost, headPool);
@@ -6063,6 +6391,8 @@ export function createRenderer3D(canvas) {
     world = w.group; // まだ作っている途中なら null
     worldMap = map;
     if (world) scene.add(world);
+    applyQualityTo(world);
+    setupDistanceCull(world);
     signalMeshes.obs = null; // 信号は新しい区間の高さで置き直す
     camAngle = null;
     cam.back = null;
@@ -6129,6 +6459,8 @@ export function createRenderer3D(canvas) {
       if (w.group) {
         world = w.group;
         scene.add(world);
+        applyQualityTo(world);
+        setupDistanceCull(world);
         signalMeshes.obs = null;
       }
     }
@@ -6489,7 +6821,8 @@ export function createRenderer3D(canvas) {
   // big は観光バス・タンクローリー・引っ越し・ゴミ収集車・宣伝トラック、jogger・stroller・courier は歩道の人、cargo は自転車便
   // pupil は学校の近くの下校する子ども、bather は銭湯の近くの湯おけを持つ人
   // police は白い自転車で見回りをするおまわりさん、daycare は保育園のお散歩カート
-  const RIDERS = { cycle: 8, motor: 5, emergency: 1, dog: 3, vendor: 1, mikoshi: 1, big: 2, jogger: 2, stroller: 1, courier: 1, cargo: 1, pupil: 2, bather: 1, police: 1, daycare: 1 };
+  // election は手を振る人を乗せてゆっくり走る選挙カー
+  const RIDERS = { cycle: 8, motor: 5, emergency: 1, dog: 3, vendor: 1, mikoshi: 1, big: 2, jogger: 2, stroller: 1, courier: 1, cargo: 1, pupil: 2, bather: 1, police: 1, daycare: 1, election: 1 };
   const ON_FOOT = new Set(['cycle', 'dog', 'mikoshi', 'jogger', 'stroller', 'courier', 'cargo', 'pupil', 'bather', 'police', 'daycare']); // 一方通行を気にしない
   const BIKERS = new Set(['cycle', 'police']); // 自転車の形で、ペダルをこぐ
   const BIG_CARS = ['openBus', 'tanker', 'mover', 'garbage', 'adTruck'];
@@ -6508,6 +6841,18 @@ export function createRenderer3D(canvas) {
     let o;
     if (kind === 'police') {
       o = makeBike({ frame: 0xf4f4f4, jersey: 0x24345a, shorts: 0x24345a, helmet: 0xf4f4f4 }, 1, 'city'); // 白い自転車・紺の制服・白いヘルメット
+    } else if (kind === 'election') {
+      const g = city11.geos;
+      if (!g) return null;
+      o = new THREE.Group();
+      const body = new THREE.Mesh(g.electionVan.body, STREET_MAT);
+      body.castShadow = true;
+      const waver = new THREE.Mesh(g.waver.body, STREET_MAT);
+      waver.position.set(-0.95, 1.55, 0.4); // 左の窓から（歩道の側）
+      waver.rotation.y = Math.PI / 2;
+      o.add(body, waver);
+      o.userData.waver = waver;
+      o.userData.body = body;
     } else if (kind === 'daycare') {
       const g = city10.geos;
       if (!g) return null;
@@ -6624,7 +6969,7 @@ export function createRenderer3D(canvas) {
       const len = Math.hypot(sg.x2 - sg.x1, sg.y2 - sg.y1);
       const speed = {
         cycle: 3.5 + Math.random() * 2.5, police: 3.2, daycare: 0.7, emergency: 12 + Math.random() * 2, dog: 1.1 + Math.random() * 0.3, vendor: 2.2 + Math.random() * 0.6, mikoshi: 0.7,
-        big: 7 + Math.random() * 2, jogger: 2.6 + Math.random() * 0.6, stroller: 1.0, courier: 1.2, cargo: 4 + Math.random(), pupil: 1.0, bather: 0.9,
+        big: 7 + Math.random() * 2, election: 3.5, jogger: 2.6 + Math.random() * 0.6, stroller: 1.0, courier: 1.2, cargo: 4 + Math.random(), pupil: 1.0, bather: 0.9,
       }[kind] ?? 8 + Math.random() * 4;
       riders.list.push({ kind, o, road: r, v: dir > 0 ? sg.v : sg.v + 1, dir, s: Math.random() * len, speed, side: Math.random(), life: kind === 'emergency' ? 30 : Infinity });
       return;
@@ -6690,6 +7035,7 @@ export function createRenderer3D(canvas) {
         rd.o.position.set(x, h + bob, z);
         rd.o.rotation.y = -angle;
         if (rd.kind === 'mikoshi') rd.o.userData.body.rotation.z = Math.sin(riders.clock * 1.6) * 0.06; // わっしょいと左右に揺らす
+        if (rd.o.userData.waver) rd.o.userData.waver.rotation.z = Math.sin(riders.clock * 5) * 0.35; // 手を振る
         if (rd.o.userData.lamp) rd.o.userData.lamp.visible = Math.floor(riders.clock * 4) % 2 === 0; // 回転灯の点滅
       }
     }
@@ -6970,6 +7316,7 @@ export function createRenderer3D(canvas) {
       }
     }
     petals.mesh.visible = currentSeason === 'spring' && currentWeather !== 'snow';
+    petals.mesh.count = Math.round(PETALS * quality.particles); // 軽さの設定で減らす
     if (!petals.mesh.visible) return;
     const c = camera.position, D = petals.data;
     for (let i = 0; i < PETALS; i++) {
@@ -7559,6 +7906,7 @@ export function createRenderer3D(canvas) {
       for (let i = 0; i < LEAVES; i++) leaves.data.set([c.x + (Math.random() - 0.5) * 2 * PETAL_BOX, Math.random() * 12, c.z + (Math.random() - 0.5) * 2 * PETAL_BOX, Math.random() * 6.28, 0], i * 5);
     }
     leaves.mesh.visible = currentSeason === 'autumn' && currentWeather !== 'snow';
+    leaves.mesh.count = Math.round(LEAVES * quality.particles); // 軽さの設定で減らす
     if (!leaves.mesh.visible) return;
     const c = camera.position, D = leaves.data;
     const wrap = (v, cc, half) => cc + ((((v - cc + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
@@ -7729,6 +8077,90 @@ export function createRenderer3D(canvas) {
     camera.position.copy(replayCam);
     camera.lookAt(replayLook.set(pose.x, h + 1.0, pose.y));
     return true;
+  }
+
+  // ---- 街の物 その 12 の動き：盆踊り・タワークレーン・ランニング大会・選挙カー・記念写真 ----
+  const c11 = { t: 0 };
+  const c11m = new THREE.Matrix4(), c11q = new THREE.Quaternion(), c11p = new THREE.Vector3(), c11one = new THREE.Vector3(1, 1, 1), c11up = new THREE.Vector3(0, 1, 0);
+  function syncCity11(game, dt) {
+    c11.t += dt;
+    const ud = world?.userData;
+    if (!ud) return;
+    // 盆踊り：夏の夕方と夜だけ。輪になってゆっくり回り、ときどき手を上げる（2 つの形を交互に）
+    if (ud.bonGroup) ud.bonGroup.visible = currentTime !== 'day';
+    if (ud.springNight) ud.springNight.visible = currentTime !== 'day'; // ぼんぼり（夜桜）
+    for (const b of ud.bon ?? []) {
+      if (!ud.bonGroup.visible) break;
+      const counts = [0, 0];
+      for (let i = 0; i < BON_DANCERS; i++) {
+        const a = (i / BON_DANCERS) * Math.PI * 2 + c11.t * 0.12;
+        const step = Math.floor(c11.t * 1.2 + i * 0.5) % 2; // 手の形を交互に
+        const x = Math.cos(a) * b.R, z = Math.sin(a) * b.R;
+        c11q.setFromAxisAngle(c11up, -a); // 輪の進む向きを向く
+        b.dancers[step].setMatrixAt(counts[step]++, c11m.compose(c11p.set(x, Math.abs(Math.sin(c11.t * 2.4 + i)) * 0.05, z), c11q, c11one));
+      }
+      b.dancers.forEach((m, k) => {
+        m.count = counts[k];
+        m.instanceMatrix.needsUpdate = true;
+      });
+    }
+    // タワークレーン：腕がゆっくり行ったり来たり回る
+    for (const c of ud.cranes ?? []) c.top.rotation.y = Math.sin(c11.t * 0.08 + c.phase) * 1.4 + c.phase;
+    syncMarathon(game, dt, ud);
+  }
+
+  // ランニング大会：4 分に 1 回、40 人のランナーが列になって大きな車道を走る（列が通るあいだ、給水所が出る）
+  function syncMarathon(game, dt, ud) {
+    const mt = ud.marathon;
+    if (!mt) return;
+    mt.t += dt;
+    const cycle = 240, active = mt.t % cycle < (mt.len / 3.6 + 30);
+    ud.marathonGroup.visible = active;
+    const counts = [0, 0, 0, 0];
+    if (active) {
+      const head = (mt.t % cycle) * 3.6;
+      for (const r of mt.runners) {
+        const s = head + r.off;
+        if (s < 0 || s > mt.len || counts[r.v] >= MARATHON_RUNNERS) continue;
+        let i = 0;
+        while (i + 2 < mt.cum.length && mt.cum[i + 1] < s) i++;
+        const segLen = mt.cum[i + 1] - mt.cum[i] || 1, t = (s - mt.cum[i]) / segLen;
+        const x1 = mt.p[2 * i], z1 = mt.p[2 * i + 1], x2 = mt.p[2 * i + 2], z2 = mt.p[2 * i + 3];
+        const hx = (x2 - x1) / segLen, hz = (z2 - z1) / segLen;
+        const off = mt.w * 0.18 + r.lane; // 進む向きの左の車線
+        c11q.setFromAxisAngle(c11up, Math.atan2(-hx, -hz));
+        c11p.set(x1 + (x2 - x1) * t + hz * off, Y.road + Math.abs(Math.sin(c11.t * 9 + r.ph)) * 0.06, z1 + (z2 - z1) * t - hx * off);
+        mt.meshes[r.v].setMatrixAt(counts[r.v]++, c11m.compose(c11p, c11q, c11one));
+      }
+    }
+    mt.meshes.forEach((m, k) => {
+      m.count = counts[k];
+      m.instanceMatrix.needsUpdate = true;
+    });
+  }
+
+  // 記念写真：勝ってゴールした瞬間の画面（3D の世界だけ）を写真にして、結果画面に白い枠付きで出す（hud.photo）
+  const photo = { canvas: null, taken: false };
+  function takeGoalPhoto(game) {
+    if (photo.taken || !game.result?.win) return;
+    photo.taken = true;
+    const src = renderer.domElement;
+    const w = 320, h = Math.round((w * src.height) / src.width);
+    const cv = photo.canvas ?? (photo.canvas = document.createElement('canvas'));
+    cv.width = w + 16;
+    cv.height = h + 40;
+    const x = cv.getContext('2d');
+    x.fillStyle = '#f8f6f0'; // 写真の白い枠（下を広く）
+    x.fillRect(0, 0, cv.width, cv.height);
+    try {
+      x.drawImage(src, 8, 8, w, h);
+    } catch {
+      return;
+    }
+    x.fillStyle = '#3a3e46';
+    x.font = 'bold 14px sans-serif';
+    x.textAlign = 'center';
+    x.fillText(`${game.map?.from ?? ''} → ${game.map?.to ?? ''}　ゴール！`, cv.width / 2, h + 28);
   }
 
   // ---- 負けたときの演出：先に着いた電車のドアが、ホームの側で開き、乗客が降りてくる。カメラはホームから電車を見る ----
@@ -8412,7 +8844,18 @@ export function createRenderer3D(canvas) {
     setQuality(q) {
       quality = QUALITY[q] ?? QUALITY.high;
       if (shadows) sun.castShadow = quality.shadows;
+      // 描く距離（霧もそれに合わせて近くに）
+      camera.far = quality.far;
+      camera.updateProjectionMatrix();
+      if (scene.fog) scene.fog.far = Math.min(fogFarBase, quality.far - 30);
+      for (const wd of worlds.values()) applyQualityTo(wd.group);
+      updateDistanceCull(true);
       this.resize(viewW, viewH, lastDpr);
+    },
+
+    // 今の区間の立体を作るのにかかった時間 ms（街の物の種類ごと）と、今の画面を描いた回数・三角形の数（重さの見直し用）
+    get stats() {
+      return { build: world?.userData.buildTimes ?? null, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, fps: Math.round(fps) };
     },
 
     setAtmosphere(time, weather) {
@@ -8439,7 +8882,8 @@ export function createRenderer3D(canvas) {
       fogBase.copy(fog);
       for (const key of ['top', 'mid', 'horizon']) skyBase[key].copy(u[key].value);
       scene.fog.near = w.fogNear;
-      scene.fog.far = w.fogFar;
+      fogFarBase = w.fogFar;
+      scene.fog.far = Math.min(w.fogFar, quality.far - 30); // 軽さの設定で描く距離を短くしたときは、霧も近くに
       renderer.setClearColor(fog);
       hemi.color.set(t.hemi[0]);
       hemi.groundColor.set(t.hemi[1]);
@@ -8505,6 +8949,8 @@ export function createRenderer3D(canvas) {
       if (world !== w.group) {
         world = w.group;
         scene.add(world);
+        applyQualityTo(world);
+        setupDistanceCull(world);
         signalMeshes.obs = null;
       }
     },
@@ -8591,6 +9037,7 @@ export function createRenderer3D(canvas) {
       syncCity8(game, dt);
       syncCity9(game, dt);
       syncCity10(game, dt);
+      syncCity11(game, dt);
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
@@ -8600,6 +9047,7 @@ export function createRenderer3D(canvas) {
         camera.lookAt(...dc.look);
       }
       if (game.replay) syncReplay(game, dt); // ゴール後のリプレイ（自転車とカメラを上書き）
+      updateDistanceCull(false); // 遠くの小物を描かない（カメラが動いたら並べ直す）
       sky.position.copy(camera.position);
       syncSky(game, dt);
       placeFarTowers();
@@ -8607,10 +9055,14 @@ export function createRenderer3D(canvas) {
       locateLandmarks(game);
       fadeOccluders(game, dt);
       renderer.render(scene, camera);
+      // 記念写真：くす玉が割れて 1.2 秒のところで、描いたばかりの画面を写す
+      if (game.state !== 'result') photo.taken = false;
+      else if (goalShow.openAt !== null && goalShow.t - goalShow.openAt > 1.2) takeGoalPhoto(game);
+      r3d.hud.photo = game.state === 'result' && photo.taken && game.result?.win ? photo.canvas : null;
       // 勝ったときの結果画面に出す表彰台の絵
       r3d.hud.podium = game.state === 'result' && game.result?.win ? podiumImage(game, dt) : null;
       // 今回だけ画面の外でも描いた区画を元に戻す
-      for (const m of unculled) m.frustumCulled = true;
+      for (const m of unculled) m.frustumCulled = !m.userData.keepUnculled; // 動かす物（鳥・自動ドアなど）は画面の外の判定をしないまま
       unculled = [];
     },
   };

@@ -1036,6 +1036,20 @@ function drawGoalFlash(ctx, game, view) {
   ctx.restore();
 }
 
+// 記念写真：少し傾けて、影を付けて置く
+function drawPhoto(ctx, view, y, h) {
+  const img = view.photo;
+  const w = (h * img.width) / img.height;
+  ctx.save();
+  ctx.translate(view.w / 2, y + h / 2);
+  ctx.rotate(-0.035);
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 3;
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  ctx.restore();
+}
+
 // リプレイ中：結果画面の代わりに、上に小さく「リプレイ」と戻り方だけを出す
 function drawReplayBanner(ctx, game, view) {
   const t = `リプレイ（2 倍速）　${game.touch ? 'タップ' : 'どれかのキー'}で結果に戻る`;
@@ -1062,6 +1076,7 @@ function drawResult(ctx, game, view) {
         { height: 64, draw: (y, h) => drawWinTitle(ctx, game, view, y, h) },
         [`タイム ${formatTime(r.time)}　電車より ${(game.train.limit - r.time).toFixed(1)} 秒早く到着`, { size: 18 }],
         medalLine(r.medal),
+        ...(view.photo ? [{ height: 132, draw: (y, h) => drawPhoto(ctx, view, y, h) }] : []),
         ...(view.podium ? [{ height: 150, draw: (y, h) => ctx.drawImage(view.podium, view.w / 2 - (h * 360) / 210 / 2, y, (h * 360) / 210, h) }] : []),
         [
           r.newBest ? 'ベストタイム更新！' : `ベストタイム ${formatTime(game.best)}`,
