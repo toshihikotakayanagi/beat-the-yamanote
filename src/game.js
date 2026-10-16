@@ -737,7 +737,8 @@ window.addEventListener('keydown', (e) => {
   } else if (s === 'ready' && (e.code === 'KeyV' || e.code === 'KeyU' || e.code === 'KeyK')) {
     act({ KeyV: 'bikeType', KeyU: 'outfit', KeyK: 'helmet' }[e.code]);
   } else if (e.code === 'KeyB') {
-    audio.ringBell(); // 自転車のベル（鳴らすだけ）
+    audio.ringBell(); // 自転車のベル（鳴らすだけ。3D版は音符も出る）
+    renderer.ringBell?.();
   } else if (e.code === 'KeyC' && renderer.nextCamera) {
     switchCamera();
   } else if (e.code === 'KeyH' && s === 'title') {
@@ -843,6 +844,8 @@ function frame(now) {
 // ゲームを始める。renderer は世界の描き方（上の説明）
 export async function startGame(r) {
   renderer = r;
+  // 3D版の稲光から少し遅れて雷の音（far が大きいほど遠くて小さい）
+  window.addEventListener('thunder', (e) => audio.thunder(e.detail?.far ?? 0.5));
   window.addEventListener('resize', resize);
   resize();
   setMuted(load('muted') === '1');

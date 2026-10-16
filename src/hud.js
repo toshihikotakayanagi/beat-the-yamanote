@@ -5,6 +5,7 @@ import { drawMinimap, minimapRect, minimapImage, IMAGE_SCALE } from './minimap.j
 import { fastestRoute } from './route.js';
 import { drawLandmarks, drawLandmarks3D } from './landmarks.js';
 import { bikeTypeOf, outfitOf, helmetOf } from './outfits.js';
+import { PLAYER_CONFIG } from './player.js';
 
 const YAMANOTE_GREEN = '#9acd32';
 const PLAYER_YELLOW = '#ffcc33';
@@ -194,6 +195,31 @@ function drawRaceBar(ctx, game, view) {
 
 // 左上（レースバーの下）の板：速度を大きく、その下にゴールまでの残りと、今いる道の名前
 const STATUS = { x: 10, y: 92, w: 146, h: 88 };
+// 風の線：速さが最高の 6 割を超えると、画面の外側から真ん中へ向かう白い線を出す（速いほど多く濃く）
+function drawSpeedLines(ctx, game, view) {
+  const k = Math.max(0, Math.min(1, (game.player.speed / PLAYER_CONFIG.maxSpeed - 0.6) / 0.4));
+  if (k <= 0) return;
+  const cx = view.w / 2, cy = view.h * 0.45, R = Math.hypot(view.w, view.h) / 2;
+  const t = performance.now() / 1000;
+  ctx.save();
+  ctx.lineCap = 'round';
+  const n = Math.round(10 + 22 * k);
+  for (let i = 0; i < n; i++) {
+    // 線ごとに決まった向きと、時間で流れる位置（同じ所にちらつかないよう、少しずつずらす）
+    const v = Math.sin(i * 91.3) * 43758.5453;
+    const a = (v - Math.floor(v)) * Math.PI * 2;
+    const u = (t * (1.6 + (i % 5) * 0.25) + i * 0.37) % 1;
+    const r0 = R * (0.62 + 0.38 * (1 - u)), r1 = r0 + R * (0.08 + 0.12 * k);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${(0.08 + 0.22 * k) * Math.sin(u * Math.PI)})`;
+    ctx.lineWidth = 1.5 + (i % 3);
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+    ctx.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawStatus(ctx, game) {
   const { x, y, w, h } = STATUS;
   const kmh = Math.abs(game.player.speed) * 3.6;
@@ -1075,6 +1101,8 @@ export function drawHud(ctx, game, view) {
   }
   // 雨・雪（メニュー画面でも降らせる）
   drawWeather(ctx, game, view);
+  // 3D版：速く走ると、画面の端に風の線が流れる
+  if (game.mode === '3d' && game.state === 'racing' && !game.paused) drawSpeedLines(ctx, game, view);
   // メニュー画面では出さない（暗くした地図の上でも文字が読めてしまい、メニューの文字と紛れる）
   if (!menu && view.landmarks3d) drawLandmarks3D(ctx, game, view, avoid);
   else if (!menu && view.landmarks !== false) drawLandmarks(ctx, game, view, avoid);

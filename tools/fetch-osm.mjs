@@ -149,13 +149,18 @@ const facilitiesQuery = (bbox) => `[out:json][timeout:90];
 );
 out tags center bb;`;
 
+// 街の窓口（見た目だけ）：病院・郵便局・銀行
+const servicesQuery = (bbox) => `[out:json][timeout:90];
+nwr["amenity"~"^(hospital|post_office|bank)$"](${bbox});
+out tags center;`;
+
 // 路面電車（都電荒川線）の線路。見た目だけ（3D版が線路と走る電車を描く。走れる場所や道路の高さには使わない）
 const tramsQuery = (bbox) => `[out:json][timeout:90];
 way["railway"="tram"](${bbox});
 out geom;`;
 
-const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery, trams: tramsQuery, facilities: facilitiesQuery };
-const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所', trams: '路面電車', facilities: '学校・ガソリンスタンド・銭湯・駐車場・シェアサイクル・噴水' };
+const QUERIES = { roads: roadsQuery, landmarks: landmarksQuery, areas: areasQuery, nobike: noBikeQuery, trees: treesQuery, street: streetQuery, shops: shopsQuery, extras: extrasQuery, trams: tramsQuery, facilities: facilitiesQuery, services: servicesQuery };
+const KIND_NAMES = { roads: '道路', landmarks: 'ランドマーク', areas: '公園・水域・線路', nobike: '自転車で入れない場所', trees: '木', street: 'バス停・自動販売機', shops: 'コンビニ', extras: '郵便ポスト・消火栓・駐輪場・工事中の所', trams: '路面電車', facilities: '学校・ガソリンスタンド・銭湯・駐車場・シェアサイクル・噴水', services: '病院・郵便局・銀行' };
 
 // kind：'roads'（道路など）、'landmarks'、'areas'。取得結果は種類ごとにキャッシュする
 async function loadOsm(id, kind, bbox, refresh) {
@@ -994,6 +999,23 @@ function convertFacilities(osm, frame, bounds) {
   return out;
 }
 
+// 街の窓口 services: { hospitals, posts, banks }。どれも [x, y, ...]（見た目だけ。3D版が近くの建物の道に向いた壁に入口を付ける）
+const SERVICE_KINDS = { hospital: 'hospitals', post_office: 'postOffices', bank: 'banks' };
+function convertServices(osm, frame, bounds) {
+  const { toXY } = frame;
+  const out = Object.fromEntries(Object.values(SERVICE_KINDS).map((k) => [k, []]));
+  for (const el of osm.elements) {
+    const tags = el.tags ?? {};
+    const c = el.type === 'node' ? el : el.center;
+    const list = out[SERVICE_KINDS[tags.amenity]];
+    if (!c || !list || (tags.level && !/^0$|^1$/.test(tags.level)) || /underground/.test(tags.location ?? '')) continue;
+    const [x, y] = toXY(c.lat, c.lon);
+    if (x < bounds.minX - 20 || x > bounds.maxX + 20 || y < bounds.minY - 20 || y > bounds.maxY + 20) continue;
+    list.push(Math.round(x * 10) / 10, Math.round(y * 10) / 10);
+  }
+  return out;
+}
+
 // 路面電車の線路 trams: [{ n: 路線の名前, p: [x, y, ...] }]（地下・車庫の線路は外す）
 function convertTrams(osm, frame, bounds) {
   const { toXY } = frame;
@@ -1088,6 +1110,7 @@ async function processSection(id, refresh) {
   Object.assign(data, convertExtras(await loadOsm(id, 'extras', frame.bbox, refresh), frame, data.bounds));
   data.trams = convertTrams(await loadOsm(id, 'trams', frame.bbox, refresh), frame, data.bounds);
   data.facilities = convertFacilities(await loadOsm(id, 'facilities', frame.bbox, refresh), frame, data.bounds);
+  data.services = convertServices(await loadOsm(id, 'services', frame.bbox, refresh), frame, data.bounds);
 
   const outPath = join(ROOT, 'data', `${id}.json`);
   await mkdir(dirname(outPath), { recursive: true });
@@ -1095,7 +1118,7 @@ async function processSection(id, refresh) {
   await writeFile(outPath, json);
   console.log(
     `保存: ${outPath} (${(json.length / 1024).toFixed(0)} KB) ` +
-      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3} / ポスト ${data.posts.length / 2} / 消火栓 ${data.hydrants.length / 2} / 駐輪場 ${data.bikeParks.length / 2} / 工事 ${data.works.length / 2} / 路面電車 ${data.trams.length} / 施設 ${Object.entries(data.facilities).map(([k, v]) => `${k} ${v.length / 4}`).join(' ')}`,
+      `道路 ${data.roads.length} / 建物 ${data.buildings.length} / 信号 ${data.signals.length} / ランドマーク ${data.landmarks.length} / 面 ${data.areas.length} / 川・線路 ${data.lines.length} / 木 ${data.trees.length / 3} / バス停 ${data.stops.length / 2} / 自販機 ${data.vending.length / 2} / コンビニ ${data.shops.length / 3} / ポスト ${data.posts.length / 2} / 消火栓 ${data.hydrants.length / 2} / 駐輪場 ${data.bikeParks.length / 2} / 工事 ${data.works.length / 2} / 路面電車 ${data.trams.length} / 施設 ${Object.entries(data.facilities).map(([k, v]) => `${k} ${v.length / 4}`).join(' ')} / 窓口 ${Object.entries(data.services).map(([k, v]) => `${k} ${v.length / 2}`).join(' ')}`,
   );
   console.log(
     `  ${data.from}→${data.to}: スタートは駅から ${info.startOffset.toFixed(0)} m、ゴールは駅から ${info.goalOffset.toFixed(0)} m、` +

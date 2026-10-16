@@ -376,6 +376,31 @@ export function crossingChirp(kind, vol) {
 }
 
 // 自転車のベル「チリンチリン」
+// 雷：低くうなる雑音が、ゴロゴロと強くなったり弱くなったりして消える（far：0 近い〜1 遠い）
+export function thunder(far = 0.5) {
+  if (!ready()) return;
+  const t = ctx.currentTime, dur = 2.6 + far;
+  const len = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < len; i++) {
+    last = last * 0.97 + (Math.random() * 2 - 1) * 0.03; // 低い音の雑音
+    const k = i / len;
+    const rumble = 0.6 + 0.4 * Math.sin(k * 40 + Math.sin(k * 13) * 3);
+    data[i] = last * 6 * rumble * Math.min(1, k * 25) * (1 - k) ** 1.5;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 320 - far * 160;
+  const gain = ctx.createGain();
+  gain.gain.value = 0.55 * (1 - far * 0.6);
+  src.connect(lp).connect(gain).connect(master);
+  src.start(t);
+}
+
 export function ringBell() {
   if (!ready()) return;
   const t = ctx.currentTime;
