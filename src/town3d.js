@@ -1,9 +1,9 @@
-// 3D版の街の物（その 6〜13）：季節と天気の飾り・動物・縁日・移動販売・船・電車の開いたドア・表彰台・タイトルのミニチュア・
+// 3D版の街の物（その 6〜14）：季節と天気の飾り・動物・縁日・移動販売・船・電車の開いたドア・表彰台・タイトルのミニチュア・
 // 花火・富士山・大きな車・公園や配達の人・アーケード・大型ビジョン・自転車の飾り・寺社・交番・首都高・夜の店・乗客・雲と虹・
 // 東京湾の船・駅員さん・学校・ガソリンスタンド・駐車場・銭湯・噴水・シェアサイクル・撮り鉄・航空障害灯・掲示板・病院・郵便局・
 // 銀行・自動ドア・はとバス・宅配便・稲光・音符・墓地・屋上の看板と給水塔・立体駐車場・ペットショップと花屋・消防署・お散歩カート・
-// 盆踊り・建設中のビル・ロータリー・川沿いの桜・ランニング大会・選挙カー・屋台村・カモと白鳥・打ち水・窓ふきのゴンドラなど。
-// どれも見た目だけ。モデルは tools/build-city5.py〜build-city12.py で作る。
+// 盆踊り・建設中のビル・ロータリー・川沿いの桜・ランニング大会・選挙カー・屋台村・カモと白鳥・打ち水・窓ふきのゴンドラ・傘の花・名所のライトアップ・イルミネーション・屋形船の夜の灯など。
+// どれも見た目だけ。モデルは tools/build-city5.py〜build-city13.py で作る。
 // 置く処理（add…Props）は src/render3d.js の区間の立体を作る手順から、動かす処理は createRenderer3D の中から呼ぶ。
 // 共通の部品（材質・形を作る道具・置ける場所の判定など）は src/render3d.js から読み込む（お互いに読み込み合うので、
 // このファイルのいちばん外側では、render3d.js の const や class を使わない。関数の中で使うのはよい）
@@ -2252,7 +2252,191 @@ function addCity12Props(group, map, roadHeights, buildingHeights) {
 }
 
 
+
+// ---- 街の物 その 14（Blender で作ったモデル。tools/build-city13.py） ----
+// 雨の日の傘の花・名所のライトアップ（夕方と夜）・冬の夜のイルミネーションのアーチ・屋形船の夜の灯。どれも見た目だけ
+const CITY13_URL = 'data/models/city13.glb';
+const CITY13_NAMES = {
+  umbrella0: 'C13_UmbrellaGroup0', umbrella1: 'C13_UmbrellaGroup1', uplight: 'C13_Uplight', upBeam: 'C13_UpBeam',
+  lightArch: 'C13_LightArch', yakataNight: 'C13_YakataNight', yakataReflect: 'C13_YakataReflect',
+};
+const city13 = { geos: null, done: false };
+loadModelParts(CITY13_URL, CITY13_NAMES)
+  .then((parts) => {
+    const isLight = (part) => part.material.startsWith('Light');
+    const geos = {};
+    for (const [key, list] of Object.entries(parts)) {
+      const glow = list.some(isLight) ? addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? part.color : null)).build() : null;
+      geos[key] = { body: addModelParts(new GeometryBuilder(true), list, (part) => (isLight(part) ? null : part.color)).build(), glow };
+    }
+    // 光の筋：上の端を黒く（足し算で重ねるので透明になる）して、上へ行くほど薄く消えるようにする
+    // また、下の端（投光器の高さ 0.35）が原点になるよう、高さを 0〜1 に直す（ゲームで高さを伸ばしても、下は投光器に付いたまま）
+    const beam = geos.upBeam.glow, pos = beam.attributes.position, col = beam.attributes.color;
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) > 0.9) col.setXYZ(i, 0, 0, 0);
+      pos.setY(i, (pos.getY(i) - 0.35) / 0.65);
+    }
+    pos.needsUpdate = true;
+    beam.computeBoundingSphere();
+    col.needsUpdate = true;
+    city13.geos = geos;
+  })
+  .catch((e) => console.warn(`街の物（その 14）のモデルを読み込めませんでした: ${CITY13_URL}`, e))
+  .finally(() => (city13.done = true));
+// ライトアップの光の筋（足し算で重ねる。色は建物ごと）・屋形船の夜の灯（夕方と夜だけ。syncCity13）・水面に映る光
+const BEAM_MAT = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const YAKATA_NIGHT_MAT = new THREE.MeshBasicMaterial({ vertexColors: true });
+const REFLECT_MAT = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
+const LIGHTUP_NAME = /駅舎|議事堂|迎賓館|博物館|美術館|教会|聖堂|図書館|劇場|ホテル|会館|記念館|本館|庁舎|ホール|大学|神宮|寺$/; // 名所（マンションやオフィスのタワーは外す）
+
+function addCity13Props(group, map, roadHeights, buildingHeights) {
+  const g = city13.geos;
+  if (!g) return;
+  const rnd = seededRng(`${map.id ?? 'city'}-13`);
+  const along = (dx, dz) => Math.atan2(-dx, -dz); // モデルの前（ローカルの -z）を (dx, dz) の向きに
+  const lists = new Map();
+  const tmpQ = new THREE.Quaternion(), tmpS = new THREE.Vector3(), tmpP = new THREE.Vector3(), Y_UP = new THREE.Vector3(0, 1, 0);
+  const put = (where, key, x, h, z, rotY, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Matrix4().compose(tmpP.set(x, h, z), tmpQ.setFromAxisAngle(Y_UP, rotY), tmpS.set(sx, sy, sz));
+    const id = `${where}|${key}`;
+    if (!lists.has(id)) lists.set(id, []);
+    lists.get(id).push(m);
+  };
+  const free = (x, z, onPath = true) => inBounds(map, x, z) && freeSpot(map, roadHeights, x, z, onPath);
+  const taken = [...(group.userData.taken ?? [])];
+  const clear = (x, z, r) => taken.every(([tx, tz, tr]) => Math.hypot(tx - x, tz - z) > tr + r);
+  const stations = (map.landmarks ?? []).filter((l) => l.k === 'station' && inBounds(map, l.x, l.y));
+  const rainGroup = group.userData.weatherProps?.rain ?? group;
+  const night = group.userData.nightProps ?? group;
+  const winterNight = new THREE.Group(); // 冬の夕方と夜だけ（syncCity13）
+  (group.userData.seasonal?.winter ?? group).add(winterNight);
+  group.userData.winterNight = winterNight;
+
+  // ---- 傘の花（雨の日）：駅のまわりの歩道に、傘をさした人の群れ ----
+  for (const st of stations) {
+    let n = 0;
+    for (let k = 0; k < 60 && n < 6; k++) {
+      const a = rnd() * Math.PI * 2, d = 12 + rnd() * 50;
+      const x = st.x + Math.cos(a) * d, z = st.y + Math.sin(a) * d;
+      if (surfaceAt(map, x, z).kind !== 'path' || !free(x, z) || !free(x + 1.6, z + 1.6) || !free(x - 1.6, z - 1.6) || !clear(x, z, 2)) continue;
+      put('rain', `umbrella${n % 2}`, x, Y.path, z, rnd() * Math.PI * 2);
+      n++;
+    }
+  }
+
+  // ---- 名所のライトアップ（夕方と夜）：名前のある名所の建物のまわりの地面に投光器、壁を照らす光の筋 ----
+  const beamColors = [];
+  const lit = new Set();
+  for (const l of map.landmarks ?? []) {
+    if (lit.size >= 5 || !['sight', 'building'].includes(l.k) || !LIGHTUP_NAME.test(l.n) || !inBounds(map, l.x, l.y)) continue;
+    // 名所の点を含む建物（点が建物の外なら、15m 以内でいちばん近い建物）
+    let b = map.cells.get(cellKey(l.x, l.y))?.buildings.find((b) => insidePolygon(l.x, l.y, b.p));
+    if (!b) {
+      let bd = 15;
+      for (const c of map.buildings) {
+        if (l.x < c.minX - bd || l.x > c.maxX + bd || l.y < c.minY - bd || l.y > c.maxY + bd) continue;
+        const d = Math.hypot(Math.max(c.minX - l.x, 0, l.x - c.maxX), Math.max(c.minY - l.y, 0, l.y - c.maxY));
+        if (d < bd) (bd = d), (b = c);
+      }
+    }
+    const h = b ? buildingHeights?.[b.id] ?? 0 : 0;
+    if (!b || lit.has(b) || h < 8) continue;
+    lit.add(b);
+    const tint = [0xffd8a0, 0xfff4e0, 0xa8d0ff, 0xffb070][lit.size % 4];
+    for (let i = 0; i + 3 < b.p.length; i += 2) {
+      const ax = b.p[i], az = b.p[i + 1], bx = b.p[i + 2], bz = b.p[i + 3];
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 6) continue;
+      const ux = (bx - ax) / len, uz = (bz - az) / len;
+      let nx = -uz, nz = ux;
+      if (insidePolygon((ax + bx) / 2 + nx * 0.5, (az + bz) / 2 + nz * 0.5, b.p)) (nx = -nx), (nz = -nz); // 外向き
+      const n = Math.max(1, Math.floor(len / 14)); // 14m おき
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        const x = ax + (bx - ax) * t + nx * 0.8, z = az + (bz - az) * t + nz * 0.8;
+        if (!free(x, z)) continue;
+        put('night', 'uplight', x, Y.area, z, along(-nx, -nz));
+        // 光の筋：高いビルは上まで届かせず（40m まで）、壁の幅いっぱいに広げる
+        put('night', 'upBeam', x, Y.area + 0.35, z, along(-nx, -nz), Math.min(2.2, (len / n / 4.4) * 1.1), Math.min(h * 0.6, 22), 0.5);
+        beamColors.push(tint);
+      }
+    }
+  }
+
+  // ---- イルミネーションのアーチ（冬の夕方と夜）：いちばん大きい公園の中の歩く道（なければ駅のまわりの歩道）に、トンネルのように並べる ----
+  const parks = (map.areas ?? []).filter((a) => a.k === 'park' && a.r?.[0]?.length >= 6).sort((a, b) => Math.abs(polygonArea(b.r[0])) - Math.abs(polygonArea(a.r[0])));
+  const inPark = (x, z) => parks.slice(0, 3).some((a) => insidePolygon(x, z, a.r[0]));
+  const nearStation = (x, z) => stations.some((st) => Math.hypot(st.x - x, st.y - z) < 150);
+  let arches = 0;
+  for (const pass of [inPark, nearStation]) {
+    if (arches) break;
+    for (const r of map.roads) {
+      if (arches >= 14 || !r.path || r.e || r.w > 6) continue;
+      for (let i = 0; i + 3 < r.p.length && arches < 14; i += 2) {
+        const x1 = r.p[i], z1 = r.p[i + 1], x2 = r.p[i + 2], z2 = r.p[i + 3];
+        const len = Math.hypot(x2 - x1, z2 - z1);
+        if (len < 20 || !pass((x1 + x2) / 2, (z1 + z2) / 2)) continue;
+        const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+        const n = Math.min(14 - arches, Math.floor(len / 3.2));
+        for (let k = 0; k < n; k++) {
+          const x = x1 + ux * (1.6 + k * 3.2), z = z1 + uz * (1.6 + k * 3.2);
+          // アーチの両足（道の横 2.5m）が建物や車道に入らないか
+          if (![-1, 1].every((s) => { const px = x - uz * 2.5 * s, pz = z + ux * 2.5 * s; return inBounds(map, px, pz) && !['building', 'road'].includes(surfaceAt(map, px, pz).kind); })) continue;
+          put('winterNight', 'lightArch', x, Y.path, z, faceTo(-uz, ux));
+          arches++;
+        }
+      }
+    }
+  }
+
+  // ---- 屋形船の夜の灯（夕方と夜）：止まっている屋形船（その 4 の川の船）と、川を進む屋形船（その 6）に重ねる ----
+  group.traverse((o) => {
+    if (o.name !== 'yakata' || !o.isInstancedMesh || o.material !== STREET_MAT) return;
+    const m = new THREE.Matrix4();
+    for (let k = 0; k < o.count; k++) {
+      o.getMatrixAt(k, m);
+      const e = m.elements;
+      put('night', 'yakataNight', e[12], e[13], e[14], Math.atan2(e[8], e[10]));
+    }
+  });
+  const reflects = [];
+  for (const b of group.userData.boats ?? []) {
+    if (b.kind !== 'yakata') continue;
+    const lights = new THREE.Mesh(g.yakataNight.glow, YAKATA_NIGHT_MAT);
+    const reflect = new THREE.Mesh(g.yakataReflect.glow, REFLECT_MAT);
+    reflect.position.y = -Y.river + 0.06;
+    b.o.add(lights, reflect);
+    reflects.push(lights, reflect);
+  }
+  group.userData.yakataLights = reflects;
+
+  const parents = { night, rain: rainGroup, winterNight };
+  for (const [id, list] of lists) {
+    const [where, key] = id.split('|');
+    const parent = parents[where] ?? group;
+    const glowMat = key === 'upBeam' ? BEAM_MAT : key === 'yakataNight' ? YAKATA_NIGHT_MAT : STREET_GLOW_MAT;
+    for (const [geo, material] of [[g[key].body, STREET_MAT], [g[key].glow, glowMat]]) {
+      if (!geo || geo.attributes.position.count === 0) continue;
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      list.forEach((m, i) => mesh.setMatrixAt(i, m));
+      if (key === 'upBeam') {
+        const c = new THREE.Color();
+        beamColors.forEach((hex, i) => mesh.setColorAt(i, c.setHex(hex)));
+      }
+      mesh.name = key; // デバッグ・自動テスト用
+      mesh.castShadow = material === STREET_MAT;
+      parent.add(mesh);
+    }
+  }
+  group.userData.taken = taken;
+}
+
 export {
+  addCity13Props,
+  city13,
+  BEAM_MAT,
+  YAKATA_NIGHT_MAT,
+  REFLECT_MAT,
   AUTO_DOOR_NEAR,
   AUTO_DOOR_OPEN,
   BON_DANCERS,

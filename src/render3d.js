@@ -13,8 +13,13 @@ import { PLAYER_CONFIG } from './player.js';
 import { pedLook, pedSwing } from './pedestrians.js';
 import { carLook } from './vehicles.js';
 import { signalPose, LAMPS } from './signals.js';
-// 街の物 その 6〜13（src/town3d.js。こちらの共通の部品を使うので、お互いに読み込み合う）
+// 街の物 その 6〜14（src/town3d.js。こちらの共通の部品を使うので、お互いに読み込み合う）
 import {
+  addCity13Props,
+  city13,
+  BEAM_MAT,
+  YAKATA_NIGHT_MAT,
+  REFLECT_MAT,
   AUTO_DOOR_NEAR,
   AUTO_DOOR_OPEN,
   BON_DANCERS,
@@ -3361,6 +3366,9 @@ function* buildWorldSteps(map, textures) {
   yield 0.985;
   while (!city12.done) yield 0.985;
   timed('addCity12Props', () => addCity12Props(group, map, roadHeights, heights));
+  yield 0.985;
+  while (!city13.done) yield 0.985;
+  timed('addCity13Props', () => addCity13Props(group, map, roadHeights, heights));
   yield 0.985;
   timed('addStations', () => addStations(group, map, textures));
   while (models.some((md) => !md.entry.done)) yield 0.985; // まだ読み込み中なら待つ（ふつうはもう読めている）
@@ -7166,6 +7174,12 @@ export function createRenderer3D(canvas) {
       syncCity10(game, dt);
       syncCity11(game, dt);
       syncCity12(game, dt);
+      // 街の物 その 14：冬の夜のイルミネーション、ライトアップの光のゆらぎ、屋形船の灯と水面の光（夕方と夜だけ）
+      const lit = currentTime !== 'day';
+      if (world?.userData.winterNight) world.userData.winterNight.visible = lit;
+      YAKATA_NIGHT_MAT.visible = REFLECT_MAT.visible = lit;
+      REFLECT_MAT.opacity = 0.25 + 0.12 * Math.sin(c12.t * 2.3) + 0.05 * Math.sin(c12.t * 5.1); // 水面でゆらぐ
+      BEAM_MAT.opacity = currentTime === 'night' ? 0.2 : 0.14;
       syncScramble(game, dt);
       placeCamera(game, dt);
       // デバッグ・自動テスト用：window.render3d.debugCamera = { pos: [x, y, z], look: [x, y, z] } でカメラを固定する
