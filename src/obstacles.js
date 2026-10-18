@@ -208,6 +208,23 @@ function hits(a, player) {
   return Math.hypot(dx - a.hx * along, dy - a.hy * along) < r;
 }
 
+// 信号の手前で待つか。(x, y) から向き (hx, hy) の前、横 width 以内にある信号を見る。nose は長い車の前に出ているぶん m。
+// 車両（車・バイク・自転車）は赤と黄で止まる。歩く人は逆に青と黄で止まり、車が赤のあいだだけ交差点を渡る
+// （信号は交差点ごとに 1 色で、どの向きの車も一緒に止まるので、歩車分離のように渡る。3D版の横断歩道で待つ人と同じ）
+export function waitsAtSignal(obs, x, y, hx, hy, width, nose = 0, walker = false) {
+  const [near, far] = walker ? [SIGNAL_ZONE - 1, SIGNAL_ZONE + 1.5] : [SIGNAL_ZONE - 1 + nose, SIGNAL_ZONE + 8 + nose];
+  for (const g of obs.signals) {
+    const state = signalState(g, obs.clock);
+    if (walker ? state === 'red' : state === 'green') continue;
+    for (const [sx, sy] of g.nodes) {
+      const dx = sx - x, dy = sy - y;
+      const along = dx * hx + dy * hy;
+      if (along > near && along < far && Math.abs(-dx * hy + dy * hx) < width) return true;
+    }
+  }
+  return false;
+}
+
 // 車は前に自転車がいるとき、赤・黄信号の手前で止まる
 function carShouldStop(obs, a, player) {
   const ahead = (x, y, near, far, width) => {
@@ -218,11 +235,7 @@ function carShouldStop(obs, a, player) {
   };
   const nose = longExtra(a); // 長い車は車体の前が前にあるぶん、早めに止まる
   if (ahead(player.x, player.y, 0, 10 + nose, 3)) return true;
-  for (const g of obs.signals) {
-    if (signalState(g, obs.clock) === 'green') continue;
-    for (const [x, y] of g.nodes) if (ahead(x, y, SIGNAL_ZONE - 1 + nose, SIGNAL_ZONE + 8 + nose, a.road.w / 2 + 2)) return true;
-  }
-  return false;
+  return waitsAtSignal(obs, a.x, a.y, a.hx, a.hy, a.road.w / 2 + 2, nose);
 }
 
 // 1 フレーム分進める。racing のときだけ自転車との判定を行い、起きたことを返す。
@@ -243,6 +256,7 @@ export function updateObstacles(obs, map, player, dt, racing) {
 
   obs.agents = obs.agents.filter((a) => {
     if (a.kind === 'car' && carShouldStop(obs, a, player)) return true;
+    if (a.kind === 'ped' && waitsAtSignal(obs, a.x, a.y, a.hx, a.hy, a.road.w / 2 + 2, 0, true)) return true;
     return advance(obs, map, a, a.speed * dt);
   });
 

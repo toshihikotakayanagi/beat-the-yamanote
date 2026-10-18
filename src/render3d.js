@@ -6,7 +6,7 @@
 // 向き：自転車などの angle（北が 0、時計回り）は rotation.y = -angle（前が -z 方向のモデル）。
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { signalState } from './obstacles.js';
+import { signalState, waitsAtSignal } from './obstacles.js';
 import { pointAt, frontDistance, carCount, routeOf, ELEVATED_H } from './trainpath.js';
 import { AREA_COLORS, LINE_STYLES, CELL, cellKey, nodeKey, surfaceAt } from './map.js';
 import { PLAYER_CONFIG } from './player.js';
@@ -5131,8 +5131,11 @@ export function createRenderer3D(canvas) {
       if (kind === 'emergency') riders.emWait = 45 + Math.random() * 45; // 次の緊急車両まで
     }
     for (const rd of riders.list) {
+      // 信号を守る：自転車・バイク・車は赤と黄で、歩く人は青と黄で手前に止まる（緊急車両は止まらない）
+      rd.waiting = rd.hx !== undefined && rd.kind !== 'emergency' && game.obstacles &&
+        waitsAtSignal(game.obstacles, rd.x, rd.z, rd.hx, rd.hz, rd.road.w / 2 + 2, rd.o.userData.hitExtra, WALKERS.has(rd.kind) || rd.kind === 'mikoshi');
       // 道に沿って進む。道の端の点に着いたら、つながる道（同じ種類）へ。なければ引き返す
-      let dist = rd.speed * dt;
+      let dist = rd.waiting ? 0 : rd.speed * dt;
       for (let guard = 0; dist > 0 && guard < 10; guard++) {
         const r = rd.road, n = r.p.length / 2, nv = rd.v + rd.dir;
         if (nv < 0 || nv >= n) {
@@ -5164,11 +5167,12 @@ export function createRenderer3D(canvas) {
       const t = rd.s / len;
       const h = rd.dir > 0 ? roadHeightAt(roadH(), r, rd.v, t) : roadHeightAt(roadH(), r, nv, 1 - t);
       const angle = Math.atan2(hx, -hz);
+      Object.assign(rd, { x, z, hx, hz });
       addMover(RIDER_HIT[rd.kind] ?? 'car', x, z, h, hx, hz, rd.o.userData.hitR, rd.o.userData.hitExtra);
-      if (BIKERS.has(rd.kind)) animateBike(rd.o, { x, y: z, angle }, rd.speed, dt, h);
+      if (BIKERS.has(rd.kind)) animateBike(rd.o, { x, y: z, angle }, rd.waiting ? 0 : rd.speed, dt, h);
       else {
         const step = rd.kind === 'mikoshi' ? 3.2 : rd.kind === 'jogger' ? 9 : 7; // 上下に揺れる速さ（歩く・走る・担ぐ）
-        const bob = rd.o.userData.bob ? Math.abs(Math.sin(riders.clock * step + rd.side * 10)) * rd.o.userData.bob : 0;
+        const bob = rd.o.userData.bob && !rd.waiting ? Math.abs(Math.sin(riders.clock * step + rd.side * 10)) * rd.o.userData.bob : 0;
         rd.o.position.set(x, h + bob, z);
         rd.o.rotation.y = -angle;
         if (rd.kind === 'mikoshi') rd.o.userData.body.rotation.z = Math.sin(riders.clock * 1.6) * 0.06; // わっしょいと左右に揺らす
