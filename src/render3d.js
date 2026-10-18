@@ -2277,6 +2277,7 @@ loadModelParts(CITY4_URL, CITY4_NAMES)
   .catch((e) => console.warn(`街の物（その 5）のモデルを読み込めませんでした: ${CITY4_URL}`, e))
   .finally(() => (city4.done = true));
 const STARTER_SHOULDER = [0, 1.42, 0.21]; // 旗を振る人の右肩（体の原点から。tools/build-city4.py の SH）
+const PERSON_HIT_R = 0.9; // ランニング大会・スクランブル交差点の人とぶつかる距離 m（歩行者の 1.0 m より少し小さく）
 const SCRAMBLE = { lat: 35.6595, lon: 139.7006, half: 21, people: 48 }; // 渋谷スクランブル交差点の真ん中と、横断歩道の四隅までの半分 m
 
 // 駅名の板の絵（濃い紺に白い駅名、上に緑の帯）
@@ -4914,7 +4915,18 @@ export function createRenderer3D(canvas) {
     }
   }
 
-  // ---- 道を走るほかの自転車・バイク・配達のスクーター（見た目だけ。ゲームの乱数を使わず、自転車とぶつからない） ----
+  // ---- 自転車とぶつかる動く物：毎フレーム、自転車の近く（MOVER_NEAR 以内）の物を置き直す。game.js が hitTest で調べる ----
+  // { type: 'car' | 'moto' | 'cycle' | 'ped', x, z, h, hx, hz, r, extra }：向き (hx, hz) に ±extra 伸ばした線から r 以内でぶつかる
+  const movers = [];
+  const MOVER_NEAR = 15;
+  const MOVER_PAD = 0.5; // 自転車の幅の半分くらい m
+  function addMover(type, x, z, h, hx, hz, r, extra = 0) {
+    if (Math.abs(x - lastPlayer.x) > MOVER_NEAR || Math.abs(z - lastPlayer.y) > MOVER_NEAR) return;
+    movers.push({ type, x, z, h, hx, hz, r, extra });
+  }
+  let lastPlayer = { x: 0, y: 0 };
+
+  // ---- 道を走るほかの自転車・バイク・配達のスクーター（ゲームの乱数を使わない。ぶつかるとペナルティ：RIDER_HIT） ----
   // 自転車は歩道と細い道、バイクとスクーターは車道を、道のつながりに沿って走る。自転車のまわりに出し、離れたら消す
   // 同時に走らせる数（緊急車両はときどき 1 台）。dog は犬の散歩、vendor は石焼いも・古紙回収の軽トラ、mikoshi は縁日の近くのおみこし
   // big は観光バス・タンクローリー・引っ越し・ゴミ収集車・宣伝トラック、jogger・stroller・courier は歩道の人、cargo は自転車便
@@ -4930,6 +4942,12 @@ export function createRenderer3D(canvas) {
   // 施設の近くにだけ出す人（自転車から 300m 以内の施設のまわり 60m）
   const NEAR_PLACE = { pupil: 'schools', bather: 'baths' };
   const EMERGENCY = [['police', 'policeLamp'], ['ambulance', 'ambLamp'], ['fire', 'fireLamp']];
+  // ぶつかったときのペナルティの種類
+  const RIDER_HIT = {
+    cycle: 'cycle', police: 'cycle', cargo: 'cycle', motor: 'moto',
+    emergency: 'car', vendor: 'car', big: 'car', election: 'car', plow: 'car',
+    dog: 'ped', jogger: 'ped', stroller: 'ped', courier: 'ped', pupil: 'ped', bather: 'ped', daycare: 'ped', mikoshi: 'ped',
+  };
   const RIDER_SPAWN = [50, 170]; // 出す距離 m（自転車からの）
   const RIDER_DESPAWN = 230;
   const riders = { list: [], pool: Object.fromEntries(Object.keys(RIDERS).map((k) => [k, []])), emWait: 20, clock: 0 };
@@ -5037,6 +5055,12 @@ export function createRenderer3D(canvas) {
       o.add(body);
       if (g.glow) o.add(new THREE.Mesh(g.glow, STREET_GLOW_MAT));
     }
+    // ぶつかる範囲：作ったときの大きさ（前は -z）から。長い物は前後に伸ばす
+    o.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(o), w = box.max.x - box.min.x, l = box.max.z - box.min.z;
+    // 自転車の形はライトなどの部品で大きさが広く出るので、ふつうの自転車の大きさ（長さ 1.7m・幅 0.6m）にする
+    o.userData.hitR = BIKERS.has(kind) ? 0.3 + MOVER_PAD : w / 2 + MOVER_PAD;
+    o.userData.hitExtra = BIKERS.has(kind) ? 0.55 : Math.max(0, l / 2 - w / 2);
     scene.add(o);
     pool.push(o);
     return o;
@@ -5140,6 +5164,7 @@ export function createRenderer3D(canvas) {
       const t = rd.s / len;
       const h = rd.dir > 0 ? roadHeightAt(roadH(), r, rd.v, t) : roadHeightAt(roadH(), r, nv, 1 - t);
       const angle = Math.atan2(hx, -hz);
+      addMover(RIDER_HIT[rd.kind] ?? 'car', x, z, h, hx, hz, rd.o.userData.hitR, rd.o.userData.hitExtra);
       if (BIKERS.has(rd.kind)) animateBike(rd.o, { x, y: z, angle }, rd.speed, dt, h);
       else {
         const step = rd.kind === 'mikoshi' ? 3.2 : rd.kind === 'jogger' ? 9 : 7; // 上下に揺れる速さ（歩く・走る・担ぐ）
@@ -6242,6 +6267,7 @@ export function createRenderer3D(canvas) {
         const off = mt.w * 0.18 + r.lane; // 進む向きの左の車線
         c11q.setFromAxisAngle(c11up, Math.atan2(-hx, -hz));
         c11p.set(x1 + (x2 - x1) * t + hz * off, Y.road + Math.abs(Math.sin(c11.t * 9 + r.ph)) * 0.06, z1 + (z2 - z1) * t - hx * off);
+        addMover('ped', c11p.x, c11p.z, Y.road, hx, hz, PERSON_HIT_R);
         mt.meshes[r.v].setMatrixAt(counts[r.v]++, c11m.compose(c11p, c11q, c11one));
       }
     }
@@ -6762,6 +6788,7 @@ export function createRenderer3D(canvas) {
       const face = moving ? Math.atan2(-(ex - sx), -(ez - sz)) : Math.atan2(-(cx - x), -(cz - z));
       q.setFromAxisAngle(up, face);
       pos.set(x, moving ? Math.abs(Math.sin(p.t * len * 3)) * 0.04 : 0, z);
+      addMover('ped', x, z, 0, 0, 1, PERSON_HIT_R);
       scramble.meshes[p.v].setMatrixAt(counts[p.v]++, m4.compose(pos, q, one));
     }
     scramble.meshes.forEach((m, k) => {
@@ -7172,6 +7199,18 @@ export function createRenderer3D(canvas) {
       camera.updateProjectionMatrix();
     },
 
+    // 自転車が、道を走るほかの自転車・バイク・大きな車・歩道の人などにぶつかっているか。ぶつかった物の種類か null を返す
+    // （位置は最後に描いたときのもの。橋の上と下のように高さが違えばぶつからない）
+    hitTest(p) {
+      for (const m of movers) {
+        if (Math.abs(m.h - bikeH) > 2.5) continue;
+        const dx = p.x - m.x, dz = p.y - m.z;
+        const along = Math.max(-m.extra, Math.min(m.extra, dx * m.hx + dz * m.hz));
+        if (Math.hypot(dx - m.hx * along, dz - m.hz * along) < m.r) return m.type;
+      }
+      return null;
+    },
+
     drawWorld(game, hudCtx) {
       // HUD のキャンバスは毎回まっさらにする（3D の世界が透けて見える）
       hudCtx.setTransform(1, 0, 0, 1, 0, 0);
@@ -7221,6 +7260,8 @@ export function createRenderer3D(canvas) {
 
       syncSignals(game.obstacles);
       updateSignalColors(game.obstacles);
+      movers.length = 0;
+      lastPlayer = p;
       syncAgents(game.obstacles);
       syncTrain(game);
       syncOtherTrains(dt);
@@ -7274,7 +7315,7 @@ export function createRenderer3D(canvas) {
       unculled = [];
     },
   };
-  window.render3d = { renderer, scene, camera, r3d, otherTrains, riders, sky2, scramble, c9 }; // デバッグ・自動テスト用
+  window.render3d = { renderer, scene, camera, r3d, otherTrains, riders, sky2, scramble, c9, movers }; // デバッグ・自動テスト用
   return r3d;
 }
 

@@ -130,7 +130,7 @@ export function penalty(type) {
     // ブザー（2 回）
     tone(220, t, 0.22, { type: 'square', vol: 0.15 });
     tone(220, t + 0.28, 0.22, { type: 'square', vol: 0.15 });
-  } else if (type === 'car') {
+  } else if (type === 'car' || type === 'moto') {
     noise(t, 0.35, { vol: 0.6, freq: 300, q: 0.7 });
     tone(110, t, 0.3, { type: 'sawtooth', vol: 0.15, slideTo: 55 });
   } else {

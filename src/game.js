@@ -34,6 +34,8 @@ const WRONG_WAY_LIMIT = 4; // 一方通行を逆走しているときの速度�
 const PENALTY = {
   red: { stop: 5, text: '信号無視！ 5秒ストップ' },
   car: { stop: 2, text: '車にぶつかった！' },
+  moto: { stop: 2, text: 'バイクにぶつかった！' },
+  cycle: { stop: 1.5, text: '自転車にぶつかった！' },
   ped: { stop: 1, text: '歩行者にぶつかった！' },
 };
 const INVINCIBLE_AFTER_STOP = 1; // 停止明けに連続でぶつからないための猶予 秒
@@ -84,7 +86,7 @@ const game = {
   invincible: 0,
   wrongWay: false,
   message: null, // { text, timer }
-  stats: { red: 0, car: 0, ped: 0 },
+  stats: { red: 0, car: 0, moto: 0, cycle: 0, ped: 0 },
   best: null,
   result: null,
   ghost: null, // 今の区間・難易度のベストの走り（ghost.js の形式）。なければ null
@@ -201,10 +203,11 @@ function knownRoads(sectionId) {
 const namedRoads = (map) => new Set(map.roads.filter((r) => r.n).map((r) => r.n));
 
 // ---- 区間ごとの目標：勝つ・信号無視なし・ぶつからない・金メダル。一度できたら ★ が付く（天気・難易度に関係なく区間ごと） ----
+const crashes = (st) => st.car + (st.moto ?? 0) + (st.cycle ?? 0) + st.ped; // ぶつかった回数（信号無視は数えない）
 const GOALS = [
   { id: 'win', name: '電車に勝つ', done: (r) => r.win },
   { id: 'clean', name: '信号無視なし', done: (r) => r.win && r.stats.red === 0 },
-  { id: 'safe', name: '人や車にぶつからない', done: (r) => r.win && r.stats.car + r.stats.ped === 0 },
+  { id: 'safe', name: '人や車にぶつからない', done: (r) => r.win && crashes(r.stats) === 0 },
   { id: 'gold', name: '金メダル', done: (r) => r.medal?.medal?.id === 'gold' },
 ];
 const goalsKey = (sectionId) => `goals:${sectionId}`;
@@ -338,7 +341,7 @@ function reset() {
   game.invincible = 0;
   game.wrongWay = false;
   game.message = null;
-  game.stats = { red: 0, car: 0, ped: 0 };
+  game.stats = { red: 0, car: 0, moto: 0, cycle: 0, ped: 0 };
   game.incidents = []; // 止まった場所（結果画面のルート地図に印を付ける）：{ type, x, y, stop }
   game.startDistance = distanceToGoal();
   game.distance = game.startDistance;
@@ -499,7 +502,9 @@ function update(dt) {
   const events = updateObstacles(game.obstacles, game.map, game.player, dt, racing);
   if (racing && game.stopped <= 0) {
     // 信号無視は止まりたての猶予中でも判定する（猶予は衝突の連続判定を防ぐためのもの）
-    const ev = events.find((e) => e.type === 'red') ?? (game.invincible > 0 ? null : events[0]);
+    // 3D版では、見た目だけだった道のバイク・自転車・大きな車・歩道の人などとも当たる（renderer.hitTest）
+    const other = game.invincible > 0 || events.length ? null : renderer.hitTest?.(game.player);
+    const ev = events.find((e) => e.type === 'red') ?? (game.invincible > 0 ? null : events[0] ?? (other && { type: other }));
     if (ev) penalize(ev.type);
   }
 

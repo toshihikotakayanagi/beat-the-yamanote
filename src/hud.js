@@ -806,6 +806,8 @@ const km = (m) => `${(m / 1000).toFixed(2)} km`;
 const INCIDENT_STYLE = {
   red: { color: '#ff4d4d', shape: 'square', label: '信号無視' },
   car: { color: '#ff9f43', shape: 'circle', label: '車' },
+  moto: { color: '#ffd166', shape: 'circle', label: 'バイク' },
+  cycle: { color: '#6fd3ff', shape: 'circle', label: '自転車' },
   ped: { color: '#c9b8ff', shape: 'circle', label: '歩行者' },
 };
 function drawIncident(ctx, x, y, type, size = 5) {
@@ -1111,7 +1113,7 @@ function drawResult(ctx, game, view) {
   }
   // 止まった回数は、ルート地図の下の凡例（drawIncidentLegend）に出す。一度も止まらなければここで知らせる
   const s = r.stats;
-  if (s.red + s.car + s.ped === 0) lines.push(['信号無視・衝突なし', { size: 14, color: YAMANOTE_GREEN }]);
+  if (s.red + s.car + (s.moto ?? 0) + (s.cycle ?? 0) + s.ped === 0) lines.push(['信号無視・衝突なし', { size: 14, color: YAMANOTE_GREEN }]);
   // 目標（★ は一度でもできたもの。NEW は今回初めて）
   if (r.goals) {
     const t = r.goals.map((g) => `${g.ever ? '★' : '☆'} ${g.name}${g.newly ? '（NEW）' : ''}`).join('　');

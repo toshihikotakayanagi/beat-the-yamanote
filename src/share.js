@@ -22,7 +22,7 @@ export function shareText(game) {
     lines.push(`🚃 電車に負けた… ゴールまであと ${r.distance.toFixed(0)} m`);
   }
   const st = r.stats;
-  const stops = [st.red && `信号無視 ${st.red}回`, st.car && `車 ${st.car}回`, st.ped && `歩行者 ${st.ped}回`].filter(Boolean);
+  const stops = [st.red && `信号無視 ${st.red}回`, st.car && `車 ${st.car}回`, st.moto && `バイク ${st.moto}回`, st.cycle && `自転車 ${st.cycle}回`, st.ped && `歩行者 ${st.ped}回`].filter(Boolean);
   lines.push(stops.length ? stops.join('・') : '信号無視・衝突なし');
   if (r.lapComplete) lines.push(`🎉 山手線1周達成！`);
   // 公開したページ（https）ならアドレスも付ける。手元のサーバー（http://localhost）のアドレスは他の人が開けない
