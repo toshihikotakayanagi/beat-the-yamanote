@@ -950,6 +950,116 @@ loadModelParts(STREET_MODEL_URL, STREET_MODEL_NAMES)
 const STREET_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
 const STREET_GLOW_MAT = new THREE.MeshBasicMaterial({ vertexColors: true }); // 自動販売機の光る前の面
 
+// ---- 歩く人の足：1 つの形にまとめた人のモデル（Blender の person など）から足を見つけ、腰を軸に前後に振る ----
+// 足は「腰から下へ伸びる細い部品（もも・すね・靴）が続いていて、上に胴体がある」もの。台車やベビーカーの車輪、犬は振らない。
+// 足の頂点に aLeg（左右 -1/+1・腰の高さ・腰の前後の位置・まっすぐ下へ戻す角度）を付け、頂点シェーダーで回す（ほかの頂点は aLeg.x = 0）。
+// 走る形で作ったモデル（足を開いている）も、いったん足をまっすぐにしてから振る。
+// 振る角度 rad は、1 つの物なら材質の uSwing（walkMaterial(false)）、InstancedMesh なら 1 人ごとの aSwing（walkMaterial(true)）
+const walkGeos = new WeakMap(); // 元の形 → 足の印を付けた形（数と使い道ごと）
+function findLegs(geo) {
+  const P = geo.attributes.position.array, n = P.length / 3;
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i) => {
+    while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  const join = (a, b) => {
+    (a = find(a)), (b = find(b));
+    if (a !== b) parent[a] = b;
+  };
+  // 同じ位置の頂点と同じ三角形の頂点をつなぎ、ばらばらの部品（筒・楕円体など）に分ける
+  const seen = new Map();
+  for (let i = 0; i < n; i++) {
+    const key = `${Math.round(P[3 * i] * 1000)},${Math.round(P[3 * i + 1] * 1000)},${Math.round(P[3 * i + 2] * 1000)}`;
+    const j = seen.get(key);
+    if (j === undefined) seen.set(key, i);
+    else join(i, j);
+    if (i % 3 === 2) join(i, i - 1), join(i, i - 2);
+  }
+  const comps = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    let c = comps.get(r);
+    if (!c) comps.set(r, (c = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], verts: [] }));
+    c.verts.push(i);
+    for (let k = 0; k < 3; k++) (c.min[k] = Math.min(c.min[k], P[3 * i + k])), (c.max[k] = Math.max(c.max[k], P[3 * i + k]));
+  }
+  const list = [...comps.values()];
+  const size = (c, k) => c.max[k] - c.min[k];
+  const limb = (c) => c.max[1] < 1.05 && size(c, 0) < 0.2 && size(c, 2) < 0.55;
+  const limbs = list.filter(limb), others = list.filter((c) => !limb(c));
+  // 重なる細い部品を 1 本の足にまとめる（もも＋すね＋靴）
+  const touch = (a, b) => [0, 1, 2].every((k) => a.min[k] <= b.max[k] + 0.01 && b.min[k] <= a.max[k] + 0.01);
+  const chains = [];
+  for (const c of limbs) {
+    const hit = chains.filter((ch) => ch.parts.some((d) => touch(c, d)));
+    const merged = { parts: [c, ...hit.flatMap((ch) => ch.parts)] };
+    for (const ch of hit) chains.splice(chains.indexOf(ch), 1);
+    chains.push(merged);
+  }
+  const aLeg = new Float32Array(n * 4);
+  let legs = 0;
+  for (const ch of chains) {
+    const top = Math.max(...ch.parts.map((c) => c.max[1])), bottom = Math.min(...ch.parts.map((c) => c.min[1]));
+    if (bottom > 0.15 || top < 0.45 || top - bottom < 0.3) continue; // 子どもの腰より高くから地面まで届くものだけ（車輪や台車の柱は外す）
+    let tx = 0, tz = 0, tn = 0;
+    for (const c of ch.parts) for (const i of c.verts) if (P[3 * i + 1] > top - 0.05) (tx += P[3 * i]), (tz += P[3 * i + 2]), tn++;
+    (tx /= tn), (tz /= tn);
+    // 腰の上に胴体（幅のある部品）があること
+    const torso = others.find((c) => size(c, 0) >= 0.2 && c.min[1] > top - 0.25 && c.min[1] < top + 0.4 &&
+      tx > c.min[0] - 0.03 && tx < c.max[0] + 0.03 && tz > c.min[2] - 0.03 && tz < c.max[2] + 0.03);
+    if (!torso) continue;
+    const side = tx < (torso.min[0] + torso.max[0]) / 2 ? -1 : 1;
+    // 足先（いちばん低い頂点）が腰の真下からどれだけ前後に出ているか（回す向きはシェーダーと同じ）
+    let foot = ch.parts[0].verts[0];
+    for (const c of ch.parts) for (const i of c.verts) if (P[3 * i + 1] < P[3 * foot + 1]) foot = i;
+    const straighten = Math.atan2(P[3 * foot + 2] - tz, top - P[3 * foot + 1]);
+    for (const c of ch.parts) for (const i of c.verts) aLeg.set([side, top, tz, straighten], 4 * i);
+    legs++;
+  }
+  return { aLeg, legs };
+}
+// instances：InstancedMesh の数（0 なら 1 つの物）。aSwing は InstancedMesh ごとに別にするので、同じ形を使うときは use を変える
+function walkingGeometry(geo, instances = 0, use = '') {
+  let byCount = walkGeos.get(geo);
+  if (!byCount) walkGeos.set(geo, (byCount = new Map()));
+  const key = `${instances}:${use}`;
+  let g = byCount.get(key);
+  if (g) return g;
+  g = geo.clone();
+  g.setAttribute('aLeg', new THREE.BufferAttribute(findLegs(geo).aLeg, 4));
+  if (instances) g.setAttribute('aSwing', new THREE.InstancedBufferAttribute(new Float32Array(instances), 1));
+  byCount.set(key, g);
+  return g;
+}
+function walkMaterial(instanced) {
+  const m = STREET_MAT.clone();
+  m.userData.swing = { value: 0 };
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uSwing = m.userData.swing;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>\nattribute vec4 aLeg;\n${instanced ? 'attribute float aSwing;' : 'uniform float uSwing;'}`)
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        if (aLeg.x != 0.0) {
+          float a = aLeg.x * ${instanced ? 'aSwing' : 'uSwing'} + aLeg.w;
+          vec2 d = transformed.yz - aLeg.yz;
+          transformed.yz = aLeg.yz + vec2(cos(a) * d.x - sin(a) * d.y, sin(a) * d.x + cos(a) * d.y);
+        }`,
+      );
+  };
+  m.customProgramCacheKey = () => (instanced ? 'walk-instanced' : 'walk');
+  return m;
+}
+// 足の振りを進める：歩いた距離 dist m で 2 歩（1 往復）が stride * 2 m。止まると少しずつ足をそろえる
+function stepSwing(st, dist, stride = 0.7, angle = 0.45) {
+  st.phase = (st.phase ?? Math.random() * 6) + (dist / (stride * 2)) * Math.PI * 2;
+  st.amp = dist > 0.0005 ? Math.min(1, (st.amp ?? 0) + 0.15) : Math.max(0, (st.amp ?? 0) - 0.08);
+  return Math.sin(st.phase) * st.amp * angle;
+}
+
 // 電柱：幅 POLE_ROAD_W の範囲の車道（住宅地の細い道）に、POLE_SPACING m おきに道の片側に立て、柱どうしを電線で結ぶ
 const POLE_ROAD_W = [4, 8];
 const POLE_SPACING = 30;
@@ -5055,6 +5165,11 @@ export function createRenderer3D(canvas) {
       o.add(body);
       if (g.glow) o.add(new THREE.Mesh(g.glow, STREET_GLOW_MAT));
     }
+    // 歩く人は足を振る（syncRiders で進んだ距離に合わせる）
+    if ((WALKERS.has(kind) || kind === 'mikoshi') && o.userData.body) {
+      o.userData.body.geometry = walkingGeometry(o.userData.body.geometry);
+      o.userData.body.material = walkMaterial(false);
+    }
     // ぶつかる範囲：作ったときの大きさ（前は -z）から。長い物は前後に伸ばす
     o.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(o), w = box.max.x - box.min.x, l = box.max.z - box.min.z;
@@ -5175,6 +5290,8 @@ export function createRenderer3D(canvas) {
         const bob = rd.o.userData.bob && !rd.waiting ? Math.abs(Math.sin(riders.clock * step + rd.side * 10)) * rd.o.userData.bob : 0;
         rd.o.position.set(x, h + bob, z);
         rd.o.rotation.y = -angle;
+        const swing = rd.o.userData.body?.material.userData.swing;
+        if (swing) swing.value = stepSwing((rd.stride ??= {}), rd.waiting ? 0 : rd.speed * dt, rd.kind === 'jogger' ? 1.0 : 0.7, rd.kind === 'jogger' ? 0.55 : 0.4);
         if (rd.kind === 'mikoshi') rd.o.userData.body.rotation.z = Math.sin(riders.clock * 1.6) * 0.06; // わっしょいと左右に揺らす
         if (rd.o.userData.waver) rd.o.userData.waver.rotation.z = Math.sin(riders.clock * 5) * 0.35; // 手を振る
         if (rd.o.userData.lamp) rd.o.userData.lamp.visible = Math.floor(riders.clock * 4) % 2 === 0; // 回転灯の点滅
@@ -5783,6 +5900,12 @@ export function createRenderer3D(canvas) {
       const going = u < 0.5;
       const x = d.sx + (d.wx - d.sx) * k, z = d.sz + (d.wz - d.sz) * k;
       const moving = (u > 0 && u < 0.4) || (u > 0.5 && u < 0.9);
+      if (!d.walker.material.userData.swing) {
+        d.walker.geometry = walkingGeometry(d.walker.geometry);
+        d.walker.material = walkMaterial(false);
+      }
+      d.walker.material.userData.swing.value = stepSwing((d.stride ??= {}), d.last ? Math.hypot(x - d.last[0], z - d.last[1]) : 0);
+      d.last = [x, z];
       d.walker.position.set(x, Y.area + (moving ? Math.abs(Math.sin(c9.t * 7)) * 0.03 : 0), z);
       d.walker.rotation.y = going ? Math.atan2(-(d.wx - d.sx), -(d.wz - d.sz)) : Math.atan2(d.wx - d.sx, d.wz - d.sz);
       d.walker.visible = !(u >= 0.45 && u < 0.5); // 建物の中に荷物を届けているあいだ
@@ -6257,6 +6380,10 @@ export function createRenderer3D(canvas) {
     mt.t += dt;
     const cycle = 240, active = mt.t % cycle < (mt.len / 3.6 + 30);
     ud.marathonGroup.visible = active;
+    if (!mt.walking) {
+      mt.walking = true;
+      for (const m of mt.meshes) (m.geometry = walkingGeometry(m.geometry, MARATHON_RUNNERS)), (m.material = walkMaterial(true));
+    }
     const counts = [0, 0, 0, 0];
     if (active) {
       const head = (mt.t % cycle) * 3.6;
@@ -6272,12 +6399,14 @@ export function createRenderer3D(canvas) {
         c11q.setFromAxisAngle(c11up, Math.atan2(-hx, -hz));
         c11p.set(x1 + (x2 - x1) * t + hz * off, Y.road + Math.abs(Math.sin(c11.t * 9 + r.ph)) * 0.06, z1 + (z2 - z1) * t - hx * off);
         addMover('ped', c11p.x, c11p.z, Y.road, hx, hz, PERSON_HIT_R);
+        mt.meshes[r.v].geometry.attributes.aSwing.array[counts[r.v]] = Math.sin((s * Math.PI) / 1.1 + r.ph) * 0.55; // 2 歩で 2.2m（走る）
         mt.meshes[r.v].setMatrixAt(counts[r.v]++, c11m.compose(c11p, c11q, c11one));
       }
     }
     mt.meshes.forEach((m, k) => {
       m.count = counts[k];
       m.instanceMatrix.needsUpdate = true;
+      m.geometry.attributes.aSwing.needsUpdate = true;
     });
   }
 
@@ -6414,7 +6543,7 @@ export function createRenderer3D(canvas) {
       const lx = loseShow.side > 0 ? -1 : 1; // 車両のローカルの x（+x は進む向きの右）
       if (!loseShow.meshes) {
         loseShow.meshes = [0, 1, 2, 3].map((k) => {
-          const m = new THREE.InstancedMesh(city3.geos[`stand${k}`].body, STREET_MAT, 48);
+          const m = new THREE.InstancedMesh(walkingGeometry(city3.geos[`stand${k}`].body, 48, 'passengers'), walkMaterial(true), 48);
           m.frustumCulled = false;
           m.castShadow = true;
           m.name = 'passengers'; // デバッグ・自動テスト用
@@ -6471,11 +6600,13 @@ export function createRenderer3D(canvas) {
       }
       bEuler.set(0, Math.atan2(-fx, -fz), 0);
       bq.setFromEuler(bEuler);
+      loseShow.meshes[pp.v].geometry.attributes.aSwing.array[counts[pp.v]] = Math.sin(walked * Math.PI / 0.7 + pp.v) * 0.45; // 2 歩で 1.4m
       loseShow.meshes[pp.v].setMatrixAt(counts[pp.v]++, bm4.compose(bPos.set(x, pp.y + Math.abs(Math.sin(walked * 3)) * 0.04, z), bq, bOne));
     }
     loseShow.meshes.forEach((m, k) => {
       m.count = counts[k];
       m.instanceMatrix.needsUpdate = true;
+      m.geometry.attributes.aSwing.needsUpdate = true;
     });
   }
 
@@ -6745,7 +6876,7 @@ export function createRenderer3D(canvas) {
       scramble.center = [cx, cz];
       scramble.group = null;
       scramble.meshes = [0, 1, 2, 3].map((k) => {
-        const m = new THREE.InstancedMesh(g3[`stand${k}`].body, STREET_MAT, SCRAMBLE.people);
+        const m = new THREE.InstancedMesh(walkingGeometry(g3[`stand${k}`].body, SCRAMBLE.people), walkMaterial(true), SCRAMBLE.people);
         m.castShadow = true;
         m.frustumCulled = false;
         m.count = 0;
@@ -6792,12 +6923,14 @@ export function createRenderer3D(canvas) {
       const face = moving ? Math.atan2(-(ex - sx), -(ez - sz)) : Math.atan2(-(cx - x), -(cz - z));
       q.setFromAxisAngle(up, face);
       pos.set(x, moving ? Math.abs(Math.sin(p.t * len * 3)) * 0.04 : 0, z);
+      scramble.meshes[p.v].geometry.attributes.aSwing.array[counts[p.v]] = moving ? Math.sin((p.t * len * Math.PI) / 0.7 + p.jx) * 0.45 : 0;
       addMover('ped', x, z, 0, 0, 1, PERSON_HIT_R);
       scramble.meshes[p.v].setMatrixAt(counts[p.v]++, m4.compose(pos, q, one));
     }
     scramble.meshes.forEach((m, k) => {
       m.count = counts[k];
       m.instanceMatrix.needsUpdate = true;
+      m.geometry.attributes.aSwing.needsUpdate = true;
     });
   }
 
