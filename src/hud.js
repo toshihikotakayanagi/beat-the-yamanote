@@ -649,7 +649,7 @@ function drawTitle(ctx, game, view) {
         { title: '遊び方', note: game.touch ? 'ルールと操作' : 'H キー', color: TEXT, noteColor: QUIET, action: 'howto', outlined: true },
         game.mode === '3d'
           ? { title: '2D版に切り替える', note: '真上から見る', color: TEXT, noteColor: QUIET, action: 'switch', outlined: true }
-          : { title: '3D版で遊ぶ', note: '試作・街を立体で走る', color: TEXT, noteColor: QUIET, action: 'switch', outlined: true },
+          : { title: '3D版で遊ぶ', note: '街を立体で走る', color: TEXT, noteColor: QUIET, action: 'switch', outlined: true },
       ],
     },
     ...(game.droppedRecords
