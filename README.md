@@ -3,6 +3,8 @@
 東京の本物の道を自転車で走り、山手線より先に次の駅を目指すブラウザのレースゲームです。
 山手線1周の全30区間を、真上から見下ろす **2D版** と、街を立体で走る **3D版** で遊べます。
 
+**遊ぶ**：https://toshihikotakayanagi.github.io/beat-the-yamanote/ （3D版は [3d.html](https://toshihikotakayanagi.github.io/beat-the-yamanote/3d.html)）
+
 > JR東日本とは関係のない非公式のファンゲームです。
 
 | 2D版 | 3D版 |
@@ -63,7 +65,7 @@
 - 2D版：山手線1周の全30区間が遊べます。
 - 3D版：山手線1周の全30区間が遊べます。
 - これまでの確認は、ほぼすべてブラウザ上の自動テスト（自動運転と操作イベントの送信）です。人による試遊とスマホ実機（iPhone の Safari を含む）での確認、3D版のスマホでの重さの確認はまだです。
-- まだ公開していません（GitHub Pages に置く予定）。
+- GitHub Pages で公開しています（https://toshihikotakayanagi.github.io/beat-the-yamanote/）。
 
 ## 起動方法
 
