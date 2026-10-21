@@ -8,8 +8,9 @@ export const PLAYER_CONFIG = {
   brake: 12, // ブレーキ m/s²
   drag: 1.5, // ペダルを離したときの減速 m/s²
   turnRate: 2.3, // 最大旋回速度 rad/s
-  steerIn: 3, // ハンドルを切る速さ（1 秒あたり。0.33 秒でいっぱいまで切れる）
-  steerOut: 5, // ハンドルを離したときに戻る速さ
+  steerIn: 1.6, // ハンドルを切る速さ（1 秒あたり。約 0.6 秒でいっぱいまで切れる）
+  steerOut: 3, // ハンドルを離したときに戻る速さ
+  highSpeedTurn: 0.65, // 最高速度のときの旋回の強さ（速いほど大回りになる）
   length: 1.8, // 車体の長さ m
   width: 0.6, // 車体の幅 m
 };
@@ -40,8 +41,9 @@ export function updatePlayer(p, input, dt, limit = PLAYER_CONFIG.maxSpeed, cfg =
   const rate = want !== 0 && Math.sign(want) !== -Math.sign(steer) ? cfg.steerIn : cfg.steerOut;
   p.steer = want > steer ? Math.min(want, steer + rate * dt) : Math.max(want, steer - rate * dt);
 
-  // 旋回は動いているときだけ。低速ほど曲がりにくく、後退時はハンドルが逆になる。
-  const grip = Math.min(1, Math.abs(p.speed) / 3);
+  // 旋回は動いているときだけ。ごく低速では曲がりにくく、速いほど大回りになる。後退時はハンドルが逆になる。
+  const fast = Math.max(0, Math.min(1, (Math.abs(p.speed) - 3) / (PLAYER_CONFIG.maxSpeed - 3)));
+  const grip = Math.min(1, Math.abs(p.speed) / 3) * (1 - (1 - cfg.highSpeedTurn) * fast);
   p.angle += p.steer * cfg.turnRate * grip * Math.sign(p.speed) * dt;
 
   p.x += Math.sin(p.angle) * p.speed * dt;
