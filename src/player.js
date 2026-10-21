@@ -7,13 +7,15 @@ export const PLAYER_CONFIG = {
   accel: 5, // 加速 m/s²
   brake: 12, // ブレーキ m/s²
   drag: 1.5, // ペダルを離したときの減速 m/s²
-  turnRate: 2.6, // 最大旋回速度 rad/s
+  turnRate: 2.3, // 最大旋回速度 rad/s
+  steerIn: 3, // ハンドルを切る速さ（1 秒あたり。0.33 秒でいっぱいまで切れる）
+  steerOut: 5, // ハンドルを離したときに戻る速さ
   length: 1.8, // 車体の長さ m
   width: 0.6, // 車体の幅 m
 };
 
 export function createPlayer(x = 0, y = 0, angle = 0) {
-  return { x, y, angle, speed: 0 };
+  return { x, y, angle, speed: 0, steer: 0 };
 }
 
 // limit: 路面による速度上限 m/s（歩道や道路外では遅くなる）
@@ -32,10 +34,15 @@ export function updatePlayer(p, input, dt, limit = PLAYER_CONFIG.maxSpeed, cfg =
   if (p.speed > max) p.speed = Math.max(max, p.speed - cfg.brake * dt);
   p.speed = Math.max(-cfg.maxReverse, Math.min(cfg.maxSpeed, p.speed));
 
+  // ハンドルはキーを押すと少しずつ切れ、離すと少しずつ戻る（急に曲がらないように）
+  const want = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  const steer = p.steer ?? 0;
+  const rate = want !== 0 && Math.sign(want) !== -Math.sign(steer) ? cfg.steerIn : cfg.steerOut;
+  p.steer = want > steer ? Math.min(want, steer + rate * dt) : Math.max(want, steer - rate * dt);
+
   // 旋回は動いているときだけ。低速ほど曲がりにくく、後退時はハンドルが逆になる。
-  const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   const grip = Math.min(1, Math.abs(p.speed) / 3);
-  p.angle += steer * cfg.turnRate * grip * Math.sign(p.speed) * dt;
+  p.angle += p.steer * cfg.turnRate * grip * Math.sign(p.speed) * dt;
 
   p.x += Math.sin(p.angle) * p.speed * dt;
   p.y -= Math.cos(p.angle) * p.speed * dt;
